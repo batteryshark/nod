@@ -182,6 +182,8 @@ EOF
 
   if ! env_file_has_value "$NOD_RELAY_SECRETS_ENV" "NOD_APNS_RELAY_BUNDLE_ID"; then
     append_env_line "$NOD_RELAY_SECRETS_ENV" "NOD_APNS_RELAY_BUNDLE_ID=$LOCAL_APPLE_NATIVE_APP_ID"
+  elif [[ "$(env_file_value "$NOD_RELAY_SECRETS_ENV" NOD_APNS_RELAY_BUNDLE_ID)" == "com.batteryshark.Nod" ]]; then
+    ensure_env_value "$NOD_RELAY_SECRETS_ENV" "NOD_APNS_RELAY_BUNDLE_ID" "$LOCAL_APPLE_NATIVE_APP_ID"
   fi
   if ! env_file_has_value "$NOD_RELAY_SECRETS_ENV" "NOD_APNS_RELAY_ENVIRONMENT"; then
     append_env_line "$NOD_RELAY_SECRETS_ENV" "NOD_APNS_RELAY_ENVIRONMENT=production"

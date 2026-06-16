@@ -152,7 +152,27 @@ private enum NodMenuBarIcon {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Held for the app's lifetime to keep macOS App Nap from throttling the
+    /// process while Nod lives in the menu bar with no focused window. App Nap
+    /// suspends the background process — including the runtime's WebSocket sync
+    /// thread — so new requests would only surface after the app was refocused
+    /// (which forces a reconnect + refresh). `userInitiatedAllowingIdleSystemSleep`
+    /// keeps the sync socket serviced in the background while still letting the
+    /// Mac sleep normally on battery.
+    private var syncActivityAssertion: NSObjectProtocol?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        syncActivityAssertion = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "Maintain Nod realtime sync for notifications"
+        )
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let assertion = syncActivityAssertion {
+            ProcessInfo.processInfo.endActivity(assertion)
+            syncActivityAssertion = nil
+        }
     }
 }
