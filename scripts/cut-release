@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/cut-release [VERSION] [options]
+
+Prepare and cut a Nod GitHub release.
+
+With no VERSION, the script uses the next patch after the latest vX.Y.Z tag.
+The Apple build number defaults to the current UTC timestamp (yyyymmddHHMM).
+
+Options:
+  --version VERSION       Release version, with or without leading v
+  --dry-run               Print the chosen version/build number and exit
+  --skip-checks           Do not run the local release gate
+  --skip-push             Commit and tag locally, but do not push
+  --skip-macos            Do not build/upload the notarized macOS DMG
+  --testflight            Upload an iOS TestFlight build after the tag push
+  --publish               Publish the draft release after local uploads
+  --allow-non-main        Allow cutting from a branch other than main
+  -h, --help              Show this help
+
+Environment:
+  NOD_RELEASE_BUILD_NUMBER  Override the UTC timestamp build number
+  NOD_NOTARY_PROFILE        Passed to client/nod-apple/scripts/release-macos
+  APP_STORE_CONNECT_*       Used by --testflight
+EOF
+}
+
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+info() {
+  printf '\n==> %s\n' "$*"
+}
+
+version_arg=""
+dry_run=false
+run_checks=true
+push_release=true
+build_macos=true
+upload_testflight=false
+publish_release=false
+allow_non_main=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --version)
+      [[ $# -ge 2 ]] || die "--version requires a value"
+      version_arg="$2"
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=true
+      shift
+      ;;
+    --skip-checks)
+      run_checks=false
+      shift
+      ;;
+    --skip-push)
+      push_release=false
+      shift
+      ;;
+    --skip-macos)
+      build_macos=false
+      shift
+      ;;
+    --testflight)
+      upload_testflight=true
+      shift
+      ;;
+    --publish)
+      publish_release=true
+      shift
+      ;;
+    --allow-non-main)
+      allow_non_main=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    v*|[0-9]*)
+      [[ -z "$version_arg" ]] || die "version was provided twice"
+      version_arg="$1"
+      shift
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/.." && pwd)"
+cd "$repo_root"
+
+latest_release_tag() {
+  git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1
+}
+
+normalize_version() {
+  local raw="${1#v}"
+  [[ "$raw" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version must look like X.Y.Z"
+  printf '%s' "$raw"
+}
+
+next_patch_after() {
+  local tag="$1"
+  [[ -n "$tag" ]] || die "no prior vX.Y.Z tag found; pass a version explicitly"
+  local version="${tag#v}"
+  local major minor patch
+  IFS=. read -r major minor patch <<<"$version"
+  printf '%s.%s.%s' "$major" "$minor" "$((patch + 1))"
+}
+
+previous_tag="$(latest_release_tag)"
+version="$(normalize_version "${version_arg:-$(next_patch_after "$previous_tag")}")"
+tag_name="v${version}"
+build_number="${NOD_RELEASE_BUILD_NUMBER:-$(date -u +%Y%m%d%H%M)}"
+release_notes_path="docs/release-notes/${tag_name}.md"
+
+info "Release selection"
+echo "Previous tag: ${previous_tag:-<none>}"
+echo "Release tag:  ${tag_name}"
+echo "Build number: ${build_number}"
+
+if [[ "$dry_run" == true ]]; then
+  echo
+  echo "Dry run only; no files, commits, tags, or releases were changed."
+  exit 0
+fi
+
+[[ -z "$(git rev-parse -q --verify "refs/tags/${tag_name}")" ]] \
+  || die "tag already exists: ${tag_name}"
+
+current_branch="$(git branch --show-current)"
+if [[ "$allow_non_main" != true && "$current_branch" != "main" ]]; then
+  die "release cuts are expected from main; pass --allow-non-main to override"
+fi
+
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  git status --short >&2
+  die "tracked working tree changes are present; commit or stash them first"
+fi
+
+untracked="$(git ls-files --others --exclude-standard)"
+if [[ -n "$untracked" ]]; then
+  echo "warning: untracked files will not be included in the release commit:" >&2
+  printf '%s\n' "$untracked" >&2
+fi
+
+stamp_versions() {
+  info "Stamping release metadata"
+  node - "$version" <<'NODE'
+const fs = require("fs");
+
+const version = process.argv[2];
+
+function writeJson(path, update) {
+  const data = JSON.parse(fs.readFileSync(path, "utf8"));
+  update(data);
+  fs.writeFileSync(path, JSON.stringify(data, null, 2) + "\n");
+}
+
+writeJson("client/nod-desktop/package.json", data => {
+  data.version = version;
+});
+
+writeJson("client/nod-desktop/package-lock.json", data => {
+  data.version = version;
+  if (data.packages && data.packages[""]) {
+    data.packages[""].version = version;
+  }
+});
+
+writeJson("client/nod-desktop/src-tauri/tauri.conf.json", data => {
+  data.version = version;
+});
+
+const cargoPath = "Cargo.toml";
+const cargo = fs.readFileSync(cargoPath, "utf8");
+const nextCargo = cargo.replace(
+  /(\[workspace\.package\]\nversion = ")[^"]+(")/,
+  `$1${version}$2`,
+);
+if (nextCargo === cargo) {
+  throw new Error("could not find [workspace.package] version in Cargo.toml");
+}
+fs.writeFileSync(cargoPath, nextCargo);
+NODE
+  cargo metadata --format-version 1 >/dev/null
+}
+
+write_release_notes() {
+  if [[ -f "$release_notes_path" ]]; then
+    echo "Release notes already exist: ${release_notes_path}"
+    return
+  fi
+
+  mkdir -p docs/release-notes
+  {
+    echo "Nod ${tag_name} is a maintenance release for the current public artifact set."
+    echo
+    echo "## Changes Since ${previous_tag}"
+    if [[ -n "$previous_tag" ]]; then
+      git log --format='- %s (%h)' "${previous_tag}..HEAD"
+    else
+      git log --format='- %s (%h)'
+    fi
+    echo
+    echo "## Artifacts"
+    echo
+    echo "- \`Nod-${version}.dmg\`"
+    echo "- \`nod-desktop-${tag_name}-x86_64-pc-windows-msvc.zip\`"
+    echo "- \`nod-server-${tag_name}-<target>.tar.gz\` / \`.zip\`"
+    echo "- \`nod-tui-${tag_name}-<target>.tar.gz\` / \`.zip\`"
+    echo "- \`ghcr.io/batteryshark/nod-server:${tag_name}\`"
+    echo "- \`SHA256SUMS\`"
+  } > "$release_notes_path"
+}
+
+update_changelog() {
+  node - "$tag_name" "$release_notes_path" <<'NODE'
+const fs = require("fs");
+
+const tagName = process.argv[2];
+const releaseNotesPath = process.argv[3];
+const changelogPath = "CHANGELOG.md";
+const changelog = fs.readFileSync(changelogPath, "utf8");
+
+if (changelog.includes(`## ${tagName}`)) {
+  process.exit(0);
+}
+
+const today = new Date().toISOString().slice(0, 10);
+const entry = `## ${tagName} - ${today}\n\n- See [${releaseNotesPath}](${releaseNotesPath}).\n\n`;
+const next = changelog.replace(/^# Changelog\n\n/, `# Changelog\n\n${entry}`);
+if (next === changelog) {
+  throw new Error("could not find changelog heading");
+}
+fs.writeFileSync(changelogPath, next);
+NODE
+}
+
+run_release_gate() {
+  info "Running local release gate"
+  cargo test --workspace
+  cargo fmt --check
+  cargo clippy --all-targets -- -D warnings
+  (cd client/nod-apple && swift test)
+  (cd client/nod-desktop && npm run typecheck && npm test && npm run drift-check)
+  server/nod-server/scripts/nod-smoke
+}
+
+commit_and_tag() {
+  info "Committing release prep"
+  git add \
+    Cargo.toml \
+    Cargo.lock \
+    CHANGELOG.md \
+    client/nod-desktop/package.json \
+    client/nod-desktop/package-lock.json \
+    client/nod-desktop/src-tauri/tauri.conf.json \
+    "$release_notes_path"
+
+  git commit -m "Prepare Nod ${tag_name} release"
+  git tag -a "$tag_name" -m "Nod ${version}"
+}
+
+push_tag() {
+  if [[ "$push_release" != true ]]; then
+    echo
+    echo "Local release commit and tag are ready. Push manually with:"
+    echo "  git push origin HEAD:main"
+    echo "  git push origin ${tag_name}"
+    return
+  fi
+
+  info "Pushing main and ${tag_name}"
+  git push origin HEAD:main
+  git push origin "$tag_name"
+}
+
+wait_for_release() {
+  command -v gh >/dev/null || die "gh is required for local release uploads"
+
+  info "Waiting for the GitHub draft release"
+  for _ in {1..90}; do
+    if gh release view "$tag_name" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 30
+  done
+
+  die "timed out waiting for GitHub release ${tag_name}"
+}
+
+upload_macos_dmg() {
+  [[ "$build_macos" == true ]] || return
+
+  info "Building notarized macOS DMG"
+  NOD_MAC_BUILD_NUMBER="$build_number" client/nod-apple/scripts/release-macos "$version"
+
+  local dmg_path="client/nod-apple/build/release/Nod-${version}.dmg"
+  [[ -f "$dmg_path" ]] || die "macOS release script did not produce ${dmg_path}"
+
+  wait_for_release
+
+  info "Uploading macOS DMG and merged checksum"
+  gh release upload "$tag_name" "$dmg_path" --clobber
+
+  local sums_dir
+  sums_dir="$(mktemp -d)"
+  trap 'rm -rf "$sums_dir"' RETURN
+  gh release download "$tag_name" --pattern SHA256SUMS --dir "$sums_dir" --clobber
+
+  local checksum_line
+  checksum_line="$(cd "$(dirname "$dmg_path")" && shasum -a 256 "$(basename "$dmg_path")")"
+  grep -v "  $(basename "$dmg_path")$" "$sums_dir/SHA256SUMS" > "$sums_dir/SHA256SUMS.next" || true
+  printf '%s\n' "$checksum_line" >> "$sums_dir/SHA256SUMS.next"
+  mv "$sums_dir/SHA256SUMS.next" "$sums_dir/SHA256SUMS"
+  gh release upload "$tag_name" "$sums_dir/SHA256SUMS" --clobber
+}
+
+upload_ios_testflight() {
+  [[ "$upload_testflight" == true ]] || return
+
+  info "Uploading iOS TestFlight build"
+  NOD_MARKETING_VERSION="$version" \
+  NOD_BUILD_NUMBER="$build_number" \
+    client/nod-apple/scripts/testflight-ios
+}
+
+publish_if_requested() {
+  [[ "$publish_release" == true ]] || return
+
+  wait_for_release
+  info "Publishing ${tag_name}"
+  gh release edit "$tag_name" --draft=false --latest
+}
+
+stamp_versions
+write_release_notes
+update_changelog
+
+if [[ "$run_checks" == true ]]; then
+  run_release_gate
+else
+  echo
+  echo "Skipping local release checks by request."
+fi
+
+commit_and_tag
+push_tag
+upload_macos_dmg
+upload_ios_testflight
+publish_if_requested
+
+info "Done"
+echo "Release tag: ${tag_name}"
+echo "Build number: ${build_number}"
+echo "Release URL: https://github.com/batteryshark/nod/releases/tag/${tag_name}"

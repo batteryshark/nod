@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.1 - maintenance release
+
+- APNs relay provider tokens are cached and reused so Apple no longer rejects
+  bursts of pushes with `429 TooManyProviderTokenUpdates`.
+- macOS keeps realtime sync serviced while Nod lives in the menu bar, so new
+  requests can arrive without refocusing the app.
+- README now includes macOS, Windows, and TUI screenshots from the v1 release
+  verification pass.
+
+Full notes: [docs/release-notes/v1.0.1.md](docs/release-notes/v1.0.1.md)
+
 ## v1.0.0 — first public release
 
 - Self-hosted decision server: structured requests, channels, multi-user /

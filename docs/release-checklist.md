@@ -78,7 +78,23 @@ server/nod-server/scripts/nod-smoke
 - [ ] APNs push arrives with the app backgrounded
 - [ ] Approve from the notification and in-app; verify on server
 
-## Cut runbook (v1.0.0)
+## Cut runbook
+
+For normal follow-up releases, prefer the scripted path:
+
+```bash
+scripts/cut-release
+```
+
+By default it infers the next patch version from the latest `vX.Y.Z` tag,
+uses a UTC timestamp build number (`yyyymmddHHMM`) for Apple builds, stamps the
+repo-owned version files, runs the green gate, commits, tags, pushes, waits for
+the draft GitHub release while building the notarized macOS DMG locally, then
+uploads the DMG and merges its checksum into `SHA256SUMS`. Use
+`scripts/cut-release --help` for dry-run, skip, TestFlight, and publish
+options.
+
+Manual v1.0.0-era steps, kept here as the underlying release model:
 
 1. Green gate above, all sections checked for the surfaces shipping
 2. Push main; CI green (T-007)
