@@ -136,6 +136,11 @@ client opens/fetches the request.
 The response includes `request.request_digest`, which clients sign when recording
 a decision.
 
+Requests may include `callback_url`, but callback delivery is an unsigned,
+best-effort wake-up after Nod records a decision. Do not treat the callback
+payload as proof of approval; use the authenticated read or wait endpoint before
+acting.
+
 List visible requests for a registered device:
 
 ```bash

@@ -1,6 +1,6 @@
 ---
 name: nod-notification-author
-description: Design high-quality Nod request payloads for automations, agents, scripts, and services, including audience targeting, decision behavior, options, callbacks, dedupe, expiry, and privacy-safe notification text.
+description: Design high-quality Nod request payloads for automations, agents, scripts, and services, including audience targeting, decision behavior, options, callback wake-ups, dedupe, expiry, and privacy-safe notification text.
 ---
 
 # Nod Notification Author
@@ -33,8 +33,9 @@ payload for a human-facing automation.
 6. Add delivery behavior:
    - `dedupe_key` for retry-safe automations.
    - `expires_at` for stale decisions.
-   - `callback_url` or issuer-side wait/read when the automation needs the
-     result.
+   - issuer-side wait/read when the automation needs the result.
+   - `callback_url` only as an unauthenticated wake-up hint; the issuer must
+     read or wait before acting.
 7. Protect privacy. Put sensitive details in the request body, fields, or links;
    use `notification.redact` for push-safe lock-screen text.
 8. Validate against the request contract before sending.
@@ -45,7 +46,7 @@ payload for a human-facing automation.
   reviewing field names.
 - Read `references/payload-examples.md` for copyable JSON patterns.
 - Read `references/validation-and-privacy.md` before testing a sender, handling
-  secrets, callbacks, APNs, or local client smoke checks.
+  secrets, callback wake-ups, APNs, or local client smoke checks.
 
 ## Output Standard
 
@@ -55,4 +56,3 @@ When authoring a request, produce:
 - A short note naming the audience and decision mode.
 - Any issuer-side follow-up needed, especially for quorum.
 - A privacy note if push notifications may be shown on a lock screen.
-

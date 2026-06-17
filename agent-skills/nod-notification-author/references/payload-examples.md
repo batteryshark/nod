@@ -52,8 +52,7 @@ These examples are request bodies for `POST /api/v1/requests`.
       "kind": "reject_with_text",
       "text_placeholder": "What should change?"
     }
-  ],
-  "callback_url": "https://automation.example.com/nod/callbacks/migrations"
+  ]
 }
 ```
 
@@ -156,7 +155,6 @@ issuer count acceptable decisions.
       "text_placeholder": "Why should failover wait?"
     }
   ],
-  "callback_url": "https://automation.example.com/nod/callbacks/failover",
   "expires_at": "2026-06-10T17:15:00.000Z"
 }
 ```
@@ -164,7 +162,7 @@ issuer count acceptable decisions.
 Issuer-side rule:
 
 ```text
-Read or wait for the decision view.
+Read or wait for the decision view before acting.
 Count decisions where decision.option_kind is "approve".
 If approvals >= 2, proceed.
 If any decision.option_kind is "reject" or "reject_with_text", stop.
@@ -256,4 +254,3 @@ If expires_at passes before quorum, stop or escalate.
   "dedupe_key": "agent:billing-service:staging-webhook"
 }
 ```
-

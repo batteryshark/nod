@@ -23,7 +23,8 @@ Common optional fields:
 - `dedupe_key`: retry id for a pending request in the same channel.
 - `expires_at`: RFC 3339 UTC timestamp.
 - `options`: list of request options.
-- `callback_url`: absolute `http` or `https` URL called after a decision.
+- `callback_url`: absolute `http` or `https` URL called after a decision as an
+  unsigned wake-up hint only.
 - `template_id`, `template_version`, `variables`: accepted metadata for rendered
   templates. Nod stores the rendered request snapshot, not the template inputs.
 
@@ -111,8 +112,12 @@ decision reads are the source of truth.
 
 ## Callback Behavior
 
-When `callback_url` is set, Nod POSTs a decision payload after a decision is
-recorded. The payload contains:
+When `callback_url` is set, Nod sends an unsigned, best-effort POST after a
+decision is recorded. Treat it as a wake-up hint only: authenticate the receiver
+route yourself, ignore forged or duplicate deliveries, and read or wait for the
+decision through Nod's authenticated API before acting.
+
+The payload contains:
 
 ```json
 {
@@ -136,6 +141,5 @@ recorded. The payload contains:
 ```
 
 Callback failures are logged and audited, but they do not undo the recorded
-decision. Issuers that need a durable result should also read or wait for the
-decision.
-
+decision. Issuers that need a durable or security-sensitive result must read or
+wait for the decision.

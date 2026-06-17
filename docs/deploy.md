@@ -198,7 +198,7 @@ Nod v1.0.0 is a self-hostable ownership release: it gives you the server,
 clients, and release artifacts needed to own the decision loop today. It is
 not yet a privacy-preserving hosted-service design. The server operator can
 see request content, options, recipients, decisions, timestamps, delivery
-state, callbacks, and logs.
+state, callback URLs, callback audit logs, and server logs.
 
 Future private-push-relay and content-private-server modes could make limited
 centralization safer for families, companies, and friend groups that do not

@@ -67,7 +67,7 @@ Nod makes those ideas explicit:
 - per-user requests collect each recipient's own decision so issuers can apply
   quorum, consensus, or audit policies on top
 - decisions can include signed text reasons and machine-readable option ids
-- every result is available over APIs, callbacks, and durable audit records
+- every result is available over read/wait APIs and durable audit records
 
 ## What It Does
 
@@ -83,8 +83,8 @@ Nod makes those ideas explicit:
 - Users can approve, reject, dismiss, open, or choose custom actions. Approval
   and rejection options can require a text reason that is returned to the
   issuer.
-- Issuers can read decisions, wait for a result, receive callbacks, cancel
-  pending requests, set timeouts, and dedupe retried creates.
+- Issuers can read decisions, wait for a result, cancel pending requests, set
+  timeouts, dedupe retried creates, and optionally receive callback wake-ups.
 
 ## Request Model
 
@@ -94,7 +94,7 @@ Nod requests are structured cards, not just strings. A request can include:
 - structured fields for values like environment, amount, risk, or owner
 - links to runbooks, dashboards, diffs, tickets, or logs
 - optional image URL for screenshots or other context
-- priority, privacy, dedupe key, expiry, and callback URL
+- priority, privacy, dedupe key, expiry, and optional callback wake-up URL
 - shared resolution, where one decision resolves the request for everyone
 - per-user resolution, where each recipient makes their own decision
 - options such as `approve`, `approve_with_text`, `reject`,
@@ -123,7 +123,6 @@ Example:
   "priority": 8,
   "dedupe_key": "deploy:api-gateway:42",
   "expires_at": "2027-01-01T00:10:00Z",
-  "callback_url": "https://agent.example.com/nod/callback",
   "options": [
     { "id": "approve", "label": "Approve", "kind": "approve" },
     {
@@ -153,6 +152,12 @@ request state, device records, signed decisions, and append-only audit logs.
 Devices can register P-256 signing keys during enrollment; decision submissions
 can then be signed against the server-provided request digest, with nonce reuse
 rejected per device key.
+
+The issuer read and wait APIs are the authoritative way to consume decisions.
+If a request sets `callback_url`, Nod sends an unsigned, best-effort POST after
+a decision is recorded. Treat that callback as a wake-up hint only: receivers
+must authenticate their own route and read or wait for the decision before
+acting on an approval.
 
 Apple push is handled by a separate mTLS APNs relay. That keeps Apple provider
 credentials out of the main server while still allowing iOS and macOS clients to

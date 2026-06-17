@@ -13,7 +13,7 @@ This service lives under `server/nod-server` in the Nod monorepo. The native App
 - `axum` + `tokio` + `sqlx` on SQLite (WAL), with append-only JSONL audit logs
 - Admin-created users/channels, short-lived enrollment codes, device tokens, and issuer tokens
 - Request payloads with rendered message snapshots, fields, links, optional image URL, APNs notification redaction metadata, dedupe key, and structured options
-- Agent-friendly decision API, wait API, and optional callback URL
+- Agent-friendly decision API, wait API, and optional callback wake-up URL
 - Signed device decisions using P-256 ECDSA/SHA-256 keys registered during enrollment
 - User-targeted delivery with shared or per-user decision resolution
 - WebSocket sync for `created` / `resolved` / `expired` / `cancelled` / `cleared` / subscription / channel-update events
@@ -22,6 +22,12 @@ This service lives under `server/nod-server` in the Nod monorepo. The native App
 - Docker Compose for one-command deploys
 
 Designed to run behind a private tunnel (Tailscale Serve, etc.) — never expose it directly to the public internet.
+
+Issuer read and wait endpoints are authoritative for automation results. A
+request `callback_url` receives an unsigned, best-effort POST after a recorded
+decision and should only be used as a wake-up hint; callback receivers must not
+act on the webhook body without reading or waiting for the decision through
+Nod's authenticated API.
 
 Deploying on a laptop or a small box? Start with the prebuilt-binary guide in
 [docs/deploy.md](../../docs/deploy.md) — this README is the deep-dive on

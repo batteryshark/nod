@@ -65,8 +65,7 @@ server/nod-server/scripts/nod-smoke "$NOD_BASE_URL" "$NOD_ADMIN_TOKEN"
 
 - Add `dedupe_key` for idempotent automation retries.
 - Add `expires_at` when a late answer would be harmful or meaningless.
-- Treat callbacks as notification of a recorded decision, not as the only source
-  of truth. Read or wait for the decision when the issuer must be certain.
-- Keep callback URLs stable and idempotent. Nod may log callback failures but
-  will not undo the decision.
-
+- Treat callbacks as unsigned wake-up hints, not as approval evidence or the
+  source of truth. Read or wait for the decision before acting.
+- Keep callback URLs authenticated, stable, and idempotent. Nod may log
+  callback failures but will not undo the decision.

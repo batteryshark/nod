@@ -91,3 +91,4 @@ client/nod-client-core/PROJECT.md
 ARCHITECTURE_NOTES.md
 /.project
 /tasks
+.claude/launch.json
