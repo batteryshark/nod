@@ -9,26 +9,36 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Linux runs the workspace minus nod-desktop: the Tauri crate drags in the
-  # webkit2gtk/gtk/appindicator apt stack for no extra coverage — the macOS
-  # job compiles and tests it natively.
+  # Each native desktop adapter must compile on its own platform: macOS cannot
+  # exercise the Linux DBus notification or Windows toast code.
   rust-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: System deps (keyring needs libdbus)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - name: Linux keyring and Tauri system dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          libdbus-1-dev pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev
+          libayatana-appindicator3-dev librsvg2-dev patchelf
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Generate TLS test fixtures (git-ignored key material)
-        run: |
-          server/nod-apns-relay/tests/fixtures/mtls/generate
-          server/nod-server/crates/nod-server/tests/fixtures/relay-tls/generate
+        run: scripts/prepare-test-fixtures
       - run: cargo fmt --check
-      - run: cargo clippy --workspace --exclude nod-desktop --all-targets -- -D warnings
-      - run: cargo test --workspace --exclude nod-desktop --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/nod-desktop/package-lock.json
+      - name: Build desktop assets
+        working-directory: client/nod-desktop
+        run: |
+          npm ci
+          npm run build
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --locked
 
   # Full workspace (including the Tauri crate) plus the desktop frontend.
   macos:
@@ -38,9 +48,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Generate TLS test fixtures (git-ignored key material)
-        run: |
-          server/nod-apns-relay/tests/fixtures/mtls/generate
-          server/nod-server/crates/nod-server/tests/fixtures/relay-tls/generate
+        run: scripts/prepare-test-fixtures
       - run: cargo test --workspace --locked
       - uses: actions/setup-node@v4
         with:
@@ -53,6 +61,31 @@ jobs:
           npm ci
           npm run typecheck
           npm test
+          npm run build
+      - name: Install protocol projection tool
+        run: cargo install typeshare-cli --version 1.13.4 --locked
+      - name: Check frontend protocol drift
+        working-directory: client/nod-desktop
+        run: npm run drift-check
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/nod-desktop/package-lock.json
+      - name: Build desktop assets
+        working-directory: client/nod-desktop
+        run: |
+          npm ci
+          npm run build
+      - name: Native Windows client tests
+        run: cargo test -p nod-desktop -p nod-client-core -p nod-tui --locked
 
   # The Swift suite needs the UniFFI xcframework, which is git-ignored and
   # rebuilt from Rust source — only worth the runner time when the Apple
@@ -62,6 +95,8 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - name: Detect Apple-affecting changes
         id: changes
         run: |
@@ -70,7 +105,7 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if git diff --name-only "$BASE" "$GITHUB_SHA" | grep -qE '^(client/nod-apple/|client/nod-client-core/|nod-proto/|nod-client-ffi/)'; then
+          if git diff --name-only "$BASE" "$GITHUB_SHA" | grep -qE '^(client/nod-apple/|client/nod-client-core/|nod-proto/|nod-client-ffi/|Cargo\.(toml|lock)$|\.github/workflows/ci\.yml$)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -85,4 +120,21 @@ jobs:
       - name: Swift tests
         if: steps.changes.outputs.run == 'true'
         working-directory: client/nod-apple
+        env:
+          NOD_CLIENT_CORE_STATE_DIR: ${{ runner.temp }}/nod-swift-tests
+          NOD_CLIENT_CORE_INSECURE_TOKEN_STORE: "1"
         run: swift test
+      - name: Compile iOS app
+        if: steps.changes.outputs.run == 'true'
+        working-directory: client/nod-apple
+        run: >-
+          xcodebuild -project Nod.xcodeproj -scheme NodIOS
+          -configuration Debug -destination 'generic/platform=iOS'
+          CODE_SIGNING_ALLOWED=NO build
+      - name: Build macOS app bundle
+        if: steps.changes.outputs.run == 'true'
+        working-directory: client/nod-apple
+        env:
+          SKIP_FFI_REBUILD: "1"
+          CODE_SIGNING_ALLOWED: "NO"
+        run: ./scripts/build-macos-app

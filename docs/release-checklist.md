@@ -11,11 +11,14 @@ Items tagged `(T-NNN)` reference tooling that lands with that board task in
 ## Green gate (run before everything, from the repo root)
 
 ```bash
-cargo test --workspace
+scripts/prepare-test-fixtures
+cargo test --workspace --locked
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
-(cd client/nod-apple && swift test)
-(cd client/nod-desktop && npm run typecheck && npm test)
-(cd client/nod-desktop && npm run drift-check)   # (T-005)
+client/nod-apple/scripts/build-nod-client-ffi.sh
+(cd client/nod-apple && NOD_CLIENT_CORE_STATE_DIR="$(mktemp -d)" NOD_CLIENT_CORE_INSECURE_TOKEN_STORE=1 swift test)
+(cd client/nod-desktop && npm ci && npm run typecheck && npm test && npm run build)
+cargo install typeshare-cli --version 1.13.4 --locked
+(cd client/nod-desktop && npm run drift-check)
 server/nod-server/scripts/nod-smoke
 ```
 

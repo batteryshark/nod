@@ -250,6 +250,7 @@ NODE
 
 run_release_gate() {
   info "Running local release gate"
+  scripts/prepare-test-fixtures
   cargo test --workspace
   cargo fmt --check
   cargo clippy --all-targets -- -D warnings

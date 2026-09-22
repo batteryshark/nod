@@ -64,8 +64,8 @@ release's `SHA256SUMS` file.
      -d '{"channel_id":"default","title":"Deploy to prod?","summary":"v1.0.0 is ready","options":[{"id":"approve","label":"Ship it","kind":"approve"},{"id":"reject","label":"Hold","kind":"reject"}]}'
    ```
 
-   The request lands on every enrolled device; the decision comes back
-   signed.
+   The request reaches enrolled devices of subscribed users. Current clients
+   sign decisions with their enrolled device key.
 
 State lives in `.nod/` next to where you started the server (override with
 `NOD_DATA_DIR` and `NOD_DATABASE_URL`). Back it up by copying that directory
@@ -206,3 +206,128 @@ want the operator reading request contents. In those modes, a relay would send
 generic or opaque notifications, and request bodies/options could be encrypted
 for recipient devices while the server still sees routing metadata such as
 recipients, channels, timestamps, and delivery state.
+
+## Back up and restore a server
+
+Stop Nod before taking a complete backup so the SQLite state and audit files
+represent the same point in time. Stop its service manager or container as well
+so it does not immediately restart. A copy of only `nod.sqlite` from a running
+server can omit transactions still in its WAL file.
+
+For the default binary deployment, from the directory where Nod runs:
+
+```bash
+# After stopping Nod and confirming its process has exited:
+umask 077
+backup_dir="nod-backup-$(date +%Y%m%d-%H%M%S)"
+mkdir "$backup_dir"
+cp -R .nod "$backup_dir/data"
+cp admin-token.txt "$backup_dir/admin-token.txt"
+# The repository README instead creates nod-data/admin-token; copy that file
+# when it is your configured NOD_ADMIN_TOKEN_FILE.
+```
+
+If configured, also copy the TOML configuration, secret files, and the SQLite
+file named by `NOD_DATABASE_URL` when it is outside `NOD_DATA_DIR`. Keep the
+complete audit directory, including rotated `nod.audit.*.jsonl` archives.
+Include any SQLite `-wal` and `-shm` files with a stopped database copy. For a
+container, stop it and copy or snapshot the mounted `/data` volume; the
+container image alone is not a backup. Protect backups as secrets: the database
+contains request content, token hashes, device public keys, signature evidence,
+and enrollment state; the audit files contain decisions and callback diagnostics.
+
+To restore:
+
+1. Keep the old data untouched and extract the backup into a new directory.
+2. With Nod stopped, point `NOD_DATA_DIR` and `NOD_DATABASE_URL` at the restored
+   data, restore the configuration and protected secret files, and give the Nod
+   service account read/write access. Do not overlay a backup onto an existing
+   database/WAL pair. Never run the old and restored instance concurrently
+   against the same database.
+3. Start the same or a newer compatible server version. Check `/health`, log
+   into the admin panel, inspect **Activity**, and verify an enrolled device can
+   refresh. Compare a known receipt and its signing public key with your
+   retained export. Keep the prior data until that check succeeds.
+
+The server regression suite takes a consistent SQLite `VACUUM INTO` snapshot,
+copies the audit files, opens the result through normal startup, and verifies
+that a receipt still verifies after its device was revoked and its user was
+deleted. This tests the data format and restore path; operators should also
+practice restoring their actual backup mechanism. Clients' private signing
+keys live on the clients, so a server backup does not replace a device backup.
+
+## Callback, audit, and delivery policies
+
+These settings and behaviors describe the current source build. Upgrade the
+server and standalone APNs relay together for the added device routing metadata
+and structured delivery errors.
+
+Callbacks run after a decision is committed and do not delay its response.
+Each has a ten-second timeout; redirects are disabled and a failure's response
+body is capped at 4 KiB. At most sixteen callbacks run concurrently. A full
+callback pool records a failure in the audit log. Callbacks are best effort,
+with no durable retry queue; issuers needing reliable completion should use the
+request decision/read or wait endpoints to reconcile outcomes after a timeout
+or server restart.
+
+Restrict callbacks to destinations you control with a top-level TOML setting:
+
+```toml
+callback_allowed_origins = ["https://automation.example.com", "http://127.0.0.1:8080"]
+```
+
+Or set `NOD_CALLBACK_ALLOWED_ORIGINS` to a comma-separated list. Matching uses
+the exact scheme, host, and effective port; entries cannot include credentials,
+paths other than `/`, query strings, or fragments. Callback URLs may have paths
+and queries but cannot contain userinfo. An empty list (or an empty environment
+value) disables callbacks. Omitting this setting preserves the existing
+trusted-issuer policy, allowing any HTTP(S) destination reachable by Nod.
+The allowlist does not isolate network egress or pin DNS resolution; use an
+egress firewall when that boundary is required.
+
+Push jobs are stored atomically with request creation and recovered after a
+restart. The server sends at most four concurrently and makes at most three
+attempts per device/request, with bounded timeouts and short backoff for
+transient failures. Permanent APNs rejections do not retry; an invalid-token
+rejection clears that token only if it is still current. A matching registered
+iOS/watchOS device reports push delivery; devices without a usable route or
+token report WebSocket delivery. Push acceptance does not prove the user saw a
+notification. The admin Activity page distinguishes queued, sending, accepted,
+failed, and skipped jobs. After a crash, a send may be retried even if Apple
+already accepted it; a stable APNs collapse ID reduces duplicate alerts.
+
+The audit log rotates at 16 MiB into uniquely named archives. Rotation keeps
+all archives; operators own archive retention, protected backup, and disk-space
+monitoring. A failed write or rotation makes admin Activity report unhealthy
+until restart, because later writes cannot repair a lost entry. Audit writes
+are flushed but are not a transaction with SQLite and do not claim power-loss
+durability. Decision receipts and device verification keys also remain in
+SQLite after device revocation or user deletion.
+
+`NOD_RETENTION_DAYS` applies to terminal requests since their resolution or last
+status change. Pending requests survive that window; set an explicit expiry
+when unattended requests should time out. Clearing a channel hides its handled
+items at that point in time and preserves pending work. History uses
+`include_cleared=true`; request lists support `channel_id`, `search`, `limit`,
+and the returned opaque `next_cursor` as `before`. The first page includes all
+matching pending requests plus up to 100 handled requests by default; `limit`
+is clamped to 0–500. Later pages contain handled requests only. Search covers
+title, summary, and body. Explicit recipients override channel subscriptions;
+requests without explicit recipients target the channel's subscribers.
+
+For retries after an uncertain create response, send an `idempotency_key` with
+the HTTP create request and reuse it with the same request content. It is scoped
+to the issuer and channel and returns the original request even after it has
+been handled; changing the content under that key returns a conflict. Keys last
+as long as their request remains stored. The separate `dedupe_key` continues to
+coalesce only pending requests.
+
+
+Per-device notification preferences synchronize through
+`PUT /api/v1/devices/me/notification-preferences` and appear on
+`UserDevice.notification_preferences`: `hide_content`, `muted_channels`, and
+`snoozed_until`. They preserve inbox content while controlling alerts. Server
+push workers recheck mute/snooze immediately before delivery, and personal
+`hide_content` forces generic previews even when an issuer supplied preview
+text. Suppressed pushes are marked skipped and are not replayed when snooze
+ends. Use operating-system Focus/Do Not Disturb for recurring quiet hours.
