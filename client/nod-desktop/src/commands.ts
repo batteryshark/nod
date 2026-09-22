@@ -38,7 +38,9 @@ export function selectChannel(params: ChannelParams): Promise<ClientState> {
   return invoke<ClientState>("select_channel", { params });
 }
 
-export function selectRequest(params: SelectRequestParams): Promise<ClientState> {
+export function selectRequest(
+  params: SelectRequestParams,
+): Promise<ClientState> {
   return invoke<ClientState>("select_request", { params });
 }
 
@@ -50,7 +52,9 @@ export function clearChannel(params: ChannelParams): Promise<ClientState> {
   return invoke<ClientState>("clear_channel", { params });
 }
 
-export function setSubscription(params: SetSubscriptionParams): Promise<ClientState> {
+export function setSubscription(
+  params: SetSubscriptionParams,
+): Promise<ClientState> {
   return invoke<ClientState>("set_subscription", { params });
 }
 
@@ -74,4 +78,56 @@ export function revokeDevice(params: RevokeDeviceParams): Promise<ClientState> {
 
 export function openExternalUrl(url: string): Promise<void> {
   return invoke<void>("open_external_url", { url });
+}
+
+export function selectAllChannels(): Promise<ClientState> {
+  return invoke<ClientState>("select_all_channels");
+}
+
+export function getDesktopPreferences(): Promise<
+  import("./dto/desktopPreferences").DesktopPreferences
+> {
+  return invoke("desktop_preferences");
+}
+
+export function setDesktopPreferences(
+  preferences: import("./dto/desktopPreferences").DesktopPreferences,
+): Promise<import("./dto/desktopPreferences").DesktopPreferences> {
+  return invoke("set_desktop_preferences", { preferences });
+}
+
+export function getAutostart(): Promise<boolean> {
+  return invoke("autostart_enabled");
+}
+export function setAutostart(enabled: boolean): Promise<void> {
+  return invoke("set_autostart", { enabled });
+}
+export function testNotification(): Promise<void> {
+  return invoke("test_notification");
+}
+
+export function submitRequestOption(
+  params: SubmitOptionParams & { server_id: string },
+): Promise<NodRequest> {
+  return invoke("submit_request_option", { params });
+}
+
+export function openRequest(params: {
+  server_id: string;
+  request_id: string;
+}): Promise<ClientState> {
+  return invoke("open_request", { params });
+}
+export function queryHistory(params: {
+  server_id: string;
+  channel_id?: string;
+  search?: string;
+  before?: string;
+  limit?: number;
+}): Promise<{ requests: NodRequest[]; next_cursor?: string | null }> {
+  return invoke("query_history", { params });
+}
+
+export function requestImage(url: string): Promise<string> {
+  return invoke("request_image", { url });
 }

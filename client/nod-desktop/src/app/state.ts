@@ -14,13 +14,12 @@ export const EMPTY_CLIENT_STATE: ClientState = {
   notification_delivery_mode: "websocket",
   is_registered: false,
   is_sync_connected: false,
+  sync_phase: "offline",
+  last_synced_at: null,
   last_error: null,
 };
 
 export const NOTIFICATION_SOUND_OPTIONS = [
   { id: "default", label: "Default" },
-  { id: "nod_ping.wav", label: "Ping" },
-  { id: "nod_chime.wav", label: "Chime" },
-  { id: "nod_low.wav", label: "Low" },
   { id: "silent", label: "Silent" },
 ] as const;

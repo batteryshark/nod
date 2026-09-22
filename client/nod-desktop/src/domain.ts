@@ -60,7 +60,8 @@ export function orderedRequests(requests: readonly NodRequest[]): NodRequest[] {
       return rankDelta;
     }
     const timeDelta =
-      new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+      new Date(right.created_at).getTime() -
+      new Date(left.created_at).getTime();
     if (timeDelta !== 0) {
       return timeDelta;
     }
@@ -82,20 +83,22 @@ export function replaceRequest(
 
 export function selectedRequest(state: ClientState): NodRequest | undefined {
   return (
-    state.requests.find((request) => request.id === state.selected_request_id) ??
-    orderedRequests(state.requests)[0]
+    state.requests.find(
+      (request) => request.id === state.selected_request_id,
+    ) ?? orderedRequests(state.requests)[0]
   );
 }
 
 export function selectedChannel(state: ClientState): Channel | undefined {
-  return (
-    state.channels.find((channel) => channel.id === state.selected_channel_id) ??
-    state.channels[0]
+  return state.channels.find(
+    (channel) => channel.id === state.selected_channel_id,
   );
 }
 
 export function submittableOptions(request: NodRequest): RequestOption[] {
-  return request.options.length === 0 ? [defaultDismissOption] : request.options;
+  return request.options.length === 0
+    ? [defaultDismissOption]
+    : request.options;
 }
 
 export function optionRequiresText(option: RequestOption): boolean {
@@ -109,42 +112,52 @@ export interface DecisionAction {
   withTextOption?: RequestOption;
 }
 
-const WITH_TEXT_PARTNERS: Record<string, string> = {
-  approve: "approve_with_text",
-  approve_with_text: "approve",
-  reject: "reject_with_text",
-  reject_with_text: "reject",
-};
-
-// Issuers commonly publish approve + approve_with_text (and the reject pair)
-// as separate options. The detail pane shows one button per decision and
-// routes the click through the with-text variant when notes are filled.
+// Option IDs and labels are issuer-defined contracts, even when kinds match.
 export function decisionActions(request: NodRequest): DecisionAction[] {
-  const options = submittableOptions(request);
-  const consumed = new Set<string>();
-  const actions: DecisionAction[] = [];
-  for (const option of options) {
-    if (consumed.has(option.id)) {
-      continue;
-    }
-    consumed.add(option.id);
-    const partnerKind = WITH_TEXT_PARTNERS[option.kind];
-    const partner = partnerKind
-      ? options.find(
-          (candidate) => candidate.kind === partnerKind && !consumed.has(candidate.id),
-        )
-      : undefined;
-    if (!partner) {
-      actions.push({ option });
-      continue;
-    }
-    consumed.add(partner.id);
-    const [plain, withText] = option.kind.endsWith("_with_text")
-      ? [partner, option]
-      : [option, partner];
-    actions.push({ option: plain, withTextOption: withText });
+  return submittableOptions(request).map((option) => ({ option }));
+}
+
+export function safeWebUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (
+      !["https:", "http:"].includes(url.protocol) ||
+      !url.hostname ||
+      url.username ||
+      url.password
+    )
+      return undefined;
+    return url.href;
+  } catch {
+    return undefined;
   }
-  return actions;
+}
+
+export function parseEnrollmentLink(
+  value: string,
+): Pick<EnrollParams, "base_url" | "code"> | undefined {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "nod:" ||
+      url.hostname !== "enroll" ||
+      url.username ||
+      url.password
+    )
+      return undefined;
+    if (
+      url.searchParams.getAll("server").length !== 1 ||
+      url.searchParams.getAll("code").length !== 1
+    )
+      return undefined;
+    const base_url = safeWebUrl(url.searchParams.get("server") ?? "");
+    const code = url.searchParams.get("code") ?? "";
+    return base_url && /^[a-z0-9]{8}$/i.test(code)
+      ? { base_url, code: code.toUpperCase() }
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function requestPreview(request: NodRequest): string {
@@ -155,8 +168,8 @@ export function canSubmitEnrollment(
   draft: Pick<EnrollParams, "base_url" | "device_name" | "code">,
 ): boolean {
   return (
-    draft.base_url.trim().length > 0 &&
+    safeWebUrl(draft.base_url.trim()) !== undefined &&
     draft.device_name.trim().length > 0 &&
-    draft.code.trim().length >= 8
+    /^[a-z0-9]{8}$/i.test(draft.code.trim())
   );
 }

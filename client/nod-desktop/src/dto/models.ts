@@ -32,6 +32,7 @@ export interface ServerProfile {
   id: string;
   name: string;
   base_url_string: string;
+  credential_id?: string | null;
   device_name: string;
   device_id?: string | null;
   user_id?: string | null;
@@ -70,6 +71,7 @@ export interface UserDevice {
   has_signing_key: boolean;
   attestation?: DeviceAttestationSummary | null;
   notification_sound: string;
+  notification_preferences?: DeviceNotificationPreferences;
   last_seen_at: string;
   created_at: string;
   is_current: boolean;
@@ -116,6 +118,7 @@ export interface DecisionSignatureRecord {
   signing_payload: string;
   signature: string;
   verified: boolean;
+  public_key?: string | null;
 }
 
 export interface Decision {
@@ -162,6 +165,7 @@ export interface NodRequest {
   callback_url?: string | null;
   options: RequestOption[];
   request_digest?: string | null;
+  signing?: RequestSigningContext | null;
 }
 
 export interface RequestNotification {
@@ -184,5 +188,26 @@ export interface ClientState {
   notification_delivery_mode: NotificationDeliveryMode;
   is_registered: boolean;
   is_sync_connected: boolean;
+  sync_phase: SyncPhase;
+  last_synced_at?: string | null;
   last_error?: string | null;
+}
+
+export interface RequestSigningContext {
+  version: string;
+  recipients_commitment: string;
+  request_digest: string;
+}
+
+export type SyncPhase =
+  | "offline"
+  | "connecting"
+  | "reconciling"
+  | "current"
+  | "revoked";
+
+export interface DeviceNotificationPreferences {
+  hide_content: boolean;
+  muted_channels: string[];
+  snoozed_until?: string | null;
 }

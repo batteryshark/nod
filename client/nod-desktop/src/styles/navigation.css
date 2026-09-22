@@ -91,3 +91,25 @@
   margin-top: auto;
   padding-top: 12px;
 }
+
+.channels button {
+  display: grid;
+  grid-template-columns: 10px 22px minmax(0, 1fr) auto;
+}
+.channels strong {
+  background: #d7f86f;
+  color: #111918;
+  border-radius: 999px;
+  min-width: 24px;
+  padding: 2px 6px;
+  text-align: center;
+}
+.allInbox {
+  background: transparent;
+  color: inherit;
+  min-height: 40px;
+}
+.allInbox.active,
+.allInbox:hover {
+  background: #24302d;
+}

@@ -17,3 +17,17 @@
   grid-template-columns: minmax(280px, 38%) minmax(0, 1fr);
   min-height: 0;
 }
+
+.shell {
+  grid-template-rows: minmax(0, 1fr);
+}
+.workbench {
+  min-height: 0;
+}
+.sidebar {
+  min-height: 0;
+  overflow: auto;
+}
+.sidebarControls {
+  flex-shrink: 0;
+}

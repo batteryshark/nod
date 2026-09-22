@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   decisionActions,
+  parseEnrollmentLink,
+  safeWebUrl,
   replaceRequest,
   submittableOptions,
   optionRequiresText,
@@ -58,6 +60,7 @@ const baseState: ClientState = {
   notification_delivery_mode: "websocket",
   is_registered: false,
   is_sync_connected: false,
+  sync_phase: "offline",
   last_error: null,
 };
 
@@ -96,17 +99,40 @@ describe("domain helpers", () => {
 
   it("orders pending requests before handled requests", () => {
     const requests = orderedRequests([
-      { ...baseRequest, id: "resolved", request_id: "resolved", status: "resolved" },
-      { ...baseRequest, id: "pending", request_id: "pending", status: "pending" },
+      {
+        ...baseRequest,
+        id: "resolved",
+        request_id: "resolved",
+        status: "resolved",
+      },
+      {
+        ...baseRequest,
+        id: "pending",
+        request_id: "pending",
+        status: "pending",
+      },
     ]);
 
-    expect(requests.map((request) => request.id)).toEqual(["pending", "resolved"]);
+    expect(requests.map((request) => request.id)).toEqual([
+      "pending",
+      "resolved",
+    ]);
   });
 
   it("orders newer requests before older requests with the same status", () => {
     const requests = orderedRequests([
-      { ...baseRequest, id: "older", request_id: "older", created_at: "2026-05-31T11:00:00.000Z" },
-      { ...baseRequest, id: "newer", request_id: "newer", created_at: "2026-05-31T13:00:00.000Z" },
+      {
+        ...baseRequest,
+        id: "older",
+        request_id: "older",
+        created_at: "2026-05-31T11:00:00.000Z",
+      },
+      {
+        ...baseRequest,
+        id: "newer",
+        request_id: "newer",
+        created_at: "2026-05-31T13:00:00.000Z",
+      },
     ]);
 
     expect(requests.map((request) => request.id)).toEqual(["newer", "older"]);
@@ -130,8 +156,18 @@ describe("domain helpers", () => {
       ...baseState,
       selected_request_id: "missing",
       requests: [
-        { ...baseRequest, id: "resolved", request_id: "resolved", status: "resolved" },
-        { ...baseRequest, id: "pending", request_id: "pending", status: "pending" },
+        {
+          ...baseRequest,
+          id: "resolved",
+          request_id: "resolved",
+          status: "resolved",
+        },
+        {
+          ...baseRequest,
+          id: "pending",
+          request_id: "pending",
+          status: "pending",
+        },
       ],
     });
 
@@ -151,7 +187,7 @@ describe("domain helpers", () => {
     expect(selected?.id).toBe("target");
   });
 
-  it("falls back to the first channel when the selected channel is absent", () => {
+  it("keeps all-channel scope when the selected channel is absent", () => {
     const selected = selectedChannel({
       ...baseState,
       selected_channel_id: "missing",
@@ -161,7 +197,7 @@ describe("domain helpers", () => {
       ],
     });
 
-    expect(selected?.id).toBe("fallback");
+    expect(selected).toBeUndefined();
   });
 
   it("creates a default dismiss option for requests without options", () => {
@@ -175,19 +211,24 @@ describe("domain helpers", () => {
   });
 
   it("uses request options when the request defines them", () => {
-    const options = submittableOptions({ ...baseRequest, options: [baseOption] });
+    const options = submittableOptions({
+      ...baseRequest,
+      options: [baseOption],
+    });
 
     expect(options).toEqual([baseOption]);
   });
 
   it("treats explicit text options as requiring text", () => {
-    expect(optionRequiresText({ ...baseOption, requires_text: true })).toBe(true);
+    expect(optionRequiresText({ ...baseOption, requires_text: true })).toBe(
+      true,
+    );
   });
 
   it("treats text option kinds as requiring text", () => {
-    expect(optionRequiresText({ ...baseOption, kind: "approve_with_text" })).toBe(
-      true,
-    );
+    expect(
+      optionRequiresText({ ...baseOption, kind: "approve_with_text" }),
+    ).toBe(true);
   });
 
   it("uses the request summary as the preview text", () => {
@@ -233,7 +274,11 @@ describe("domain helpers", () => {
 
 describe("replaceRequest", () => {
   it("replaces the matching request in place and leaves the rest untouched", () => {
-    const other: NodRequest = { ...baseRequest, id: "other", request_id: "other" };
+    const other: NodRequest = {
+      ...baseRequest,
+      id: "other",
+      request_id: "other",
+    };
     const resolved: NodRequest = { ...baseRequest, status: "resolved" };
 
     const next = replaceRequest([baseRequest, other], resolved);
@@ -244,7 +289,11 @@ describe("replaceRequest", () => {
   });
 
   it("drops an update whose id is not in the cache", () => {
-    const stranger: NodRequest = { ...baseRequest, id: "stranger", request_id: "stranger" };
+    const stranger: NodRequest = {
+      ...baseRequest,
+      id: "stranger",
+      request_id: "stranger",
+    };
 
     const next = replaceRequest([baseRequest], stranger);
 
@@ -268,32 +317,26 @@ describe("decisionActions", () => {
     destructive: true,
   };
 
-  it("merges an approve pair into one action keyed on the plain option", () => {
-    const actions = decisionActions({
-      ...baseRequest,
-      options: [baseOption, approveWithText, reject],
-    });
-
-    expect(actions).toHaveLength(2);
-    expect(actions[0].option.id).toBe("approve");
-    expect(actions[0].withTextOption?.id).toBe("approve_notes");
-    expect(actions[1].option.id).toBe("reject");
-    expect(actions[1].withTextOption).toBeUndefined();
-  });
-
-  it("merges regardless of option order", () => {
-    const actions = decisionActions({
-      ...baseRequest,
-      options: [approveWithText, baseOption],
-    });
-
-    expect(actions).toHaveLength(1);
-    expect(actions[0].option.id).toBe("approve");
-    expect(actions[0].withTextOption?.id).toBe("approve_notes");
+  it("preserves every issuer option even when kinds are related", () => {
+    const options = [
+      baseOption,
+      approveWithText,
+      reject,
+      { ...baseOption, id: "approve-later", label: "Approve later" },
+    ];
+    expect(
+      decisionActions({ ...baseRequest, options }).map(
+        (action) => action.option,
+      ),
+    ).toEqual(options);
   });
 
   it("keeps unpaired with-text and custom options standalone", () => {
-    const custom: RequestOption = { ...baseOption, id: "later", kind: "custom" };
+    const custom: RequestOption = {
+      ...baseOption,
+      id: "later",
+      kind: "custom",
+    };
     const actions = decisionActions({
       ...baseRequest,
       options: [approveWithText, custom],
@@ -303,5 +346,24 @@ describe("decisionActions", () => {
     expect(actions[0].option.id).toBe("approve_notes");
     expect(actions[0].withTextOption).toBeUndefined();
     expect(actions[1].option.id).toBe("later");
+  });
+});
+
+describe("untrusted links", () => {
+  it("accepts scoped enrollment without submitting it", () => {
+    expect(
+      parseEnrollmentLink(
+        "nod://enroll?server=https%3A%2F%2Fnod.test%2F&code=abcdefgh",
+      ),
+    ).toEqual({ base_url: "https://nod.test/", code: "ABCDEFGH" });
+  });
+  it("rejects ambiguous enrollment servers and credential URLs", () => {
+    expect(
+      parseEnrollmentLink(
+        "nod://enroll?server=https://a.test&server=https://b.test&code=ABCDEFGH",
+      ),
+    ).toBeUndefined();
+    expect(safeWebUrl("https://trusted.test@evil.test/")).toBeUndefined();
+    expect(safeWebUrl("javascript:alert(1)")).toBeUndefined();
   });
 });

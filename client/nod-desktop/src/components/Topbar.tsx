@@ -1,31 +1,51 @@
-import { CircleAlert, X } from "lucide-react";
-import type { Channel } from "../types";
-
+import { X } from "lucide-react";
+import type { Channel, SyncPhase } from "../types";
 interface TopbarProps {
   activeChannel?: Channel;
   error: string | null;
-  isConnected: boolean;
+  phase: SyncPhase;
+  lastSyncedAt?: string | null;
   onDismissError: () => void;
+  onRetry: () => Promise<void>;
 }
-
+const phaseLabels: Record<SyncPhase, string> = {
+  offline: "Offline · showing saved requests",
+  connecting: "Connecting…",
+  reconciling: "Updating inbox…",
+  current: "Up to date",
+  revoked: "Device access revoked",
+};
 export function Topbar({
   activeChannel,
   error,
-  isConnected,
+  phase,
+  lastSyncedAt,
   onDismissError,
+  onRetry,
 }: TopbarProps): JSX.Element {
   return (
     <header className="topbar">
       <div>
-        <p>{activeChannel?.name ?? "Requests"}</p>
-        <span>{isConnected ? "Connected" : "Offline"}</span>
+        <p>{activeChannel?.name ?? "All channels"}</p>
+        <span role="status">{phaseLabels[phase]}</span>
+        {lastSyncedAt ? (
+          <small> · Synced {new Date(lastSyncedAt).toLocaleTimeString()}</small>
+        ) : null}
       </div>
       {error ? (
-        <button className="alert" type="button" onClick={onDismissError}>
-          <CircleAlert size={16} />
-          {error}
-          <X size={14} />
-        </button>
+        <div className="alert">
+          <p role="alert">{error}</p>
+          <button type="button" onClick={() => void onRetry()}>
+            Retry
+          </button>
+          <button
+            type="button"
+            aria-label="Dismiss error"
+            onClick={onDismissError}
+          >
+            <X size={14} />
+          </button>
+        </div>
       ) : null}
     </header>
   );

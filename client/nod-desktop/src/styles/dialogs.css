@@ -120,3 +120,45 @@
 .deviceRow small {
   color: #69766e;
 }
+
+.dialog {
+  border: 1px solid #ddd7cc;
+  color: #17201b;
+}
+.dialog:not([open]) {
+  display: none;
+}
+.dialog::backdrop {
+  background: rgba(10, 14, 13, 0.5);
+}
+.dialog .enrollment {
+  min-height: auto;
+  padding: 0;
+}
+.dialog fieldset {
+  border: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.dialog footer,
+.deviceRow {
+  flex-wrap: wrap;
+}
+.dialog footer [role="group"],
+.deviceRow [role="group"] {
+  flex-basis: 100%;
+}
+.quietHours {
+  display: flex;
+  gap: 12px;
+}
+.settingsSection button {
+  min-height: 36px;
+  padding: 8px 12px;
+  background: #eee5d5;
+  color: #17201b;
+}
+.settingsSection h4 {
+  margin: 10px 0 0;
+}

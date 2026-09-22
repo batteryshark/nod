@@ -238,3 +238,117 @@ dd {
   background: #b8422e !important;
   color: #fff9f0 !important;
 }
+
+.inboxFilters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.inboxFilters label:first-child {
+  grid-column: 1 / -1;
+}
+.inboxFilters input,
+.inboxFilters select {
+  min-width: 0;
+  width: 100%;
+}
+.requestIdentity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 24px;
+  overflow-wrap: anywhere;
+}
+.requestIdentity code {
+  user-select: text;
+  font-size: 12px;
+}
+.receipt {
+  border-top: 1px solid #ddd7cc;
+  margin-top: 20px;
+  padding-top: 12px;
+}
+.receipt p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.links button {
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+.links small {
+  flex-basis: 100%;
+  text-align: left;
+  font-weight: 400;
+  opacity: 0.85;
+}
+.markdown {
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+  user-select: text;
+}
+.markdown p {
+  margin: 12px 0;
+  color: inherit;
+}
+.markdown pre {
+  white-space: pre;
+}
+.textLink {
+  color: #22644f;
+  display: inline;
+  text-align: left;
+  background: transparent;
+  padding: 0;
+  text-decoration: underline;
+}
+.textLink small {
+  display: block;
+  font-weight: 400;
+}
+.alert {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.alert p {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+.muted {
+  color: #64746c;
+  font-size: 13px;
+}
+:focus-visible {
+  outline: 3px solid #398568;
+  outline-offset: 3px;
+}
+.allInbox {
+  padding: 12px;
+  text-align: left;
+  display: flex;
+  justify-content: space-between;
+}
+.historySearch {
+  margin-top: 18px;
+  display: grid;
+  gap: 8px;
+}
+.historySearch summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 10px 0;
+}
+.historySearch form {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+}
+.historySearch input {
+  width: 100%;
+  min-width: 0;
+}
+.historySearch .requestCard {
+  margin-top: 8px;
+}

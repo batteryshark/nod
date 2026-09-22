@@ -6,5 +6,7 @@ const RUNTIME_EVENT_NAME = "nod://request";
 export function listenForRuntimeMessages(
   handler: (message: RuntimeMessage) => void,
 ): Promise<() => void> {
-  return listen<RuntimeMessage>(RUNTIME_EVENT_NAME, (message) => handler(message.payload));
+  return listen<RuntimeMessage>(RUNTIME_EVENT_NAME, (message) =>
+    handler(message.payload),
+  );
 }

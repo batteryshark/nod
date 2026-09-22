@@ -39,6 +39,7 @@ describe("RequestList sections", () => {
   it("shows pending expanded and handled collapsed by default", () => {
     render(
       <RequestList
+        serverId="server-1"
         requests={[request("a", "pending"), request("b", "resolved")]}
         onSelect={vi.fn()}
         selectedRequestId={null}
@@ -60,6 +61,7 @@ describe("RequestList sections", () => {
   it("toggles a section from its header", () => {
     render(
       <RequestList
+        serverId="server-1"
         requests={[request("a", "pending"), request("b", "resolved")]}
         onSelect={vi.fn()}
         selectedRequestId={null}
@@ -76,6 +78,7 @@ describe("RequestList sections", () => {
   it("expands handled when nothing is pending", () => {
     render(
       <RequestList
+        serverId="server-1"
         requests={[request("b", "resolved"), request("c", "expired")]}
         onSelect={vi.fn()}
         selectedRequestId={null}
@@ -88,9 +91,18 @@ describe("RequestList sections", () => {
   });
 
   it("hides both section headers when there are no requests", () => {
-    render(<RequestList requests={[]} onSelect={vi.fn()} selectedRequestId={null} />);
+    render(
+      <RequestList
+        serverId="server-1"
+        requests={[]}
+        onSelect={vi.fn()}
+        selectedRequestId={null}
+      />,
+    );
 
     expect(screen.getByText("No Requests")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Pending|Handled/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Pending|Handled/ }),
+    ).toBeNull();
   });
 });

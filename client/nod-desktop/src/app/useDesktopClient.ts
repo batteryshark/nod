@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   clearChannel,
   enroll,
@@ -10,11 +10,17 @@ import {
   renameDevice,
   revokeDevice,
   selectChannel,
-  selectRequest,
+  selectAllChannels,
+  getDesktopPreferences,
+  setDesktopPreferences,
+  getAutostart,
+  setAutostart,
+  testNotification,
+  openRequest,
   selectServer,
   setNotificationPreference,
   setSubscription,
-  submitOption,
+  submitRequestOption as submitScopedOption,
 } from "../commands";
 import { listenForRuntimeMessages } from "../events";
 import { replaceRequest, selectedChannel, selectedRequest } from "../domain";
@@ -28,19 +34,27 @@ import type {
   ServerProfile,
   UserDevice,
 } from "../types";
+import {
+  DEFAULT_DESKTOP_PREFERENCES,
+  type DesktopPreferences,
+} from "../dto/desktopPreferences";
 import { EMPTY_CLIENT_STATE } from "./state";
 
 export interface DesktopClientCommands {
   clearError: () => void;
   closeSettings: () => void;
-  clearSelectedChannel: () => Promise<void>;
-  enrollDevice: (params: EnrollParams) => Promise<void>;
-  forgetSelectedServer: () => Promise<void>;
+  clearSelectedChannel: () => Promise<boolean>;
+  enrollDevice: (params: EnrollParams) => Promise<boolean>;
+  forgetSelectedServer: () => Promise<boolean>;
   openSettings: () => void;
   openUrl: (url: string) => Promise<void>;
   refreshState: () => Promise<void>;
   renameUserDevice: (deviceId: string, name: string) => Promise<boolean>;
-  revokeUserDevice: (deviceId: string) => Promise<void>;
+  revokeUserDevice: (deviceId: string) => Promise<boolean>;
+  selectAllChannels: () => Promise<void>;
+  updatePreferences: (preferences: DesktopPreferences) => Promise<boolean>;
+  updateAutostart: (enabled: boolean) => Promise<boolean>;
+  testNotification: () => Promise<boolean>;
   selectChannel: (channel: Channel) => Promise<void>;
   selectRequest: (request: NodRequest) => Promise<void>;
   selectServer: (server: ServerProfile) => Promise<void>;
@@ -48,7 +62,7 @@ export interface DesktopClientCommands {
     request: NodRequest,
     option: RequestOption,
     text?: string,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   toggleChannelSubscription: (channel: Channel) => Promise<void>;
   updateNotificationSound: (notificationSound: string) => Promise<void>;
 }
@@ -58,6 +72,8 @@ export interface DesktopClient {
   activeRequest?: NodRequest;
   commands: DesktopClientCommands;
   devices: UserDevice[];
+  preferences: DesktopPreferences;
+  autostart: boolean;
   error: string | null;
   isLoading: boolean;
   settingsOpen: boolean;
@@ -69,39 +85,50 @@ export function useDesktopClient(): DesktopClient {
   const [isLoading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [preferences, setPreferences] = useState(DEFAULT_DESKTOP_PREFERENCES);
+  const [autostart, setAutostartValue] = useState(false);
   const [devices, setDevices] = useState<UserDevice[]>([]);
+  const stateEvents = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
     let stopListening: (() => void) | undefined;
 
-    getState()
-      .then((loaded) => {
-        if (!cancelled) {
-          setState(loaded);
-        }
+    getDesktopPreferences()
+      .then((value) => {
+        if (!cancelled) setPreferences(value);
       })
-      .catch((reason: unknown) => setError(String(reason)))
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      });
+      .catch((reason: unknown) => setError(String(reason)));
+    getAutostart()
+      .then((value) => {
+        if (!cancelled) setAutostartValue(value);
+      })
+      .catch((reason: unknown) => setError(String(reason)));
 
-    listenForRuntimeMessages((runtimeMessage) => {
-      if (!cancelled) {
-        applyRuntimeMessage(runtimeMessage, setState, setError);
-      }
-    })
-      .then((unlisten) => {
-        // Tauri resolves the listener cleanup asynchronously, so unlisten if React unmounted first.
+    // Subscribe before taking the snapshot, and never let a delayed command
+    // response overwrite a newer state event from the shared runtime.
+    async function start(): Promise<void> {
+      try {
+        const unlisten = await listenForRuntimeMessages((message) => {
+          if (cancelled) return;
+          if (message.kind === "state") stateEvents.current += 1;
+          applyRuntimeMessage(message, setState, setError);
+        });
         if (cancelled) {
           unlisten();
           return;
         }
         stopListening = unlisten;
-      })
-      .catch((reason: unknown) => setError(String(reason)));
+        const revision = stateEvents.current;
+        const loaded = await getState();
+        if (!cancelled && stateEvents.current === revision) setState(loaded);
+      } catch (reason) {
+        if (!cancelled) setError(String(reason));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void start();
 
     return () => {
       cancelled = true;
@@ -113,18 +140,31 @@ export function useDesktopClient(): DesktopClient {
     if (!settingsOpen) {
       return;
     }
+    let cancelled = false;
+    setDevices([]);
     listDevices()
-      .then(setDevices)
-      .catch((reason: unknown) => setError(String(reason)));
-  }, [settingsOpen]);
+      .then((value) => {
+        if (!cancelled) setDevices(value);
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setError(String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsOpen, state.selected_server_id]);
 
   const activeChannel = useMemo(() => selectedChannel(state), [state]);
   const activeRequest = useMemo(() => selectedRequest(state), [state]);
 
-  async function runStateCommand(work: () => Promise<ClientState>): Promise<boolean> {
+  async function runStateCommand(
+    work: () => Promise<ClientState>,
+  ): Promise<boolean> {
     try {
       setError(null);
-      setState(await work());
+      const revision = stateEvents.current;
+      const updated = await work();
+      if (stateEvents.current === revision) setState(updated);
       return true;
     } catch (reason) {
       setError(String(reason));
@@ -132,8 +172,8 @@ export function useDesktopClient(): DesktopClient {
     }
   }
 
-  async function enrollDevice(params: EnrollParams): Promise<void> {
-    await runStateCommand(() => enroll(params));
+  async function enrollDevice(params: EnrollParams): Promise<boolean> {
+    return runStateCommand(() => enroll(params));
   }
 
   async function refreshState(): Promise<void> {
@@ -149,27 +189,40 @@ export function useDesktopClient(): DesktopClient {
   }
 
   async function selectNodRequest(request: NodRequest): Promise<void> {
-    await runStateCommand(() => selectRequest({ request_id: request.id }));
+    await runStateCommand(() =>
+      openRequest({
+        server_id: state.selected_server_id ?? "",
+        request_id: request.id,
+      }),
+    );
   }
 
   async function submitRequestOption(
     request: NodRequest,
     option: RequestOption,
     text?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       setError(null);
-      const updated = await submitOption({
+      const revision = stateEvents.current;
+      const updated = await submitScopedOption({
+        server_id: state.selected_server_id ?? "",
         request_id: request.id,
         option_id: option.id,
         text,
       });
-      setState((current) => ({
-        ...current,
-        requests: replaceRequest(current.requests, updated),
-      }));
+      if (stateEvents.current === revision)
+        setState((current) => ({
+          ...current,
+          requests:
+            current.selected_server_id === state.selected_server_id
+              ? replaceRequest(current.requests, updated)
+              : current.requests,
+        }));
+      return true;
     } catch (reason) {
       setError(String(reason));
+      return false;
     }
   }
 
@@ -182,7 +235,9 @@ export function useDesktopClient(): DesktopClient {
     }
   }
 
-  async function updateNotificationSound(notificationSound: string): Promise<void> {
+  async function updateNotificationSound(
+    notificationSound: string,
+  ): Promise<void> {
     await runStateCommand(() =>
       setNotificationPreference({ notification_sound: notificationSound }),
     );
@@ -207,9 +262,14 @@ export function useDesktopClient(): DesktopClient {
     }
     try {
       setError(null);
-      const device = await renameDevice({ device_id: deviceId, name: trimmedName });
+      const device = await renameDevice({
+        device_id: deviceId,
+        name: trimmedName,
+      });
       setDevices((current) =>
-        current.map((candidate) => (candidate.id === device.id ? device : candidate)),
+        current.map((candidate) =>
+          candidate.id === device.id ? device : candidate,
+        ),
       );
       return true;
     } catch (reason) {
@@ -218,32 +278,27 @@ export function useDesktopClient(): DesktopClient {
     }
   }
 
-  async function revokeUserDevice(deviceId: string): Promise<void> {
-    try {
-      setError(null);
-      setState(await revokeDevice({ device_id: deviceId }));
-      setDevices(await listDevices());
-    } catch (reason) {
-      setError(String(reason));
-    }
+  async function revokeUserDevice(deviceId: string): Promise<boolean> {
+    if (!(await runStateCommand(() => revokeDevice({ device_id: deviceId }))))
+      return false;
+    setDevices((current) => current.filter((device) => device.id !== deviceId));
+    return true;
   }
 
-  async function forgetSelectedServer(): Promise<void> {
+  async function forgetSelectedServer(): Promise<boolean> {
     const serverId = state.selected_server_id;
-    if (!serverId) {
-      return;
-    }
-    if (await runStateCommand(() => forgetServer({ server_id: serverId }))) {
-      setSettingsOpen(false);
-    }
+    if (!serverId) return false;
+    const success = await runStateCommand(() =>
+      forgetServer({ server_id: serverId }),
+    );
+    if (success) setSettingsOpen(false);
+    return success;
   }
 
-  async function clearSelectedChannel(): Promise<void> {
+  async function clearSelectedChannel(): Promise<boolean> {
     const channelId = state.selected_channel_id;
-    if (!channelId) {
-      return;
-    }
-    await runStateCommand(() => clearChannel({ channel_id: channelId }));
+    if (!channelId) return false;
+    return runStateCommand(() => clearChannel({ channel_id: channelId }));
   }
 
   return {
@@ -260,6 +315,37 @@ export function useDesktopClient(): DesktopClient {
       refreshState,
       renameUserDevice,
       revokeUserDevice,
+      selectAllChannels: async () => {
+        await runStateCommand(selectAllChannels);
+      },
+      updatePreferences: async (value) => {
+        try {
+          setPreferences(await setDesktopPreferences(value));
+          return true;
+        } catch (reason) {
+          setError(String(reason));
+          return false;
+        }
+      },
+      updateAutostart: async (enabled) => {
+        try {
+          await setAutostart(enabled);
+          setAutostartValue(enabled);
+          return true;
+        } catch (reason) {
+          setError(String(reason));
+          return false;
+        }
+      },
+      testNotification: async () => {
+        try {
+          await testNotification();
+          return true;
+        } catch (reason) {
+          setError(String(reason));
+          return false;
+        }
+      },
       selectChannel: selectNodChannel,
       selectRequest: selectNodRequest,
       selectServer: selectServerProfile,
@@ -268,6 +354,8 @@ export function useDesktopClient(): DesktopClient {
       updateNotificationSound,
     },
     devices,
+    preferences,
+    autostart,
     error,
     isLoading,
     settingsOpen,

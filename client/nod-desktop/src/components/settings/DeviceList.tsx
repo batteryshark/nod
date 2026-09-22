@@ -5,7 +5,7 @@ import type { UserDevice } from "../../types";
 interface DeviceListProps {
   devices: UserDevice[];
   onRenameDevice: (deviceId: string, name: string) => Promise<boolean>;
-  onRevokeDevice: (deviceId: string) => Promise<void>;
+  onRevokeDevice: (deviceId: string) => Promise<boolean>;
 }
 
 export function DeviceList({
@@ -14,6 +14,8 @@ export function DeviceList({
   onRevokeDevice,
 }: DeviceListProps): JSX.Element {
   const [renamingDeviceId, setRenamingDeviceId] = useState<string | null>(null);
+  const [revokeId, setRevokeId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [renameText, setRenameText] = useState("");
 
   async function renameSelectedDevice(): Promise<void> {
@@ -33,6 +35,7 @@ export function DeviceList({
         <div className="deviceRow" key={device.id}>
           {renamingDeviceId === device.id ? (
             <input
+              aria-label="Device name"
               value={renameText}
               onChange={(event) => setRenameText(event.currentTarget.value)}
             />
@@ -46,6 +49,7 @@ export function DeviceList({
           {renamingDeviceId === device.id ? (
             <button
               type="button"
+              aria-label="Save device name"
               onClick={() => void renameSelectedDevice()}
               disabled={renameText.trim().length === 0}
             >
@@ -54,6 +58,7 @@ export function DeviceList({
           ) : (
             <button
               type="button"
+              aria-label={`Rename ${device.name}`}
               onClick={() => {
                 setRenamingDeviceId(device.id);
                 setRenameText(device.name);
@@ -65,10 +70,44 @@ export function DeviceList({
           <button
             type="button"
             className="dangerIcon"
-            onClick={() => void onRevokeDevice(device.id)}
+            aria-label={`Revoke ${device.name}`}
+            onClick={() => setRevokeId(device.id)}
           >
             <Trash2 size={14} />
           </button>
+          {revokeId === device.id ? (
+            <div role="group" aria-label="Confirm revocation">
+              <p>
+                Revoke {device.name}?{" "}
+                {device.is_current
+                  ? "This device will disconnect immediately."
+                  : "It will lose access immediately."}{" "}
+                A new enrollment code is required to reconnect.
+              </p>
+              <button
+                type="button"
+                className="danger"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    if (await onRevokeDevice(device.id)) setRevokeId(null);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Revoke device
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setRevokeId(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : null}
         </div>
       ))}
     </section>

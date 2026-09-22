@@ -5,6 +5,8 @@ import type { Channel, ClientState, ServerProfile } from "../types";
 interface SidebarProps {
   activeChannel?: Channel;
   onOpenSettings: () => void;
+  onAddServer: () => void;
+  onSelectAll: () => Promise<void>;
   onRefresh: () => Promise<void>;
   onSelectChannel: (channel: Channel) => Promise<void>;
   onSelectServer: (server: ServerProfile) => Promise<void>;
@@ -14,6 +16,8 @@ interface SidebarProps {
 export function Sidebar({
   activeChannel,
   onOpenSettings,
+  onAddServer,
+  onSelectAll,
   onRefresh,
   onSelectChannel,
   onSelectServer,
@@ -31,13 +35,23 @@ export function Sidebar({
         selectedServerId={state.selected_server_id ?? null}
         onSelect={onSelectServer}
       />
+      <button
+        type="button"
+        className={!state.selected_channel_id ? "active allInbox" : "allInbox"}
+        onClick={() => void onSelectAll()}
+      >
+        All channels <strong>{totalPendingCount(state)}</strong>
+      </button>
       <ChannelList
-        channels={state.channels.filter((channel) => channel.subscribed)}
+        channels={state.channels}
         activeChannel={activeChannel}
         state={state}
         onSelect={onSelectChannel}
       />
       <div className="sidebarControls">
+        <button type="button" onClick={onAddServer}>
+          Add server
+        </button>
         <button type="button" onClick={() => void onRefresh()}>
           <RefreshCw size={16} />
           Refresh
@@ -103,8 +117,13 @@ function ChannelList({
           className={channel.id === activeChannel?.id ? "active" : ""}
           onClick={() => void onSelect(channel)}
         >
-          <span className="swatch" style={{ backgroundColor: channelColor(channel) }} />
-          <span className="channelEmoji" aria-hidden="true">{channel.emoji || "🔔"}</span>
+          <span
+            className="swatch"
+            style={{ backgroundColor: channelColor(channel) }}
+          />
+          <span className="channelEmoji" aria-hidden="true">
+            {channel.emoji || "🔔"}
+          </span>
           <span>{channel.name}</span>
           <strong>{pendingCountFor(channel, state)}</strong>
         </button>
