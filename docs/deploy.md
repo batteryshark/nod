@@ -165,11 +165,29 @@ expose it directly to the internet.
 
 ```bash
 curl -fsS https://your-nod-host/health
-server/nod-server/scripts/nod-smoke https://your-nod-host "$NOD_ADMIN_TOKEN"
 ```
 
-The smoke run enrolls a throwaway device, pushes a request through the sync
-WebSocket, submits a signed decision, and removes everything it created.
+Also verify authenticated admin access and audit health in **Activity &
+Delivery**. The health endpoint alone does not establish that APNs or audit
+writes work.
+
+Run the full smoke journey against an isolated instance or during an issuer-write
+maintenance window:
+
+```bash
+NOD_SMOKE_URL=https://your-isolated-nod-host \
+NOD_SMOKE_ADMIN_TOKEN="$NOD_ADMIN_TOKEN" \
+cargo test --locked -p nod-server --test e2e_smoke smoke_deployed_instance -- --ignored --exact
+```
+
+The smoke enrolls temporary devices, receives a request through the sync
+WebSocket, and submits a signed decision. Its temporary users initially
+subscribe to `default`, so concurrent issuer traffic could include them as
+recipients. Successful cleanup revokes/deletes the temporary resources but
+retains tombstones and audit evidence; failed runs may need manual cleanup.
+For migration rehearsal, use a consistent copy of the database with APNs
+omitted and `NOD_CALLBACK_ALLOWED_ORIGINS` set to an empty value, and expose
+that instance only to the verifier.
 
 ## Advanced: push notifications for iPhone/iPad
 
@@ -248,6 +266,12 @@ To restore:
    into the admin panel, inspect **Activity**, and verify an enrolled device can
    refresh. Compare a known receipt and its signing public key with your
    retained export. Keep the prior data until that check succeeds.
+
+Rolling back this uplift requires the matching pre-upgrade database, configuration,
+and executable. An older server ignores the new revocation/deletion tombstones,
+so running it against an upgraded database can reactivate revoked credentials.
+Stop the upgraded service and preserve its current data separately before
+restoring the matching backup; reconcile any decisions made after that snapshot.
 
 The server regression suite takes a consistent SQLite `VACUUM INTO` snapshot,
 copies the audit files, opens the result through normal startup, and verifies

@@ -29,7 +29,11 @@ server/nod-server/scripts/nod-smoke
       cleanup (scripted; runs in `cargo test -p nod-server`)
 - [x] `docker compose up` serves `/health` and `/admin` (verified 2026-06-10:
       image built, container serves embedded admin page, no asset files)
-- [ ] `scripts/nod-smoke URL TOKEN` against the production deployment
+- [x] Backup-backed production rollout, authenticated admin/audit checks, and
+      preserved credential/receipt fingerprints (2026-09-22)
+- [x] Full signed HTTP/WebSocket smoke against an isolated migrated copy
+      (2026-09-22; production writes kept separate)
+- [ ] Live push delivery and device acceptance for the new client builds
 
 ## TUI — executed 2026-06-10 (sandboxed: `NOD_CLIENT_CORE_STATE_DIR` + insecure token store, tmux-driven)
 
