@@ -17,14 +17,21 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 anyhow = "1.0"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 nod-client-core = { path = "../../nod-client-core" }
+nod-proto.workspace = true
+chrono = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync"] }
+url = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4.11"
@@ -34,7 +41,10 @@ zbus = "5"
 windows = { version = "0.58", features = [
   "Data_Xml_Dom",
   "UI_Notifications",
-  "Foundation"
+  "Foundation",
+  "Win32_Foundation",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging"
 ] }
 winreg = "0.55"
 

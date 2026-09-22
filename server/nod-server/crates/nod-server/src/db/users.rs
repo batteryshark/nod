@@ -24,7 +24,7 @@ pub async fn list_users_for_admin(pool: &SqlitePool) -> Result<Vec<AdminUser>, A
             (
                 SELECT COUNT(*)
                 FROM devices d
-                WHERE d.user_id = u.id
+                WHERE d.user_id = u.id AND d.revoked_at IS NULL
             ) AS device_count,
             (
                 SELECT COUNT(*)
@@ -39,6 +39,7 @@ pub async fn list_users_for_admin(pool: &SqlitePool) -> Result<Vec<AdminUser>, A
                     AND us.subscribed = 1
             ) AS subscribed_channel_ids
         FROM users u
+        WHERE u.deleted_at IS NULL
         ORDER BY u.name
         "#,
     )
@@ -71,13 +72,14 @@ pub async fn create_user(pool: &SqlitePool, req: CreateUserRequest) -> Result<Us
         return Err(ApiError::BadRequest("user name is required".to_string()));
     }
     let now = now_string();
-    sqlx::query(
+    let inserted = sqlx::query(
         r#"
         INSERT INTO users (id, name, created_at, updated_at)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             updated_at = excluded.updated_at
+        WHERE users.deleted_at IS NULL
         "#,
     )
     .bind(&req.id)
@@ -86,6 +88,12 @@ pub async fn create_user(pool: &SqlitePool, req: CreateUserRequest) -> Result<Us
     .bind(&now)
     .execute(pool)
     .await?;
+
+    if inserted.rows_affected() == 0 {
+        return Err(ApiError::Conflict(
+            "deleted user IDs cannot be reused".to_string(),
+        ));
+    }
 
     sqlx::query(
         r#"
@@ -110,12 +118,14 @@ pub async fn update_user(
     if req.name.trim().is_empty() {
         return Err(ApiError::BadRequest("user name is required".to_string()));
     }
-    let updated = sqlx::query("UPDATE users SET name = ?, updated_at = ? WHERE id = ?")
-        .bind(req.name.trim())
-        .bind(now_string())
-        .bind(user_id)
-        .execute(pool)
-        .await?;
+    let updated = sqlx::query(
+        "UPDATE users SET name = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+    )
+    .bind(req.name.trim())
+    .bind(now_string())
+    .bind(user_id)
+    .execute(pool)
+    .await?;
     if updated.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
@@ -127,7 +137,7 @@ pub async fn get_user(pool: &SqlitePool, user_id: &str) -> Result<User, ApiError
         r#"
         SELECT id, name, created_at, updated_at
         FROM users
-        WHERE id = ?
+        WHERE id = ? AND deleted_at IS NULL
         "#,
     )
     .bind(user_id)
@@ -139,22 +149,27 @@ pub async fn get_user(pool: &SqlitePool, user_id: &str) -> Result<User, ApiError
 
 pub async fn delete_user(pool: &SqlitePool, user_id: &str) -> Result<(), ApiError> {
     validate_id(user_id, "user id")?;
-    let device_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE user_id = ?")
-        .bind(user_id)
-        .fetch_one(pool)
-        .await?;
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let device_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE user_id = ? AND revoked_at IS NULL")
+            .bind(user_id)
+            .fetch_one(&mut *transaction)
+            .await?;
     if device_count > 0 {
         return Err(ApiError::Conflict(
             "cannot delete a user that still owns devices".to_string(),
         ));
     }
-    let deleted = sqlx::query("DELETE FROM users WHERE id = ?")
-        .bind(user_id)
-        .execute(pool)
-        .await?;
+    let deleted =
+        sqlx::query("UPDATE users SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL")
+            .bind(now_string())
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await?;
     if deleted.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
+    transaction.commit().await?;
     Ok(())
 }
 

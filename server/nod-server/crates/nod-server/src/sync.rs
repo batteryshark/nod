@@ -106,7 +106,8 @@ mod tests {
             user_decisions: Vec::new(),
             callback_url: None,
             options: Vec::new(),
-            canonical_digest: None,
+            private_recipients: false,
+            signing: None,
         };
 
         let envelope = request_payload(&request);

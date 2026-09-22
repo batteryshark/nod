@@ -66,12 +66,21 @@ impl PushProvider for ApnsRelayProvider {
             .post(format!("{}{}", self.url, APNS_RELAY_PUSH_PATH))
             .json(&relay_request)
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("APNs relay rejected push with {status}: {text}");
+            let failure = nod_apns_relay::error::bounded_error_json::<
+                nod_apns_relay::error::DeliveryFailure,
+            >(response)
+            .await
+            .unwrap_or(nod_apns_relay::error::DeliveryFailure {
+                message: format!("APNs relay rejected push with {status}"),
+                retryable: status.is_server_error() || status.as_u16() == 429,
+                invalid_token: false,
+            });
+            return Err(failure.into());
         }
         tracing::info!(device_id = %device.id, request_id = %request.id, "push delivered to APNs relay");
         Ok(())
@@ -187,6 +196,15 @@ fn build_relay_request(device: &Device, request: &DecisionRequest) -> Option<Apn
     if token.is_empty() {
         return None;
     }
+    let mut wire = request.to_wire();
+    if device.notification_preferences.hide_content {
+        wire.notification = nod_proto::RequestNotification {
+            redact: true,
+            title: None,
+            body: None,
+        };
+    }
+    let preview = nod_proto::notification_preview(&wire);
     Some(ApnsRelayRequest {
         target: NotificationTarget {
             platform: device.platform.as_str().to_string(),
@@ -194,8 +212,8 @@ fn build_relay_request(device: &Device, request: &DecisionRequest) -> Option<Apn
             token: token.to_string(),
         },
         notification: NotificationContent {
-            title: apns_title(request),
-            body: apns_body(request),
+            title: preview.title,
+            body: preview.body,
             sound: device.notification_sound.clone(),
             thread_id: request.channel_id.clone(),
             category: PushCategory::for_request(request).as_str().to_string(),
@@ -203,42 +221,9 @@ fn build_relay_request(device: &Device, request: &DecisionRequest) -> Option<Apn
         metadata: NotificationMetadata {
             request_id: request.id.clone(),
             channel_id: request.channel_id.clone(),
+            device_id: Some(device.id.clone()),
         },
     })
-}
-
-fn apns_title(request: &DecisionRequest) -> String {
-    request
-        .notification
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| {
-            if request.notification.redact {
-                "Nod".to_string()
-            } else {
-                request.title.clone()
-            }
-        })
-}
-
-fn apns_body(request: &DecisionRequest) -> String {
-    request
-        .notification
-        .body
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| {
-            if request.notification.redact {
-                "Open Nod to review this request.".to_string()
-            } else {
-                request.summary.clone()
-            }
-        })
 }
 
 fn relay_client(config: &ApnsRelayConfig) -> anyhow::Result<Client> {
@@ -283,7 +268,8 @@ fn relay_client(config: &ApnsRelayConfig) -> anyhow::Result<Client> {
     let mut builder = Client::builder()
         .https_only(true)
         .identity(identity)
-        .timeout(Duration::from_secs(10));
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none());
     for certificate in certificates {
         builder = builder.add_root_certificate(certificate);
     }
@@ -324,6 +310,7 @@ mod tests {
             signing_key_algorithm: None,
             signing_public_key: None,
             notification_sound: "default".to_string(),
+            notification_preferences: Default::default(),
             last_seen_at: now,
             created_at: now,
         }
@@ -353,7 +340,8 @@ mod tests {
             user_decisions: vec![],
             callback_url: None,
             options: vec![],
-            canonical_digest: None,
+            private_recipients: false,
+            signing: None,
         }
     }
 
@@ -465,5 +453,32 @@ mod tests {
         };
 
         ApnsRelayProvider::new(config).unwrap();
+    }
+    #[test]
+    fn title_only_request_has_a_safe_body_and_custom_options_use_open_fallback() {
+        let mut request = apns_request();
+        request.summary.clear();
+        request.body_markdown.clear();
+        request.options=vec![serde_json::from_value(serde_json::json!({"id":"approve","kind":"approve","label":"Delete production","destructive":true})).unwrap()];
+        let relay = build_relay_request(&apns_device(), &request).unwrap();
+        assert_eq!(relay.notification.body, "Open Nod to review this request.");
+        assert_eq!(relay.notification.category, "NOD_DEFAULT");
+        assert_eq!(relay.metadata.device_id.as_deref(), Some("device-1"));
+    }
+    #[test]
+    fn device_hide_content_overrides_issuer_preview_without_changing_request() {
+        let mut device = apns_device();
+        device.notification_preferences.hide_content = true;
+        let mut request = apns_request();
+        request.notification.title = Some("Issuer preview secret".to_string());
+        request.notification.body = Some("More secret content".to_string());
+        let relay = build_relay_request(&device, &request).unwrap();
+        assert_eq!(relay.notification.title, "Nod");
+        assert_eq!(relay.notification.body, "Open Nod to review this request.");
+        assert_eq!(request.title, "Deploy");
+        assert_eq!(
+            request.notification.title.as_deref(),
+            Some("Issuer preview secret")
+        );
     }
 }

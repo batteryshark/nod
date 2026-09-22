@@ -8,10 +8,14 @@ pub(crate) async fn execute_runtime_command(
 ) -> Result<RuntimeCommandOutcome> {
     match command {
         RuntimeCommand::Enroll(params) => {
-            let state = runtime.enroll(params).await?;
+            let mut state = runtime.enroll(params).await?;
             // Enrollment returns a state snapshot; starting sync here matches
             // the startup path that already-registered devices use.
-            runtime.connect_sync().await?;
+            if let Err(error) = runtime.connect_sync().await {
+                state.last_error = Some(format!(
+                    "Enrollment completed. Sync could not start: {error}"
+                ));
+            }
             Ok(RuntimeCommandOutcome::State(Box::new(state)))
         }
         RuntimeCommand::Refresh => runtime
@@ -35,6 +39,15 @@ pub(crate) async fn execute_runtime_command(
             .map(RuntimeCommandOutcome::State),
         RuntimeCommand::SelectChannel(params) => runtime
             .select_channel(params)
+            .await
+            .map(Box::new)
+            .map(RuntimeCommandOutcome::State),
+        RuntimeCommand::QueryHistory(query) => {
+            let page = runtime.query_history(query.clone()).await?;
+            Ok(RuntimeCommandOutcome::History { query, page })
+        }
+        RuntimeCommand::SelectAllChannels => runtime
+            .select_all_channels()
             .await
             .map(Box::new)
             .map(RuntimeCommandOutcome::State),

@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use reqwest::{Client, Method, StatusCode};
 use serde::{de::DeserializeOwned, Serialize};
+use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::models::{
@@ -21,11 +22,25 @@ pub struct NodApi {
 }
 
 impl NodApi {
-    pub fn new(base_url: &str, token: Option<String>) -> Result<Self> {
+    pub(crate) fn http_client() -> Result<Client> {
+        Ok(Client::builder().timeout(API_REQUEST_TIMEOUT).build()?)
+    }
+
+    pub(crate) fn with_client(
+        base_url: &str,
+        token: Option<String>,
+        client: Client,
+    ) -> Result<Self> {
+        let base_url = Url::parse(&normalize_base_url(base_url))?;
+        if !matches!(base_url.scheme(), "http" | "https") || base_url.host_str().is_none() {
+            return Err(anyhow!(
+                "server address must be an absolute HTTP or HTTPS URL"
+            ));
+        }
         Ok(Self {
-            base_url: Url::parse(&normalize_base_url(base_url))?,
+            base_url,
             token,
-            client: Client::builder().timeout(API_REQUEST_TIMEOUT).build()?,
+            client,
         })
     }
 
@@ -111,6 +126,45 @@ impl NodApi {
         Ok(response.requests)
     }
 
+    pub async fn get_request(&self, request_id: &str) -> Result<Request> {
+        let mut path = Url::parse("https://nod.invalid/api/v1/requests/")?;
+        path.path_segments_mut()
+            .map_err(|_| anyhow!("invalid request path"))?
+            .pop_if_empty()
+            .push(request_id);
+        let response: RequestResponse = self
+            .request(RequestSpec::authenticated(Method::GET, path.path()))
+            .await?;
+        Ok(response.request)
+    }
+
+    pub async fn query_history(
+        &self,
+        params: &crate::QueryHistoryParams,
+    ) -> Result<RequestsResponse> {
+        let path = {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("include_cleared", "true");
+            for (name, value) in [
+                ("channel_id", params.channel_id.as_deref()),
+                ("search", params.search.as_deref()),
+                ("before", params.before.as_deref()),
+            ] {
+                if let Some(value) = value {
+                    query.append_pair(name, value);
+                }
+            }
+            query.append_pair(
+                "limit",
+                &params.limit.unwrap_or(100).clamp(1, 500).to_string(),
+            );
+            format!("/api/v1/requests?{}", query.finish())
+        };
+        self.request(RequestSpec::authenticated(Method::GET, &path))
+            .await
+            .map_err(Into::into)
+    }
+
     pub async fn submit_option(&self, request: SubmitOptionRequest<'_>) -> Result<Request> {
         #[derive(Serialize)]
         struct Body<'a> {
@@ -170,6 +224,20 @@ impl NodApi {
                 Method::PUT,
                 "/api/v1/devices/me/preferences",
                 &Body { notification_sound },
+            ))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_device_notification_preferences(
+        &self,
+        preferences: &crate::models::DeviceNotificationPreferences,
+    ) -> Result<()> {
+        let _: serde_json::Value = self
+            .request(RequestSpec::authenticated_json(
+                Method::PUT,
+                "/api/v1/devices/me/notification-preferences",
+                preferences,
             ))
             .await?;
         Ok(())
@@ -361,21 +429,14 @@ pub fn normalize_base_url(value: &str) -> String {
 }
 
 pub fn profile_id_for(base_url: &str) -> String {
-    let normalized = normalize_base_url(base_url).to_ascii_lowercase();
-    let mapped: String = normalized
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect();
-    let compact = mapped
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if compact.is_empty() {
-        uuid::Uuid::new_v4().to_string()
-    } else {
-        compact.chars().take(80).collect()
-    }
+    let normalized = normalize_base_url(base_url);
+    let canonical = Url::parse(&normalized)
+        .map(|mut url| {
+            url.set_fragment(None);
+            url.to_string().trim_end_matches('/').to_string()
+        })
+        .unwrap_or(normalized);
+    format!("server-{:x}", Sha256::digest(canonical.as_bytes()))
 }
 
 pub fn display_name_for(base_url: &str) -> String {
@@ -435,8 +496,16 @@ mod tests {
     #[test]
     fn builds_profile_ids_from_urls() {
         assert_eq!(
-            profile_id_for("https://nod.example.com/api"),
-            "https-nod-example-com-api"
+            profile_id_for("HTTPS://NOD.EXAMPLE.COM:443/api/"),
+            profile_id_for("https://nod.example.com/api")
+        );
+        assert_ne!(
+            profile_id_for("https://nod.example.com/a-b"),
+            profile_id_for("https://nod.example.com/a/b")
+        );
+        assert_ne!(
+            profile_id_for("https://nod.example.com/API"),
+            profile_id_for("https://nod.example.com/api")
         );
     }
 

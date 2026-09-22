@@ -12,7 +12,7 @@ This service lives under `server/nod-server` in the Nod monorepo. The native App
 
 - `axum` + `tokio` + `sqlx` on SQLite (WAL), with append-only JSONL audit logs
 - Admin-created users/channels, short-lived enrollment codes, device tokens, and issuer tokens
-- Request payloads with rendered message snapshots, fields, links, optional image URL, APNs notification redaction metadata, dedupe key, and structured options
+- Request payloads with rendered message snapshots, fields, links, optional image URL, shared notification redaction metadata, idempotency/dedupe keys, and structured options
 - Agent-friendly decision API, wait API, and optional callback wake-up URL
 - Signed device decisions using P-256 ECDSA/SHA-256 keys registered during enrollment
 - User-targeted delivery with shared or per-user decision resolution
@@ -179,7 +179,8 @@ topic, and a provider token. Push registrations without a native app id are
 rejected.
 
 Device-facing APIs report notification delivery as either `push` or `websocket`.
-The `push` mode means the server has a configured APNs route. The
+The `push` mode means this iOS/watchOS device has a usable token and a matching
+configured APNs provider/bundle route. The
 `websocket` mode means Apple clients should present `created` sync events as
 local notifications while connected. On iOS, WebSocket/local delivery is
 foreground-only; background and lock-screen delivery still require APNs.
@@ -212,8 +213,9 @@ NOD_APNS_RELAY_CA_CERT_PATH=/secrets/relay-ca.crt
 
 Request creation still succeeds if relay delivery fails; the server logs the
 push failure and keeps the request available for sync.
-The relay route is operator-facing only; device clients still see
-`notification_delivery.mode = "push"`.
+The relay route is operator-facing only; eligible device clients see
+`notification_delivery.mode = "push"`. Missing or invalidated tokens fall back
+to WebSocket delivery.
 
 Host the relay with the sibling [server/nod-apns-relay](../nod-apns-relay) project:
 
@@ -264,3 +266,35 @@ revoked `smoke-` row remains per run).
 ## License
 
 [AGPL-3.0](../../LICENSE)
+
+
+## Inbox, notification controls, and operations
+
+Request lists batch their related data and support channel/search filters plus
+opaque history cursors. Pending requests survive terminal retention. Clearing a
+channel hides handled history and preserves pending work; explicit targeting
+overrides subscriptions. Current clients verify the recipient-private v2
+signing context while original v1 signatures and single-recipient compatibility
+remain supported. Device revocation and user deletion retain evidence and
+verification keys.
+
+Device notification preferences synchronize mute, snooze, and hidden previews
+through the server; they affect APNs as well as current clients' local alerts,
+without hiding inbox content. Queued APNs jobs survive restart, run at most four
+at a time, and retry transient failures up to three total attempts. Admin
+Activity shows delivery status and audit health. Audit files rotate at 16 MiB
+and archives remain until an operator removes them.
+
+Callbacks run after commit, with a ten-second timeout, no redirects, bounded
+failure bodies, and at most sixteen concurrent callbacks. Configure
+`callback_allowed_origins` in TOML or `NOD_CALLBACK_ALLOWED_ORIGINS` to restrict
+exact HTTP(S) origins; `[]` disables callbacks and omission retains the existing
+trusted-issuer policy. Callbacks remain best effort; reconcile through the
+read/wait API.
+
+See the [API contract](docs/API.md) for request idempotency, private signatures,
+history, per-device alert controls, and Activity fields. The
+[operations guide](../../docs/deploy.md#back-up-and-restore-a-server) covers
+consistent backup/restore, token-file locations, archive retention, and the
+limits of callback, push, and audit guarantees. Upgrade a standalone relay with
+the server when adopting the new metadata and structured delivery errors.

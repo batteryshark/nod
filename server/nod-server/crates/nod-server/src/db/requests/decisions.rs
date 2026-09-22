@@ -1,10 +1,7 @@
 use chrono::Utc;
-use sqlx::SqlitePool;
+use sqlx::{SqliteConnection, SqlitePool};
 
-use super::{
-    maintenance::expire_request,
-    read::{get_request, request_visible_to_user},
-};
+use super::read::get_request_on;
 use crate::{
     db::{now_string, validation::implicit_dismiss_option},
     error::ApiError,
@@ -32,15 +29,32 @@ pub async fn record_decision(
     let actor_device = submission.actor_device;
     let actor_user_id = submission.actor_user_id;
     let submitted_decision = submission.decision;
-    let request = get_request(pool, request_id).await?;
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let request = get_request_on(&mut transaction, request_id).await?;
+    if let Some(device) = actor_device {
+        let active: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM devices WHERE id = ? AND revoked_at IS NULL)",
+        )
+        .bind(&device.id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if !active {
+            return Err(ApiError::Unauthorized);
+        }
+    }
     if let Some(user_id) = actor_user_id {
-        if !request_visible_to_user(pool, request_id, user_id).await? {
+        if !request
+            .recipients
+            .iter()
+            .any(|recipient| recipient == user_id)
+        {
             return Err(ApiError::Forbidden);
         }
     }
     if let Some(expires_at) = request.expires_at {
         if expires_at <= Utc::now() {
-            expire_request(pool, request_id).await?;
+            // The expiry sweep owns the transition and its broadcast. A
+            // rejected decision must not consume that pending transition.
             return Err(ApiError::Conflict("request has expired".to_string()));
         }
     }
@@ -65,7 +79,7 @@ pub async fn record_decision(
         .filter(|text| !text.is_empty())
         .map(ToOwned::to_owned);
     let signature = verified_decision_signature(
-        pool,
+        &mut transaction,
         &request,
         &option,
         actor_device,
@@ -104,7 +118,7 @@ pub async fn record_decision(
         .bind(user_id)
         .bind(decision_json)
         .bind(&resolved_at_text)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
         if inserted.rows_affected() == 0 {
             return Err(ApiError::Conflict(
@@ -115,12 +129,12 @@ pub async fn record_decision(
         let recipient_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM request_recipients WHERE request_id = ?")
                 .bind(request_id)
-                .fetch_one(pool)
+                .fetch_one(&mut *transaction)
                 .await?;
         let decision_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM request_user_decisions WHERE request_id = ?")
                 .bind(request_id)
-                .fetch_one(pool)
+                .fetch_one(&mut *transaction)
                 .await?;
         if recipient_count > 0 && decision_count >= recipient_count {
             sqlx::query(
@@ -135,17 +149,19 @@ pub async fn record_decision(
             .bind(&resolved_at_text)
             .bind(&resolved_at_text)
             .bind(request_id)
-            .execute(pool)
+            .execute(&mut *transaction)
             .await?;
         } else {
             sqlx::query("UPDATE requests SET updated_at = ? WHERE id = ?")
                 .bind(&resolved_at_text)
                 .bind(request_id)
-                .execute(pool)
+                .execute(&mut *transaction)
                 .await?;
         }
 
-        return get_request(pool, request_id).await;
+        let resolved = get_request_on(&mut transaction, request_id).await?;
+        transaction.commit().await?;
+        return Ok(resolved);
     }
 
     let decision_json = serde_json::to_string(&decision)?;
@@ -164,7 +180,7 @@ pub async fn record_decision(
     .bind(&resolved_at_text)
     .bind(&resolved_at_text)
     .bind(request_id)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
 
     if updated.rows_affected() == 0 {
@@ -173,11 +189,13 @@ pub async fn record_decision(
         ));
     }
 
-    get_request(pool, request_id).await
+    let resolved = get_request_on(&mut transaction, request_id).await?;
+    transaction.commit().await?;
+    Ok(resolved)
 }
 
 async fn verified_decision_signature(
-    pool: &SqlitePool,
+    connection: &mut SqliteConnection,
     request: &DecisionRequest,
     option: &RequestOption,
     actor_device: Option<&Device>,
@@ -209,7 +227,13 @@ async fn verified_decision_signature(
     let (request_digest, signing_payload) =
         signing::verify_decision_signature(request, option, actor_device, text, provided)?;
     // Record the nonce after verification so invalid attempts cannot burn a valid nonce.
-    insert_decision_nonce(pool, &actor_device.id, &provided.key_id, &provided.nonce).await?;
+    insert_decision_nonce(
+        connection,
+        &actor_device.id,
+        &provided.key_id,
+        &provided.nonce,
+    )
+    .await?;
     Ok(Some(DecisionSignatureRecord {
         key_id: provided.key_id.clone(),
         algorithm: provided.algorithm.clone(),
@@ -219,11 +243,12 @@ async fn verified_decision_signature(
         signing_payload,
         signature: provided.signature.clone(),
         verified: true,
+        public_key: actor_device.signing_public_key.clone(),
     }))
 }
 
 async fn insert_decision_nonce(
-    pool: &SqlitePool,
+    connection: &mut SqliteConnection,
     device_id: &str,
     key_id: &str,
     nonce: &str,
@@ -238,7 +263,7 @@ async fn insert_decision_nonce(
     .bind(key_id)
     .bind(nonce)
     .bind(now_string())
-    .execute(pool)
+    .execute(connection)
     .await?;
     if inserted.rows_affected() == 0 {
         return Err(ApiError::Conflict(
@@ -246,4 +271,48 @@ async fn insert_decision_nonce(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn expired_submission_leaves_the_expiry_sweep_able_to_broadcast() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::with_admin_token("test");
+        config.database_url = format!("sqlite://{}", directory.path().join("nod.sqlite").display());
+        config.data_dir = directory.path().to_path_buf();
+        let pool = crate::db::connect(&config).await.unwrap();
+        let created = crate::db::create_request(
+            &pool,
+            serde_json::from_value(serde_json::json!({"title":"Expired"})).unwrap(),
+            crate::db::CreateRequestMetadata::default(),
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE requests SET expires_at='2000-01-01T00:00:00.000Z' WHERE id=?")
+            .bind(&created.request_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let result = record_decision(
+            &pool,
+            DecisionSubmission {
+                request_id: &created.request_id,
+                option_id: "dismiss",
+                actor_device: None,
+                actor_user_id: Some("owner"),
+                decision: serde_json::from_value(serde_json::json!({})).unwrap(),
+            },
+        )
+        .await;
+        assert!(matches!(result, Err(ApiError::Conflict(_))));
+        let expired = crate::db::expire_due_requests(&pool).await.unwrap();
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].id, created.request_id);
+        assert!(crate::db::expire_due_requests(&pool)
+            .await
+            .unwrap()
+            .is_empty());
+    }
 }

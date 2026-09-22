@@ -22,6 +22,11 @@ pub(crate) trait RuntimePort {
     async fn select_server(&mut self, params: SelectServerParams) -> Result<ClientState>;
     async fn forget_server(&mut self, params: SelectServerParams) -> Result<ClientState>;
     async fn select_channel(&mut self, params: ChannelParams) -> Result<ClientState>;
+    async fn query_history(
+        &mut self,
+        params: nod_client_core::QueryHistoryParams,
+    ) -> Result<nod_client_core::models::RequestsResponse>;
+    async fn select_all_channels(&mut self) -> Result<ClientState>;
     async fn select_request(&mut self, params: SelectRequestParams) -> Result<ClientState>;
     async fn submit_option(&mut self, params: SubmitOptionParams) -> Result<Request>;
     async fn clear_channel(&mut self, params: ChannelParams) -> Result<ClientState>;

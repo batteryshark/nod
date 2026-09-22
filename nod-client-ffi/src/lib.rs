@@ -88,6 +88,21 @@ pub fn request_digest(request_json: String) -> Result<String, SigningFfiError> {
     Ok(proto_request_digest(&request)?)
 }
 
+/// Apply the shared safe notification policy before native presentation.
+#[uniffi::export]
+pub fn notification_preview(request_json: String) -> Result<String, SigningFfiError> {
+    let request: Request = serde_json::from_str(&request_json).map_err(|error| {
+        SigningFfiError::InvalidRequestJson {
+            message: error.to_string(),
+        }
+    })?;
+    serde_json::to_string(&nod_proto::notification_preview(&request)).map_err(|error| {
+        SigningFfiError::Other {
+            message: error.to_string(),
+        }
+    })
+}
+
 /// Build the exact canonical string the client signs to resolve a request —
 /// byte-for-byte identical to the server's verify path.
 #[uniffi::export]
@@ -253,8 +268,8 @@ mod tests {
         ));
     }
 
-    /// These outputs must match NodKit's `NodServerAddress` tests exactly — that
-    /// is the contract that makes swapping the Swift impl for this one safe.
+    /// Keep address normalization and credential profile identity identical
+    /// across this boundary and NodKit's `NodServerAddress` vectors.
     #[test]
     fn matches_nodkit_server_address_vectors() {
         assert_eq!(
@@ -271,7 +286,7 @@ mod tests {
         );
         assert_eq!(
             profile_id_for("https://nod.example.test/team-a".into()),
-            "https-nod-example-test-team-a"
+            "server-b521bc3e42a2657d9057586a8760445eaf8e39437d05fa1278838956a7197da2"
         );
         assert_eq!(
             display_name_for("https://nod.example.test/team-a".into()),

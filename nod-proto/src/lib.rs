@@ -16,6 +16,8 @@ pub const DECISION_SIGNING_ALGORITHM: &str = "p256_ecdsa_sha256";
 pub mod attestation;
 pub mod decision;
 pub mod notification;
+mod preferences;
+mod preview;
 pub mod request;
 pub mod signing;
 
@@ -24,13 +26,16 @@ pub use decision::{
     Decision, DecisionSignature, DecisionSignatureRecord, SubmitDecisionRequest, UserDecision,
 };
 pub use notification::{NotificationDelivery, NotificationDeliveryMode};
+pub use preferences::DeviceNotificationPreferences;
+pub use preview::{notification_preview, NotificationPreview};
 pub use request::{
     CardField, CardLink, CreateDecisionRequest, CreatedDecisionRequest, DecisionResolution,
-    OptionKind, Request, RequestNotification, RequestOption, RequestStatus,
+    OptionKind, Request, RequestNotification, RequestOption, RequestSigningContext, RequestStatus,
 };
 pub use signing::{
-    decision_signing_payload, generate_signing_key, public_key_for, request_digest, sign_payload,
-    validate_public_key, verify_payload, DecisionSigningInput, SigningError, SigningKeyPair,
-    DECISION_PAYLOAD_VERSION, REQUEST_DIGEST_VERSION, UNCOMPRESSED_P256_PUBLIC_KEY_LENGTH,
+    decision_signing_payload, generate_signing_key, public_key_for, recipients_commitment,
+    request_digest, request_digest_v2, sign_payload, validate_public_key, verify_payload,
+    DecisionSigningInput, SigningError, SigningKeyPair, DECISION_PAYLOAD_VERSION,
+    PRIVATE_REQUEST_DIGEST_VERSION, REQUEST_DIGEST_VERSION, UNCOMPRESSED_P256_PUBLIC_KEY_LENGTH,
     UNCOMPRESSED_P256_PUBLIC_KEY_PREFIX,
 };

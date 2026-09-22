@@ -52,7 +52,7 @@ pub(super) async fn current_user(
     Ok(Json(CurrentUserResponse {
         user,
         current_device,
-        notification_delivery: state.notification_delivery.clone(),
+        notification_delivery: state.delivery_for_device(&device),
     }))
 }
 
@@ -124,5 +124,28 @@ pub(super) async fn clear_channel(
 ) -> Result<Json<OkResponse>, ApiError> {
     let device = auth::require_device(&headers, &state.pool).await?;
     services::devices::clear_channel(&state, &device, &channel_id).await?;
+    Ok(Json(OkResponse::ok()))
+}
+
+pub(super) async fn update_notification_preferences(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(preferences): Json<nod_proto::DeviceNotificationPreferences>,
+) -> Result<Json<OkResponse>, ApiError> {
+    let device = auth::require_device(&headers, &state.pool).await?;
+    let preferences =
+        db::update_notification_preferences(&state.pool, &device.id, preferences).await?;
+    state
+        .audit
+        .record(
+            "device.notification_preferences_updated",
+            &serde_json::json!({"device_id":device.id,"preferences":preferences}),
+        )
+        .await;
+    let _ = state.sync.send(crate::sync::targeted_envelope(
+        "device_preferences_updated",
+        serde_json::json!({"device_id":device.id}),
+        vec![device.user_id],
+    ));
     Ok(Json(OkResponse::ok()))
 }

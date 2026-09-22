@@ -8,47 +8,58 @@ use crate::{
     },
 };
 
-use super::{NodClientRuntime, SignerBackend};
-
-pub(super) struct DecisionSignatureInput<'a> {
-    pub request_id: &'a str,
-    pub option_id: &'a str,
-    pub text: Option<&'a str>,
-}
+use super::{snapshot::SnapshotContext, NodClientRuntime, SignerBackend, SubmitOptionParams};
 
 impl NodClientRuntime {
     pub(super) async fn api(&self) -> Result<NodApi> {
-        let profile = self.selected_server_profile().await?;
-        let persisted = self.persisted.lock().await;
-        let token = self.store.load_token(&persisted, &profile.id);
+        self.api_for_profile(&self.selected_server_profile().await?)
+            .await
+    }
 
-        NodApi::new(&profile.base_url_string, token)
+    pub(super) async fn api_for_profile(&self, profile: &ServerProfile) -> Result<NodApi> {
+        let persisted = self.persisted.lock().await;
+        let token = self.store.load_token(&persisted, profile.credential_id())
+            .ok_or_else(|| anyhow!("Device credentials are unavailable for {}. Unlock the credential store or enroll again.", profile.name))?;
+        NodApi::with_client(
+            &profile.base_url_string,
+            Some(token),
+            self.http_client.clone(),
+        )
+    }
+
+    pub(super) async fn snapshot_context(&self) -> Result<SnapshotContext> {
+        let profile = self.selected_server_profile().await?;
+        Ok(SnapshotContext {
+            api: self.api_for_profile(&profile).await?,
+            server_id: profile.id,
+            reducer: self.reducer.clone(),
+            tx: self.tx.clone(),
+            lock: self.snapshot_lock.clone(),
+        })
     }
 
     pub(super) async fn decision_signature(
         &self,
-        input: DecisionSignatureInput<'_>,
+        profile: &ServerProfile,
+        request: &Request,
+        option: &SubmitOptionParams,
     ) -> Result<Option<DecisionSignature>> {
-        let profile = self.selected_server_profile().await?;
-        let Some(signer) = self.device_signer_for(&profile).await? else {
-            return Ok(None);
-        };
-        let request = self.loaded_request(input.request_id).await?;
+        let signer = self.device_signer_for(profile).await?
+            .ok_or_else(|| anyhow!("The device signing key is unavailable. Unlock the credential store or enroll again."))?;
         let user_id = profile
             .user_id
             .as_deref()
-            .ok_or_else(|| anyhow!("selected server is missing user identity"))?;
+            .ok_or_else(|| anyhow!("server profile is missing user identity"))?;
         let device_id = profile
             .device_id
             .as_deref()
-            .ok_or_else(|| anyhow!("selected server is missing device identity"))?;
-
+            .ok_or_else(|| anyhow!("server profile is missing device identity"))?;
         build_decision_signature(
             signer.as_ref(),
             DecisionSigningRequest {
-                request: &request,
-                option_id: input.option_id,
-                text: input.text,
+                request,
+                option_id: &option.option_id,
+                text: option.text.as_deref(),
                 user_id,
                 device_id,
             },
@@ -56,8 +67,6 @@ impl NodClientRuntime {
         .map(Some)
     }
 
-    /// Resolve the device signer for a profile from whichever backend is active.
-    /// `None` means the profile has no key and its decisions cannot be signed.
     pub(super) async fn device_signer_for(
         &self,
         profile: &ServerProfile,
@@ -67,23 +76,23 @@ impl NodClientRuntime {
                 let persisted = self.persisted.lock().await;
                 Ok(self
                     .store
-                    .load_signing_key(&persisted, &profile.id)
+                    .load_signing_key(&persisted, profile.credential_id())
                     .map(|key| Box::new(key) as Box<dyn DeviceSigner>))
             }
             SignerBackend::Foreign(backend) => {
-                let Some(key) = backend.signing_key(&profile.id)? else {
+                let Some(key) = backend.signing_key(profile.credential_id())? else {
                     return Ok(None);
                 };
                 Ok(Some(Box::new(ForeignDeviceSigner {
                     backend: backend.clone(),
-                    profile_id: profile.id.clone(),
+                    profile_id: profile.credential_id().to_string(),
                     key,
                 }) as Box<dyn DeviceSigner>))
             }
         }
     }
 
-    async fn selected_server_profile(&self) -> Result<ServerProfile> {
+    pub(super) async fn selected_server_profile(&self) -> Result<ServerProfile> {
         self.reducer
             .lock()
             .await
@@ -92,15 +101,18 @@ impl NodClientRuntime {
             .ok_or_else(|| anyhow!("no selected server"))
     }
 
-    async fn loaded_request(&self, request_id: &str) -> Result<Request> {
-        self.reducer
+    pub(super) async fn server_profile(&self, server_id: &str) -> Result<ServerProfile> {
+        self.persisted
             .lock()
             .await
-            .state
-            .requests
+            .servers
             .iter()
-            .find(|request| request.id == request_id)
+            .find(|profile| {
+                profile.id == server_id || profile.credential_id.as_deref() == Some(server_id)
+            })
             .cloned()
-            .ok_or_else(|| anyhow!("request {request_id} is not loaded"))
+            .ok_or_else(|| {
+                anyhow!("This notification belongs to a server that is no longer enrolled.")
+            })
     }
 }

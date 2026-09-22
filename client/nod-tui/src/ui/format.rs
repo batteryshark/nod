@@ -53,7 +53,7 @@ pub(super) fn option_key_hint(kind: &str) -> &'static str {
         "approve" | "approve_with_text" => "a",
         "reject" | "reject_with_text" => "r",
         "dismiss" => "d",
-        _ => "n",
+        _ => "o",
     }
 }
 

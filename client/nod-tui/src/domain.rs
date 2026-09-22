@@ -23,7 +23,11 @@ pub fn subscribed_channels(state: &ClientState) -> Vec<&Channel> {
 }
 
 pub fn ordered_requests(requests: &[Request]) -> Vec<&Request> {
-    let mut ordered: Vec<_> = requests.iter().collect();
+    ordered_request_refs(requests.iter())
+}
+
+pub fn ordered_request_refs<'a>(requests: impl Iterator<Item = &'a Request>) -> Vec<&'a Request> {
+    let mut ordered: Vec<_> = requests.collect();
     ordered.sort_by(|left, right| {
         status_rank(&left.status)
             .cmp(&status_rank(&right.status))
@@ -38,8 +42,6 @@ pub fn selected_channel(state: &ClientState) -> Option<&Channel> {
         .selected_channel_id
         .as_deref()
         .and_then(|id| state.channels.iter().find(|channel| channel.id == id))
-        .or_else(|| state.channels.iter().find(|channel| channel.subscribed))
-        .or_else(|| state.channels.first())
 }
 
 pub fn selected_request(state: &ClientState) -> Option<&Request> {
@@ -91,6 +93,23 @@ fn with_text_variant(kind: &OptionKind) -> Option<OptionKind> {
     }
 }
 
+pub fn submittable_options(request: &Request) -> Vec<RequestOption> {
+    if request.options.is_empty() {
+        vec![RequestOption {
+            id: "dismiss".into(),
+            label: "Dismiss".into(),
+            kind: OptionKind::Dismiss,
+            style: "default".into(),
+            requires_text: false,
+            text_placeholder: None,
+            destructive: false,
+            foreground: false,
+        }]
+    } else {
+        request.options.clone()
+    }
+}
+
 pub fn first_text_option(request: &Request) -> Option<OptionChoice<'_>> {
     request
         .options
@@ -108,7 +127,7 @@ pub struct OptionChoice<'a> {
 }
 
 impl<'a> OptionChoice<'a> {
-    fn from_option(option: &'a RequestOption) -> Self {
+    pub(crate) fn from_option(option: &'a RequestOption) -> Self {
         Self {
             id: &option.id,
             label: &option.label,

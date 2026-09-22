@@ -46,6 +46,7 @@ url = "2.5"
 uuid = { version = "1.11", features = ["serde", "v4", "v7"] }
 
 [dev-dependencies]
+nod-client-core = { path = "../../../../client/nod-client-core" }
 http-body-util = "0.1"
 tempfile = "3.14"
 # e2e_smoke.rs binds a real listener and drives the sync WebSocket.

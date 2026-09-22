@@ -3,7 +3,9 @@ mod badge;
 mod commands;
 mod desktop_state;
 mod external_url;
+mod media;
 mod notifier;
+mod preferences;
 mod runtime_messages;
 mod tray;
 mod window;
@@ -17,6 +19,7 @@ use tokio::sync::{mpsc, Mutex};
 use crate::{
     desktop_state::DesktopState,
     notifier::DesktopNotifier,
+    preferences::PreferenceStore,
     runtime_messages::{emit_transient_error, forward_runtime_messages},
     tray::install_tray,
     window::focus_main_window,
@@ -46,14 +49,24 @@ pub fn run() {
             commands::select_server,
             commands::forget_server,
             commands::select_channel,
+            commands::select_all_channels,
             commands::select_request,
+            commands::open_request,
+            commands::query_history,
             commands::submit_option,
+            commands::submit_request_option,
             commands::clear_channel,
             commands::set_subscription,
             commands::set_notification_preference,
             commands::list_devices,
             commands::rename_device,
             commands::revoke_device,
+            commands::desktop_preferences,
+            commands::set_desktop_preferences,
+            commands::autostart_enabled,
+            commands::set_autostart,
+            commands::test_notification,
+            media::request_image,
             commands::open_external_url
         ])
         .run(tauri::generate_context!())
@@ -71,9 +84,16 @@ fn setup_desktop(app: &mut App) -> Result<(), Box<dyn Error>> {
     let (message_tx, message_rx) = mpsc::channel::<NodClientMessage>(RUNTIME_MESSAGE_BUFFER);
     let runtime = tauri::async_runtime::block_on(NodClientRuntime::new(message_tx))?;
     let runtime = Arc::new(Mutex::new(runtime));
-    let notifier = desktop_notifier(app_handle.clone(), runtime.clone());
+    let preferences = Arc::new(Mutex::new(PreferenceStore::open(
+        app.path().app_config_dir()?,
+    )?));
+    let notifier = desktop_notifier(app_handle.clone(), runtime.clone(), preferences.clone());
 
-    app.manage(DesktopState::new(runtime.clone()));
+    app.manage(DesktopState::new(
+        runtime.clone(),
+        preferences,
+        notifier.clone(),
+    ));
 
     tauri::async_runtime::spawn(forward_runtime_messages(
         app_handle.clone(),
@@ -103,6 +123,7 @@ fn setup_desktop(app: &mut App) -> Result<(), Box<dyn Error>> {
 fn desktop_notifier(
     app_handle: AppHandle,
     runtime: Arc<Mutex<NodClientRuntime>>,
+    preferences: Arc<Mutex<PreferenceStore>>,
 ) -> DesktopNotifier {
     let (activation_tx, activation_rx) =
         mpsc::channel::<NotificationActivation>(NOTIFICATION_ACTIVATION_BUFFER);
@@ -111,13 +132,14 @@ fn desktop_notifier(
         runtime,
         activation_rx,
     ));
-    DesktopNotifier::new(activation_tx)
+    DesktopNotifier::new(activation_tx, preferences)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn desktop_notifier(
     _app_handle: AppHandle,
     _runtime: Arc<Mutex<NodClientRuntime>>,
+    preferences: Arc<Mutex<PreferenceStore>>,
 ) -> DesktopNotifier {
-    DesktopNotifier::new()
+    DesktopNotifier::new(preferences)
 }

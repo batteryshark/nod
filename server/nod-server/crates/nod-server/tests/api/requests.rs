@@ -859,7 +859,7 @@ async fn dedupe_returns_existing_pending_request() {
 }
 
 #[tokio::test]
-async fn multi_recipient_device_view_carries_canonical_digest_and_verifies() {
+async fn private_device_views_omit_v1_digest_while_legacy_receipts_still_verify() {
     let app = TestApp::new().await;
     app.create_user("paul", "Paul").await;
     app.create_user("maya", "Maya").await;
@@ -925,14 +925,13 @@ async fn multi_recipient_device_view_carries_canonical_digest_and_verifies() {
     let request_id = created["request_id"].as_str().unwrap();
     let canonical_digest = created["request"]["request_digest"].as_str().unwrap();
 
-    // Every device projection carries the canonical full-snapshot digest,
-    // never one recomputed over recipients filtered to the viewing user.
+    // Private projections hide unsalted v1 digests to prevent recipient guessing.
     for token in [paul_token, &maya_token] {
         let (status, listed) = app
             .request(Method::GET, "/api/v1/requests", Some(token), None)
             .await;
         assert_eq!(status, StatusCode::OK, "{listed}");
-        assert_eq!(listed["requests"][0]["request_digest"], canonical_digest);
+        assert!(listed["requests"][0]["request_digest"].is_null());
         let (status, single) = app
             .request(
                 Method::GET,
@@ -942,19 +941,11 @@ async fn multi_recipient_device_view_carries_canonical_digest_and_verifies() {
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{single}");
-        assert_eq!(single["request"]["request_digest"], canonical_digest);
+        assert!(single["request"]["request_digest"].is_null());
     }
 
-    // A signature built from the digest the device view showed must verify.
-    let (_, single) = app
-        .request(
-            Method::GET,
-            &format!("/api/v1/requests/{request_id}"),
-            Some(paul_token),
-            None,
-        )
-        .await;
-    let device_view_digest = single["request"]["request_digest"].as_str().unwrap();
+    // Existing v1 receipts bound to an issuer's full snapshot remain valid.
+    let device_view_digest = canonical_digest;
     let nonce = "paul-nonce-1";
     let signed_at = "2026-06-10T12:00:00.000Z";
     let text = "looks good";
@@ -996,9 +987,9 @@ async fn multi_recipient_device_view_carries_canonical_digest_and_verifies() {
     );
     // The actor's response is their own projection of the shared resolution.
     assert_eq!(resolved["request"]["recipients"], json!(["paul"]));
-    assert_eq!(resolved["request"]["request_digest"], canonical_digest);
+    assert!(resolved["request"]["request_digest"].is_null());
 
-    // The other recipient sees the shared resolution with the same digest.
+    // The other recipient sees the shared resolution without the unsalted digest.
     let (status, maya_view) = app
         .request(
             Method::GET,
@@ -1009,5 +1000,5 @@ async fn multi_recipient_device_view_carries_canonical_digest_and_verifies() {
         .await;
     assert_eq!(status, StatusCode::OK, "{maya_view}");
     assert_eq!(maya_view["request"]["status"], "resolved");
-    assert_eq!(maya_view["request"]["request_digest"], canonical_digest);
+    assert!(maya_view["request"]["request_digest"].is_null());
 }

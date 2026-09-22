@@ -201,6 +201,18 @@ pub struct Request {
     pub options: Vec<RequestOption>,
     #[serde(default)]
     pub request_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing: Option<RequestSigningContext>,
+}
+
+/// Content verification for a recipient-private request projection. The opaque
+/// commitment binds hidden recipients without revealing their identities.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestSigningContext {
+    pub version: String,
+    pub recipients_commitment: String,
+    pub request_digest: String,
 }
 
 /// The issuer-facing body for creating a request. Strict

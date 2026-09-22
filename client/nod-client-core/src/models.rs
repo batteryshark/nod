@@ -8,9 +8,9 @@ use typeshare::typeshare;
 // truth. Re-exported here so the rest of the client keeps using `models::*`.
 pub use nod_proto::{
     CardField as Field, CardLink as Link, Decision, DecisionResolution, DecisionSignature,
-    DeviceAttestationStatus, DeviceAttestationSummary, NotificationDelivery,
-    NotificationDeliveryMode, OptionKind, Request, RequestNotification, RequestOption,
-    RequestStatus, UserDecision,
+    DeviceAttestationStatus, DeviceAttestationSummary, DeviceNotificationPreferences,
+    NotificationDelivery, NotificationDeliveryMode, OptionKind, Request, RequestNotification,
+    RequestOption, RequestStatus, UserDecision,
 };
 
 #[typeshare]
@@ -53,6 +53,9 @@ pub struct Channel {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerProfile {
     pub id: String,
+    /// Existing credentials keep their account name when URL-derived IDs migrate.
+    #[serde(default)]
+    pub credential_id: Option<String>,
     pub name: String,
     pub base_url_string: String,
     pub device_name: String,
@@ -62,6 +65,12 @@ pub struct ServerProfile {
     pub user_id: Option<String>,
     #[serde(default)]
     pub user_name: Option<String>,
+}
+
+impl ServerProfile {
+    pub fn credential_id(&self) -> &str {
+        self.credential_id.as_deref().unwrap_or(&self.id)
+    }
 }
 
 #[typeshare]
@@ -91,6 +100,8 @@ pub struct UserDevice {
     #[serde(default)]
     pub attestation: Option<DeviceAttestationSummary>,
     pub notification_sound: String,
+    #[serde(default)]
+    pub notification_preferences: DeviceNotificationPreferences,
     #[typeshare(serialized_as = "String")]
     pub last_seen_at: DateTime<Utc>,
     #[typeshare(serialized_as = "String")]
@@ -129,6 +140,18 @@ pub struct SyncPayload {
 }
 
 #[typeshare]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncPhase {
+    #[default]
+    Offline,
+    Connecting,
+    Reconciling,
+    Current,
+    Revoked,
+}
+
+#[typeshare]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientState {
     pub servers: Vec<ServerProfile>,
@@ -146,6 +169,10 @@ pub struct ClientState {
     pub notification_delivery_mode: NotificationDeliveryMode,
     pub is_registered: bool,
     pub is_sync_connected: bool,
+    #[serde(default)]
+    pub sync_phase: SyncPhase,
+    #[serde(default)]
+    pub last_synced_at: Option<String>,
     pub last_error: Option<String>,
 }
 
@@ -185,9 +212,11 @@ pub struct ChannelsResponse {
     pub channels: Vec<Channel>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestsResponse {
     pub requests: Vec<Request>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

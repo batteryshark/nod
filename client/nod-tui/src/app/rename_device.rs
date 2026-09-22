@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use nod_client_core::{models::UserDevice, RenameDeviceParams};
 
-use super::{is_close_key, option_text::ModalResult, RuntimeCommand, TextInput};
+use super::{option_text::ModalResult, RuntimeCommand, TextInput};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenameDeviceForm {
@@ -22,15 +22,18 @@ impl RenameDeviceForm {
     }
 
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> ModalResult<Self> {
-        if is_close_key(key) {
+        if key.code == KeyCode::Esc {
             return ModalResult::closed();
         }
 
         if key.code == KeyCode::Enter && !self.input.value().trim().is_empty() {
-            return ModalResult::commands(vec![RuntimeCommand::RenameDevice(RenameDeviceParams {
-                device_id: self.device_id.clone(),
-                name: self.input.value().trim().to_string(),
-            })]);
+            return ModalResult::submitting(
+                self.clone(),
+                vec![RuntimeCommand::RenameDevice(RenameDeviceParams {
+                    device_id: self.device_id.clone(),
+                    name: self.input.value().trim().to_string(),
+                })],
+            );
         }
 
         self.input.handle_key(key);

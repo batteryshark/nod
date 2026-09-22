@@ -85,15 +85,29 @@ pub fn build_decision_signature(
     signer: &dyn DeviceSigner,
     request: DecisionSigningRequest<'_>,
 ) -> Result<DecisionSignature> {
-    let request_digest = request
-        .request
-        .request_digest
-        .as_deref()
-        .ok_or_else(|| anyhow!("request digest is missing for {}", request.request.id))?;
     // Defense in depth: only sign a request whose digest we can reproduce
     // from the content we received (and rendered to the user), rather than
     // trusting the digest the server asserted.
-    let recomputed = nod_proto::request_digest(request.request)?;
+    let (request_digest, recomputed) =
+        if let Some(context) = &request.request.signing {
+            if context.version != nod_proto::PRIVATE_REQUEST_DIGEST_VERSION {
+                return Err(anyhow!(
+                    "unsupported request signing version: {}",
+                    context.version
+                ));
+            }
+            (
+                context.request_digest.as_str(),
+                nod_proto::request_digest_v2(request.request, &context.recipients_commitment)?,
+            )
+        } else {
+            (
+                request.request.request_digest.as_deref().ok_or_else(|| {
+                    anyhow!("request digest is missing for {}", request.request.id)
+                })?,
+                nod_proto::request_digest(request.request)?,
+            )
+        };
     if recomputed != request_digest {
         return Err(anyhow!(
             "request digest does not match request content for {}",
@@ -212,7 +226,7 @@ fn option_for<'a>(request: &'a Request, option_id: &'a str) -> Result<OptionRef<
 
     // The UI can synthesize a dismiss button for optionless requests. The server
     // still verifies that submission against the same canonical payload shape.
-    if option_id == IMPLICIT_DISMISS_OPTION_ID {
+    if option_id == IMPLICIT_DISMISS_OPTION_ID && request.options.is_empty() {
         return Ok(OptionRef {
             id: IMPLICIT_DISMISS_OPTION_ID,
             kind: &OptionKind::Dismiss,
@@ -274,6 +288,7 @@ mod tests {
                 foreground: false,
             }],
             request_digest: None,
+            signing: None,
         };
         request.request_digest = Some(nod_proto::request_digest(&request).unwrap());
         request
@@ -353,6 +368,41 @@ mod tests {
         .expect_err("a stale digest must fail signing");
 
         assert!(error.to_string().contains("does not match request content"));
+    }
+
+    #[test]
+    fn private_signing_rejects_tampered_content_and_unknown_versions() {
+        let mut request = request();
+        let commitment =
+            nod_proto::recipients_commitment(&request.recipients, "test-salt").unwrap();
+        request.signing = Some(nod_proto::RequestSigningContext {
+            version: nod_proto::PRIVATE_REQUEST_DIGEST_VERSION.to_string(),
+            request_digest: nod_proto::request_digest_v2(&request, &commitment).unwrap(),
+            recipients_commitment: commitment,
+        });
+        let key = StoredSigningKey::generate();
+        request.title.push_str(" forged");
+        let sign = |request: &Request| {
+            build_decision_signature(
+                &key,
+                DecisionSigningRequest {
+                    request,
+                    option_id: "approve",
+                    text: None,
+                    user_id: "owner",
+                    device_id: "device",
+                },
+            )
+        };
+        assert!(sign(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match request content"));
+        request.signing.as_mut().unwrap().version = "nod-request-v999".to_string();
+        assert!(sign(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported request signing version"));
     }
 
     #[test]

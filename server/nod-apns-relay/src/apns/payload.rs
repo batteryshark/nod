@@ -30,6 +30,8 @@ struct ApnsAlert<'a> {
 struct ApnsMetadata<'a> {
     request_id: &'a str,
     channel_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_id: Option<&'a str>,
 }
 
 pub(crate) fn apns_payload(notification: &RelayNotification) -> ApnsPayload<'_> {
@@ -46,6 +48,7 @@ pub(crate) fn apns_payload(notification: &RelayNotification) -> ApnsPayload<'_> 
         nod: ApnsMetadata {
             request_id: &notification.metadata.request_id,
             channel_id: &notification.metadata.channel_id,
+            device_id: notification.metadata.device_id.as_deref(),
         },
     }
 }
@@ -126,6 +129,7 @@ mod tests {
             metadata: RelayNotificationMetadata {
                 request_id: "request-1".to_string(),
                 channel_id: "default".to_string(),
+                device_id: None,
             },
         }
     }

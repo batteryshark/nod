@@ -58,9 +58,22 @@ impl PushRegistry {
                 native_app_id = route.native_app_id.as_deref(),
                 "push skipped because provider route is not configured"
             );
-            return Ok(());
+            anyhow::bail!("push provider route is not configured");
         };
         provider.push_request(device, request).await
+    }
+
+    pub fn has_route(&self, device: &Device) -> bool {
+        if device.push_provider.as_deref() == Some(APPLE_APNS_PROVIDER_ID)
+            && !matches!(
+                device.platform,
+                crate::models::DevicePlatform::Ios | crate::models::DevicePlatform::Watchos
+            )
+        {
+            return false;
+        }
+        PushRouteKey::from_device(device)
+            .is_some_and(|route| self.providers_by_route.contains_key(&route))
     }
 }
 
@@ -103,12 +116,25 @@ pub enum PushCategory {
 
 impl PushCategory {
     pub fn for_request(request: &DecisionRequest) -> Self {
-        if request.options.iter().any(|option| option.requires_text) {
-            Self::ApprovalText
-        } else if request.options.is_empty() {
-            Self::Default
-        } else {
+        let standard = [
+            ("approve", "Approve", crate::models::OptionKind::Approve),
+            ("reject", "Reject", crate::models::OptionKind::Reject),
+        ];
+        let matches = request.options.len() == standard.len()
+            && standard.iter().all(|(id, label, kind)| {
+                request.options.iter().any(|option| {
+                    option.id == *id
+                        && option.label == *label
+                        && option.kind == *kind
+                        && !option.requires_text
+                        && !option.foreground
+                        && !(option.destructive && *id == "approve")
+                })
+            });
+        if matches {
             Self::Approval
+        } else {
+            Self::Default
         }
     }
 

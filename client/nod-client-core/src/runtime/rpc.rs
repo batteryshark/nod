@@ -74,6 +74,16 @@ impl NodClientRuntime {
                 Ok(json!(self.forget_server(&params.server_id).await?))
             }
             "refresh" => Ok(json!(self.refresh().await?)),
+            "open_request" => Ok(json!(
+                self.open_request(serde_json::from_value(params)?).await?
+            )),
+            "submit_request_option" => Ok(
+                json!({"request": self.submit_request_option(serde_json::from_value(params)?).await?}),
+            ),
+            "select_all_channels" => Ok(json!(self.select_all_channels().await?)),
+            "query_history" => Ok(json!(
+                self.query_history(serde_json::from_value(params)?).await?
+            )),
             "submit_option" => {
                 let params: SubmitOptionParams = serde_json::from_value(params)?;
                 Ok(json!({ "request": self.submit_option(params).await? }))
@@ -86,6 +96,10 @@ impl NodClientRuntime {
                 let params: SetSubscriptionParams = serde_json::from_value(params)?;
                 Ok(json!(self.set_subscription(params).await?))
             }
+            "set_device_notification_preferences" => Ok(json!(
+                self.set_device_notification_preferences(serde_json::from_value(params)?)
+                    .await?
+            )),
             "set_notification_preference" => {
                 let params: NotificationPreferenceParams = serde_json::from_value(params)?;
                 Ok(json!(
@@ -162,6 +176,35 @@ pub struct SubmitOptionParams {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OpenRequestParams {
+    pub server_id: String,
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct QueryHistoryParams {
+    #[serde(default)]
+    pub server_id: Option<String>,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub before: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SubmitRequestOptionParams {
+    pub server_id: String,
+    pub request_id: String,
+    pub option_id: String,
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChannelParams {
     pub channel_id: String,
 }
@@ -170,6 +213,14 @@ pub struct ChannelParams {
 pub struct SetSubscriptionParams {
     pub channel_id: String,
     pub subscribed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeviceNotificationPreferenceParams {
+    #[serde(default)]
+    pub server_id: Option<String>,
+    #[serde(flatten)]
+    pub preferences: crate::models::DeviceNotificationPreferences,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

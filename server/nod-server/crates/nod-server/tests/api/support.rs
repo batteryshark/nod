@@ -13,7 +13,9 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 pub(crate) struct TestApp {
-    router: Router,
+    pub(crate) router: Router,
+    pub(crate) pool: sqlx::SqlitePool,
+    pub(crate) data_dir: std::path::PathBuf,
     _tmp: TempDir,
 }
 
@@ -30,9 +32,14 @@ impl TestApp {
         config.database_url = format!("sqlite://{}", db_path.display());
         config.data_dir = tmp.path().join("data");
         configure(&mut config);
+        let database_url = config.database_url.clone();
+        let data_dir = config.data_dir.clone();
         let state = AppState::new(config).await.unwrap();
+        let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
         Self {
             router: router(state),
+            pool,
+            data_dir,
             _tmp: tmp,
         }
     }

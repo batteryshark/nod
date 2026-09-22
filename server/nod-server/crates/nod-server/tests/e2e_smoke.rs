@@ -305,10 +305,6 @@ async fn run_smoke(base_url: &str, admin_token: &str) {
         fetched_before_decision["request"], listed_request,
         "HTTP get projection diverges from the HTTP list view"
     );
-    assert_eq!(
-        ws_created["payload"]["request"]["request_digest"], request_digest,
-        "primary socket projection should carry the create-response digest"
-    );
     let watcher_created = next_ws_envelope(&mut watcher_ws, |envelope| {
         envelope["kind"] == "created" && envelope["payload"]["request"]["id"] == request_id.as_str()
     })
@@ -361,13 +357,31 @@ async fn run_smoke(base_url: &str, admin_token: &str) {
         &watcher_fetched_before_decision["request"],
         &watcher_created["payload"]["request"],
     ] {
-        assert_eq!(
-            request_view["request_digest"], request_digest,
-            "all per-user projections must carry the canonical create-response digest"
-        );
+        if let Some(context) = created["request"].get("signing") {
+            assert!(
+                request_view["request_digest"].is_null(),
+                "private projection must omit unsalted digest"
+            );
+            assert_eq!(&request_view["signing"], context);
+            let wire: nod_proto::Request = serde_json::from_value(request_view.clone()).unwrap();
+            let context = wire.signing.as_ref().unwrap();
+            assert_eq!(
+                nod_proto::request_digest_v2(&wire, &context.recipients_commitment).unwrap(),
+                context.request_digest
+            );
+        } else {
+            assert_eq!(
+                request_view["request_digest"], request_digest,
+                "legacy projection carries the v1 digest"
+            );
+        }
     }
 
     // Sign and submit the decision with the enrolled key.
+    let request_digest = created["request"]["signing"]["request_digest"]
+        .as_str()
+        .unwrap_or(&request_digest)
+        .to_string();
     let nonce = uuid::Uuid::new_v4().to_string();
     let signed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let text = "smoke approved";

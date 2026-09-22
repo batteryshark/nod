@@ -29,7 +29,12 @@ impl AppleApnsProvider {
 
     pub(crate) fn with_endpoint(config: ApnsConfig, endpoint: String) -> anyhow::Result<Self> {
         Ok(Self {
-            client: Client::builder().http2_adaptive_window(true).build()?,
+            client: Client::builder()
+                .http2_adaptive_window(true)
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
             bundle_id: config.bundle_id,
             endpoint,
             token_signer: ApnsTokenSigner::from_credentials(config.credentials)?,
@@ -41,6 +46,15 @@ impl AppleApnsProvider {
 impl ApnsDelivery for AppleApnsProvider {
     async fn send(&self, notification: &RelayNotification) -> anyhow::Result<()> {
         let url = format!("{}/3/device/{}", self.endpoint, notification.target.token);
+        let payload = apns_payload(notification);
+        if serde_json::to_vec(&payload)?.len() > 4096 {
+            return Err(crate::error::DeliveryFailure {
+                message: "APNs payload exceeds 4096 bytes".to_string(),
+                retryable: false,
+                invalid_token: false,
+            }
+            .into());
+        }
         let response = self
             .client
             .post(url)
@@ -48,14 +62,28 @@ impl ApnsDelivery for AppleApnsProvider {
             .header("apns-topic", &self.bundle_id)
             .header("apns-push-type", PUSH_TYPE_ALERT)
             .header("apns-priority", ALERT_PRIORITY)
-            .json(&apns_payload(notification))
+            .header("apns-collapse-id", &notification.metadata.request_id)
+            .json(&payload)
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Apple APNs rejected push with {status}: {text}");
+            let reason = crate::error::bounded_error_json::<serde_json::Value>(response)
+                .await
+                .and_then(|body| {
+                    body.get("reason")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|value| value.chars().take(160).collect::<String>())
+                })
+                .unwrap_or_else(|| "unknown rejection".to_string());
+            return Err(crate::error::DeliveryFailure {
+                message: format!("Apple APNs rejected push with {status}: {reason}"),
+                retryable: status.is_server_error() || status.as_u16() == 429,
+                invalid_token: matches!(reason.as_str(), "Unregistered" | "BadDeviceToken"),
+            }
+            .into());
         }
         Ok(())
     }
@@ -134,7 +162,64 @@ mod tests {
             metadata: RelayNotificationMetadata {
                 request_id: "request-1".to_string(),
                 channel_id: "default".to_string(),
+                device_id: None,
             },
         }
+    }
+    #[tokio::test]
+    async fn apns_rejections_classify_retries_invalid_tokens_and_bound_diagnostics() {
+        use axum::extract::Path;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/3/device/{token}",
+            post(
+                |Path(token): Path<String>, headers: axum::http::HeaderMap| async move {
+                    assert_eq!(headers.get("apns-collapse-id").unwrap(), "request-1");
+                    match token.as_str() {
+                        "expired" => (StatusCode::GONE, Json(json!({"reason":"Unregistered"}))),
+                        "invalid" => (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"reason":"BadDeviceToken"})),
+                        ),
+                        "credentials" => (
+                            StatusCode::FORBIDDEN,
+                            Json(json!({"reason":"InvalidProviderToken"})),
+                        ),
+                        "throttle" => (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            Json(json!({"reason":"TooManyRequests"})),
+                        ),
+                        _ => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"reason":"x".repeat(100_000)})),
+                        ),
+                    }
+                },
+            ),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let provider =
+            AppleApnsProvider::with_endpoint(test_config(), format!("http://{address}")).unwrap();
+        for (token, retryable, invalid_token) in [
+            ("expired", false, true),
+            ("invalid", false, true),
+            ("credentials", false, false),
+            ("throttle", true, false),
+            ("huge", true, false),
+        ] {
+            let mut notification = valid_notification();
+            notification.target.token = token.to_string();
+            let error = provider.send(&notification).await.unwrap_err();
+            let failure = error
+                .downcast_ref::<crate::error::DeliveryFailure>()
+                .unwrap();
+            assert_eq!(
+                (failure.retryable, failure.invalid_token),
+                (retryable, invalid_token)
+            );
+            assert!(failure.message.len() < 240);
+        }
+        server.abort();
     }
 }

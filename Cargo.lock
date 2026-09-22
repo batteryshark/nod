@@ -2649,6 +2649,8 @@ dependencies = [
  "moxcms",
  "num-traits",
  "png 0.18.1",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -3312,6 +3314,7 @@ name = "nod-client-core"
 version = "1.0.1"
 dependencies = [
  "anyhow",
+ "axum",
  "base64 0.22.1",
  "chrono",
  "directories",
@@ -3324,6 +3327,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.24.0",
@@ -3350,17 +3354,23 @@ name = "nod-desktop"
 version = "1.0.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
+ "image",
  "nod-client-core",
+ "nod-proto",
  "notify-rust",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
  "tauri-plugin-single-instance",
  "tauri-plugin-window-state",
  "tokio",
+ "url",
  "windows 0.58.0",
  "winreg 0.55.0",
  "zbus",
@@ -3397,6 +3407,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "nod-apns-relay",
+ "nod-client-core",
  "nod-proto",
  "openssl",
  "rand 0.8.6",
@@ -3428,6 +3439,7 @@ dependencies = [
  "chrono",
  "crossterm",
  "nod-client-core",
+ "nod-proto",
  "ratatui",
  "tokio",
  "tracing",
@@ -8526,6 +8538,21 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zune-core"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b"
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+dependencies = [
+ "zune-core",
+]
 
 [[package]]
 name = "zvariant"

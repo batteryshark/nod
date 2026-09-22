@@ -59,6 +59,7 @@ impl RelayPolicy {
             metadata: RelayNotificationMetadata {
                 request_id: required_text("metadata.request_id", &request.metadata.request_id)?,
                 channel_id: required_text("metadata.channel_id", &request.metadata.channel_id)?,
+                device_id: request.metadata.device_id,
             },
         })
     }
@@ -70,8 +71,14 @@ impl RelayPolicy {
     /// same bundle-id pinning and field validation, with the error mapped to
     /// `anyhow`.
     pub fn sanitize(&self, request: ApnsRelayRequest) -> anyhow::Result<RelayNotification> {
-        self.validate(request)
-            .map_err(|err| anyhow::anyhow!(err.to_string()))
+        self.validate(request).map_err(|err| {
+            crate::error::DeliveryFailure {
+                message: err.to_string(),
+                retryable: false,
+                invalid_token: false,
+            }
+            .into()
+        })
     }
 }
 
@@ -108,6 +115,9 @@ async fn relay_notification(
     let notification = state.policy.validate(request)?;
     state.delivery.send(&notification).await.map_err(|err| {
         tracing::warn!(error = %err, "APNs delivery failed");
+        if let Some(failure) = err.downcast_ref::<crate::error::DeliveryFailure>() {
+            return ApiError::Delivery(failure.clone());
+        }
         ApiError::Upstream("APNs delivery failed".to_string())
     })?;
     Ok(Json(AckResponse { ok: true }))
@@ -148,6 +158,8 @@ pub struct NotificationContent {
 pub struct NotificationMetadata {
     pub request_id: String,
     pub channel_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
 }
 
 /// Sanitized notification passed to APNs delivery after request validation.
@@ -198,6 +210,7 @@ pub struct RelayNotificationContent {
 pub struct RelayNotificationMetadata {
     pub request_id: String,
     pub channel_id: String,
+    pub device_id: Option<String>,
 }
 
 #[derive(Serialize)]

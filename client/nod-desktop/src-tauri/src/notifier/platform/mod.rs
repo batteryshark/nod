@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(any(target_os = "linux", test))]
+mod notification_registry;
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod unsupported;
 #[cfg(target_os = "windows")]

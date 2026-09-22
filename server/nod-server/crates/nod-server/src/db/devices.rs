@@ -26,7 +26,7 @@ pub async fn list_devices_for_admin(pool: &SqlitePool) -> Result<Vec<AdminDevice
             d.signing_key_id,
             d.signing_key_algorithm,
             d.signing_public_key,
-            d.notification_sound,
+            d.notification_sound, d.notification_preferences_json,
             da.provider AS attestation_provider,
             da.status AS attestation_status,
             da.key_id AS attestation_key_id,
@@ -41,6 +41,7 @@ pub async fn list_devices_for_admin(pool: &SqlitePool) -> Result<Vec<AdminDevice
         LEFT JOIN users u ON u.id = d.user_id
         LEFT JOIN device_attestations da
             ON da.device_id = d.id AND da.provider = 'apple_app_attest'
+        WHERE d.revoked_at IS NULL
         ORDER BY d.created_at DESC
         "#,
     )
@@ -65,6 +66,9 @@ pub async fn list_devices_for_admin(pool: &SqlitePool) -> Result<Vec<AdminDevice
             has_push_token: row.get::<Option<String>, _>("push_token").is_some(),
             has_signing_key: row.get::<Option<String>, _>("signing_public_key").is_some(),
             notification_sound: row.get("notification_sound"),
+            notification_preferences: serde_json::from_str(
+                &row.get::<String, _>("notification_preferences_json"),
+            )?,
             attestation: row_to_attestation_summary(&row)?,
             last_seen_at: parse_time(row.get("last_seen_at"))?,
             created_at: parse_time(row.get("created_at"))?,
@@ -79,9 +83,9 @@ pub async fn get_device(pool: &SqlitePool, device_id: &str) -> Result<Device, Ap
         r#"
         SELECT id, COALESCE(user_id, ?) AS user_id, name, platform, native_app_id,
             push_provider, push_token, signing_key_id, signing_key_algorithm, signing_public_key,
-            notification_sound, last_seen_at, created_at
+            notification_sound, notification_preferences_json, last_seen_at, created_at
         FROM devices
-        WHERE id = ?
+        WHERE id = ? AND revoked_at IS NULL
         "#,
     )
     .bind(DEFAULT_USER_ID)
@@ -93,10 +97,13 @@ pub async fn get_device(pool: &SqlitePool, device_id: &str) -> Result<Device, Ap
 }
 
 pub async fn delete_device(pool: &SqlitePool, device_id: &str) -> Result<(), ApiError> {
-    let decision = sqlx::query("DELETE FROM devices WHERE id = ?")
-        .bind(device_id)
-        .execute(pool)
-        .await?;
+    let decision = sqlx::query(
+        "UPDATE devices SET revoked_at = ?, push_token = NULL WHERE id = ? AND revoked_at IS NULL",
+    )
+    .bind(now_string())
+    .bind(device_id)
+    .execute(pool)
+    .await?;
     if decision.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
@@ -113,7 +120,7 @@ pub async fn list_user_devices(
         r#"
         SELECT d.id, COALESCE(d.user_id, ?) AS user_id, d.name, d.platform,
             d.native_app_id, d.push_provider, d.push_token, d.signing_key_id, d.signing_key_algorithm,
-            d.signing_public_key, d.notification_sound,
+            d.signing_public_key, d.notification_sound, d.notification_preferences_json,
             da.provider AS attestation_provider,
             da.status AS attestation_status,
             da.key_id AS attestation_key_id,
@@ -126,7 +133,7 @@ pub async fn list_user_devices(
         FROM devices d
         LEFT JOIN device_attestations da
             ON da.device_id = d.id AND da.provider = 'apple_app_attest'
-        WHERE COALESCE(d.user_id, ?) = ?
+        WHERE d.revoked_at IS NULL AND COALESCE(d.user_id, ?) = ?
         ORDER BY d.created_at DESC
         "#,
     )
@@ -155,7 +162,7 @@ pub async fn rename_user_device(
         r#"
         UPDATE devices
         SET name = ?, last_seen_at = ?
-        WHERE id = ? AND COALESCE(user_id, ?) = ?
+        WHERE id = ? AND revoked_at IS NULL AND COALESCE(user_id, ?) = ?
         "#,
     )
     .bind(req.name.trim())
@@ -178,10 +185,11 @@ pub async fn revoke_user_device(
 ) -> Result<(), ApiError> {
     let deleted = sqlx::query(
         r#"
-        DELETE FROM devices
-        WHERE id = ? AND COALESCE(user_id, ?) = ?
+        UPDATE devices SET revoked_at = ?, push_token = NULL
+        WHERE id = ? AND revoked_at IS NULL AND COALESCE(user_id, ?) = ?
         "#,
     )
+    .bind(now_string())
     .bind(device_id)
     .bind(DEFAULT_USER_ID)
     .bind(user_id)
@@ -203,7 +211,7 @@ async fn get_user_device(
         r#"
         SELECT d.id, COALESCE(d.user_id, ?) AS user_id, d.name, d.platform,
             d.native_app_id, d.push_provider, d.push_token, d.signing_key_id, d.signing_key_algorithm,
-            d.signing_public_key, d.notification_sound,
+            d.signing_public_key, d.notification_sound, d.notification_preferences_json,
             da.provider AS attestation_provider,
             da.status AS attestation_status,
             da.key_id AS attestation_key_id,
@@ -216,7 +224,7 @@ async fn get_user_device(
         FROM devices d
         LEFT JOIN device_attestations da
             ON da.device_id = d.id AND da.provider = 'apple_app_attest'
-        WHERE d.id = ? AND COALESCE(d.user_id, ?) = ?
+        WHERE d.id = ? AND d.revoked_at IS NULL AND COALESCE(d.user_id, ?) = ?
         "#,
     )
     .bind(DEFAULT_USER_ID)

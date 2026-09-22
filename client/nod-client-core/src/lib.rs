@@ -7,9 +7,13 @@ mod store;
 
 pub use api::{display_name_for, normalize_base_url, profile_id_for};
 pub use runtime::{
-    ChannelParams, EnrollParams, NodClientMessage, NodClientRuntime, NotificationPreferenceParams,
+    ChannelParams, DeviceNotificationPreferenceParams, EnrollParams, NodClientMessage,
+    NodClientRuntime, NotificationPreferenceParams, OpenRequestParams, QueryHistoryParams,
     RegisterPushTokenParams, RenameDeviceParams, RevokeDeviceParams, RpcRequest, RpcResponse,
     SelectRequestParams, SelectServerParams, SetSubscriptionParams, SignerBackend,
-    SubmitOptionParams,
+    SubmitOptionParams, SubmitRequestOptionParams,
 };
-pub use signing::{ForeignSigner, ForeignSignerKey};
+pub use signing::{
+    build_decision_signature, DecisionSigningRequest, DeviceSigner, ForeignSigner,
+    ForeignSignerKey, StoredSigningKey,
+};

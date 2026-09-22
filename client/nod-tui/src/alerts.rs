@@ -39,8 +39,8 @@ impl AlertState {
         now: Instant,
     ) -> AlertEffect {
         match request {
-            NodClientMessage::NotificationCandidate { request } => self.alert_for(request, now),
-            NodClientMessage::NotificationRemoved { request_id } => {
+            NodClientMessage::NotificationCandidate { request, .. } => self.alert_for(request, now),
+            NodClientMessage::NotificationRemoved { request_id, .. } => {
                 self.remove_request(request_id);
                 AlertEffect::default()
             }
@@ -79,7 +79,10 @@ impl AlertState {
 
     fn alert_for(&mut self, request: &Request, now: Instant) -> AlertEffect {
         self.active_request_id = Some(request.id.clone());
-        self.message = Some(format!("New request: {}", request.title));
+        self.message = Some(format!(
+            "New request: {}",
+            nod_proto::notification_preview(request).title
+        ));
 
         if self.muted {
             return AlertEffect::default();
@@ -113,6 +116,7 @@ mod tests {
         let mut alerts = AlertState::new();
         let effect = alerts.apply_runtime_message(
             &NodClientMessage::NotificationCandidate {
+                server_id: "local".into(),
                 request: Box::new(request("new", "default")),
             },
             now,
@@ -128,6 +132,21 @@ mod tests {
     }
 
     #[test]
+    fn redacted_candidate_keeps_private_title_out_of_terminal_alert() {
+        let mut candidate = request("private-title", "default");
+        candidate.notification.redact = true;
+        let mut alerts = AlertState::new();
+        alerts.apply_runtime_message(
+            &NodClientMessage::NotificationCandidate {
+                server_id: "local".into(),
+                request: Box::new(candidate),
+            },
+            Instant::now(),
+        );
+        assert_eq!(alerts.message(), Some("New request: Nod"));
+    }
+
+    #[test]
     fn mute_suppresses_bell_and_flash() {
         let now = Instant::now();
         let mut alerts = AlertState::new();
@@ -135,6 +154,7 @@ mod tests {
 
         let effect = alerts.apply_runtime_message(
             &NodClientMessage::NotificationCandidate {
+                server_id: "local".into(),
                 request: Box::new(request("quiet", "default")),
             },
             now,
@@ -151,6 +171,7 @@ mod tests {
         let mut alerts = AlertState::new();
         alerts.apply_runtime_message(
             &NodClientMessage::NotificationCandidate {
+                server_id: "local".into(),
                 request: Box::new(request("done", "default")),
             },
             now,
@@ -158,6 +179,7 @@ mod tests {
 
         alerts.apply_runtime_message(
             &NodClientMessage::NotificationRemoved {
+                server_id: "local".into(),
                 request_id: "done".to_string(),
             },
             now,

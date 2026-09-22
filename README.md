@@ -21,11 +21,21 @@ the [latest release](https://github.com/batteryshark/nod/releases/latest):
 
 ```bash
 tar -xzf nod-server-*.tar.gz
-NOD_ADMIN_TOKEN=$(openssl rand -hex 24) ./nod-server
+umask 077
+mkdir -p nod-data
+if [ ! -s nod-data/admin-token ]; then
+  openssl rand -hex 24 > nod-data/admin-token
+fi
+printf 'Admin token (save in your password manager): '
+cat nod-data/admin-token
+export NOD_ADMIN_TOKEN="$(cat nod-data/admin-token)"
+./nod-server
 ```
 
 Open `http://localhost:8767/admin`, log in with the token, mint an enrollment
-code, and connect a client. Full per-OS instructions (including Windows,
+code, and connect a client. The token remains in `nod-data/admin-token` for
+later logins; keep that file private. On a phone, `localhost` means the phone:
+use the server computer's reachable address instead. Full per-OS instructions (including Windows,
 Docker, run-at-login, and remote access over Tailscale) are in
 [docs/deploy.md](docs/deploy.md).
 
@@ -81,7 +91,7 @@ Nod makes those ideas explicit:
   notifications or full Apple Push Notification service delivery through the
   APNs relay.
 - Users can approve, reject, dismiss, open, or choose custom actions. Approval
-  and rejection options can require a text reason that is returned to the
+  and rejection options can offer a text field for optional notes returned to the
   issuer.
 - Issuers can read decisions, wait for a result, cancel pending requests, set
   timeouts, dedupe retried creates, and optionally receive callback wake-ups.
@@ -94,7 +104,7 @@ Nod requests are structured cards, not just strings. A request can include:
 - structured fields for values like environment, amount, risk, or owner
 - links to runbooks, dashboards, diffs, tickets, or logs
 - optional image URL for screenshots or other context
-- priority, privacy, dedupe key, expiry, and optional callback wake-up URL
+- notification privacy, dedupe key, expiry, and optional callback wake-up URL
 - shared resolution, where one decision resolves the request for everyone
 - per-user resolution, where each recipient makes their own decision
 - options such as `approve`, `approve_with_text`, `reject`,
@@ -120,7 +130,6 @@ Example:
     { "label": "Runbook", "url": "https://example.com/runbooks/deploy" }
   ],
   "image_url": "https://example.com/screenshots/canary.png",
-  "priority": 8,
   "dedupe_key": "deploy:api-gateway:42",
   "expires_at": "2027-01-01T00:10:00Z",
   "options": [
@@ -159,9 +168,9 @@ a decision is recorded. Treat that callback as a wake-up hint only: receivers
 must authenticate their own route and read or wait for the decision before
 acting on an approval.
 
-Apple push is handled by a separate mTLS APNs relay. That keeps Apple provider
-credentials out of the main server while still allowing iOS and macOS clients to
-receive background and lock-screen push notifications. Without a configured
+Apple push can use a separate mTLS APNs relay to keep provider credentials out
+of the main server, or the embedded relay for a single-process deployment.
+Both support background and lock-screen notifications. Without a configured
 relay, clients can still use WebSocket sync and local notifications while they
 are connected.
 
@@ -172,24 +181,28 @@ are connected.
 - `server/nod-apns-relay`: standalone mTLS APNs relay that keeps Apple push
   credentials outside the main server.
 - `client/nod-apple`: native SwiftUI macOS and iOS clients.
-- `client/nod-client-core`: Rust client runtime shared by desktop and TUI
-  clients.
+- `client/nod-client-core`: Rust client runtime shared by desktop, TUI, and
+  Apple clients (Apple calls through `nod-client-ffi`).
 - `client/nod-desktop`: Tauri + React desktop client for Windows and Linux.
 - `client/nod-tui`: Ratatui terminal client for headless workflows.
 
-Each project directory has its own README with build, test, and deployment
-details.
+The [architecture guide](docs/architecture.md) maps ownership and the runtime
+flows. Client READMEs and [deployment guide](docs/deploy.md) cover platform setup.
 
 ## Development
 
 One Cargo workspace covers the server, relay, and every Rust client:
 
 ```bash
-cargo test --workspace
+scripts/prepare-test-fixtures
+cargo test --workspace --locked
 ```
 
-The relay's TLS tests need local fixtures once:
-`server/nod-apns-relay/tests/fixtures/mtls/generate`. The full pre-release
+Use stable Rust, OpenSSL for test certificates, and Node 22.12+ for the desktop
+frontend. On Linux, the full workspace also needs Tauri's GTK/WebKit system
+dependencies; `cargo test --workspace --exclude nod-desktop --locked` checks the
+remaining Rust components. The fixture script prepares both relay and server
+test certificates without replacing valid existing fixtures. The full pre-release
 gate (Swift, desktop frontend, drift check, end-to-end smoke) lives in
 [docs/release-checklist.md](docs/release-checklist.md), and
 `server/nod-server/scripts/nod-smoke` exercises a running server end to end.

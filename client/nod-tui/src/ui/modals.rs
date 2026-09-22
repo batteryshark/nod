@@ -2,7 +2,7 @@ use nod_client_core::models::UserDevice;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     text::Line,
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -17,23 +17,81 @@ use super::{
 
 pub(super) fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &AppState, modal: &Modal) {
     match modal {
-        Modal::Enrollment(_) => {}
-        Modal::OptionText(form) => render_option_text_modal(frame, area, form),
+        Modal::Enrollment(_) => {
+            frame.render_widget(Clear, centered_rect(56, 12, area));
+            super::panes::render_enrollment(frame, area, app);
+        }
+        Modal::OptionText(form) => render_option_text_modal(frame, area, form, app),
         Modal::Settings(settings) => render_settings_modal(frame, area, app, settings),
         Modal::RenameDevice(form) => render_rename_modal(frame, area, form),
         Modal::Filter(input) => render_text_modal(frame, area, "Filter", input.value()),
         Modal::Help => render_help_modal(frame, area),
+        Modal::Actions { request, selected } => {
+            let options = crate::domain::submittable_options(request);
+            let items: Vec<_> = options
+                .iter()
+                .enumerate()
+                .map(|(index, option)| {
+                    ListItem::new(format!(
+                        "{}{}{}",
+                        selected_marker(index == *selected),
+                        option.label,
+                        if crate::domain::option_requires_text(option) {
+                            " (notes)"
+                        } else {
+                            ""
+                        }
+                    ))
+                })
+                .collect();
+            let modal_area = centered_rect(64, 14, area);
+            frame.render_widget(Clear, modal_area);
+            frame.render_stateful_widget(
+                List::new(items).block(
+                    Block::default()
+                        .title("Actions · Enter selects · Esc cancels")
+                        .borders(Borders::ALL),
+                ),
+                modal_area,
+                &mut ListState::default().with_selected(Some(*selected)),
+            );
+        }
+        Modal::Confirm(action) => render_box(
+            frame,
+            area,
+            "Confirm",
+            vec![
+                Line::from(action.prompt()),
+                Line::from(""),
+                Line::from(
+                    app.error()
+                        .or_else(|| app.running())
+                        .unwrap_or("Enter confirms. Esc cancels."),
+                ),
+            ],
+            70,
+            8,
+        ),
     }
 }
 
-fn render_option_text_modal(frame: &mut Frame<'_>, area: Rect, form: &OptionTextForm) {
+fn render_option_text_modal(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    form: &OptionTextForm,
+    app: &AppState,
+) {
     let title = format!("{} notes", form.label());
     let hint = form.placeholder().unwrap_or("Text");
     let body = vec![
         Line::from(hint.to_string()),
         Line::from(form.input().value().to_string()),
         Line::from(""),
-        Line::from("Enter submits. Esc cancels."),
+        Line::from(
+            app.error()
+                .or_else(|| app.running())
+                .unwrap_or("Enter submits. Esc cancels."),
+        ),
     ];
     render_box(frame, area, &title, body, 64, 9);
 }
@@ -131,7 +189,11 @@ fn render_settings_channels(
             ))
         })
         .collect();
-    frame.render_widget(List::new(items), area);
+    frame.render_stateful_widget(
+        List::new(items),
+        area,
+        &mut ListState::default().with_selected(Some(settings.selected_index())),
+    );
 }
 
 fn render_settings_sound(
@@ -150,7 +212,11 @@ fn render_settings_sound(
             ListItem::new(format!("{marker}{checked} {sound}"))
         })
         .collect();
-    frame.render_widget(List::new(items), area);
+    frame.render_stateful_widget(
+        List::new(items),
+        area,
+        &mut ListState::default().with_selected(Some(settings.selected_index())),
+    );
 }
 
 fn render_settings_devices(
@@ -178,7 +244,11 @@ fn render_settings_devices(
     } else {
         items
     };
-    frame.render_widget(List::new(empty), area);
+    frame.render_stateful_widget(
+        List::new(empty),
+        area,
+        &mut ListState::default().with_selected(Some(settings.selected_index())),
+    );
 }
 
 fn render_help_modal(frame: &mut Frame<'_>, area: Rect) {
@@ -186,10 +256,12 @@ fn render_help_modal(frame: &mut Frame<'_>, area: Rect) {
         Line::from("j/k or arrows move"),
         Line::from("Tab changes focus"),
         Line::from("Enter opens detail or submits form"),
-        Line::from("a approve, r reject, d dismiss, n notes"),
+        Line::from("a approve, r reject, d dismiss, n notes, o all actions"),
+        Line::from("PgUp/PgDn scroll; Home/End in detail; 0 all channels"),
+        Line::from("e enroll another server; H history, ] older"),
         Line::from("c clear channel, R refresh, / filter"),
         Line::from("s server focus, , settings, m mute alerts"),
-        Line::from("q quit or close modal"),
+        Line::from("Esc closes forms; q quits outside text fields"),
     ];
-    render_box(frame, area, "Help", body, 58, 11);
+    render_box(frame, area, "Help", body, 68, 14);
 }

@@ -272,7 +272,7 @@
       background: #fff;
       box-shadow: 0 18px 36px rgba(15, 23, 42, .18);
     }
-    emoji-picker {
+    #channelEmojiPicker {
       width: 100%;
       height: 370px;
       --border-color: var(--border);
@@ -552,13 +552,12 @@
       header { align-items: flex-start; }
     }
   </style>
-  <script type="module" src="https://cdn.jsdelivr.net/npm/emoji-picker-element@1.29.0/index.js"></script>
 </head>
 <body>
   <header>
     <div>
       <h1>Nod Admin</h1>
-      <div id="status" class="muted">Checking session</div>
+      <div id="status" class="muted" role="status" aria-live="polite">Checking session</div>
     </div>
     <div class="row">
       <button id="refreshButton">Refresh</button>
@@ -584,6 +583,7 @@
         <button class="tab-button" type="button" data-tab="users-devices">Users & Devices</button>
         <button class="tab-button" type="button" data-tab="channels">Channels</button>
         <button class="tab-button" type="button" data-tab="test-request">Test Request</button>
+        <button class="tab-button" type="button" data-tab="activity">Activity & Delivery</button>
         <button class="tab-button" type="button" data-tab="settings">Settings</button>
       </nav>
 
@@ -767,6 +767,9 @@
         </section>
       </div>
 
+      <div class="tab-panel stack" data-tab-panel="activity">
+        <section class="panel stack"><h2>Activity & Delivery</h2><p class="muted">Recent requests and push delivery attempts. Accepted means the push provider accepted delivery; it does not confirm that someone saw the notification. Use Refresh to update.</p><div id="auditHealth"></div><h3>Recent requests</h3><div class="table-scroll"><table><thead><tr><th>Title / ID</th><th>Channel</th><th>Status</th><th>Updated</th></tr></thead><tbody id="activityRequests"></tbody></table></div><h3>Push deliveries</h3><div class="table-scroll"><table><thead><tr><th>Request</th><th>Device</th><th>Status</th><th>Attempts</th><th>Updated / Error</th></tr></thead><tbody id="activityDeliveries"></tbody></table></div></section>
+      </div>
       <div class="tab-panel stack" data-tab-panel="settings">
         <section class="panel stack">
           <div class="split">
@@ -818,7 +821,9 @@
               <span id="channelEmojiPreview" aria-hidden="true">🔔</span>
             </button>
             <div id="emojiPickerPopover" class="emoji-popover hidden" aria-label="Emoji picker">
-              <emoji-picker id="channelEmojiPicker"></emoji-picker>
+              <label>Channel emoji<input id="channelEmojiPicker" aria-label="Channel emoji" maxlength="32" placeholder="Paste an emoji" list="channelEmojiPresets"></label>
+              <datalist id="channelEmojiPresets"><option value="🔔"><option value="🚀"><option value="✅"><option value="🛠️"><option value="📦"><option value="💬"><option value="⚠️"><option value="🏠"><option value="🔐"></datalist>
+              <button id="applyChannelEmoji" type="button">Use emoji</button>
             </div>
           </div>
           <label>Name
@@ -962,13 +967,15 @@
     const adminBase = `${basePath}/admin`;
     const apiBase = `${basePath}/api/v1/admin`;
     const defaultTab = "users-devices";
-    const tabIds = [defaultTab, "channels", "test-request", "settings"];
+    const tabIds = [defaultTab, "channels", "test-request", "activity", "settings"];
     const state = {
       users: [],
       channels: [],
       devices: [],
       tokens: [],
       settings: null,
+      activity: null,
+      testAttempt: null,
       summary: null,
       editingUserId: null,
       editingChannelId: null,
@@ -1010,6 +1017,7 @@
       const emoji = value || "🔔";
       $("channelEmoji").value = emoji;
       $("channelEmojiPreview").textContent = emoji;
+      $("channelEmojiPicker").value = emoji;
     }
 
     function setEmojiPickerOpen(open) {
@@ -1079,13 +1087,14 @@
 
     async function loadAll() {
       setStatus("Loading");
-      const [summary, users, channels, devices, tokens, settings] = await Promise.all([
+      const [summary, users, channels, devices, tokens, settings, activity] = await Promise.all([
         api("/summary"),
         api("/users"),
         api("/channels"),
         api("/devices"),
         api("/issuer-tokens"),
-        api("/settings")
+        api("/settings"),
+        api("/activity")
       ]);
       state.summary = summary;
       state.users = users.users || [];
@@ -1093,6 +1102,7 @@
       state.devices = devices.devices || [];
       state.tokens = tokens.tokens || [];
       state.settings = settings;
+      state.activity = activity;
       showAdmin();
       render();
       setStatus("Ready", "ok");
@@ -1382,22 +1392,22 @@
       const subscribedUsers = state.users.filter((user) => userSubscribedToChannel(user, channelId));
       const subscribedIds = new Set(subscribedUsers.map((user) => user.id));
       const selectedIds = state.users
-        .filter((user) => previous.has(user.id) && subscribedIds.has(user.id))
+        .filter((user) => previous.has(user.id))
         .map((user) => user.id);
 
       $("testRecipientSummary").textContent = specific
-        ? `${selectedIds.length} selected / ${subscribedUsers.length} subscribed`
+        ? `${selectedIds.length} selected / ${state.users.length} users (explicit recipients override subscriptions)`
         : `${subscribedUsers.length} subscribed`;
-      $("selectTestRecipients").disabled = !specific || subscribedUsers.length === 0;
+      $("selectTestRecipients").disabled = !specific || state.users.length === 0;
       $("clearTestRecipients").disabled = !specific || selectedIds.length === 0;
 
       $("testRecipientsList").innerHTML = state.users.map((user) => {
         const subscribed = subscribedIds.has(user.id);
         const checked = selectedIds.includes(user.id);
-        const disabled = !specific || !subscribed;
+        const disabled = !specific;
         const note = subscribed ? "" : ` <span class="muted">not subscribed</span>`;
         return `
-          <label class="${subscribed ? "" : "disabled"}">
+          <label>
             <input type="checkbox" data-test-recipient="${esc(user.id)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
             <span>${esc(user.name)} <code>${esc(user.id)}</code>${note}</span>
           </label>
@@ -1426,6 +1436,21 @@
       ].join("");
     }
 
+    function renderActivity() {
+      const activity = state.activity || {};
+      const audit = activity.audit || {};
+      $("auditHealth").textContent = audit.healthy ? "Audit logging healthy" : `Audit logging needs attention: ${audit.last_error || "status unavailable"}`;
+      $("auditHealth").className = audit.healthy ? "ok" : "danger-text";
+      $("activityRequests").innerHTML = (activity.requests || []).map((request) => {
+        const decisions = request.decisions?.length ? request.decisions.map((entry) => entry.decision) : request.decision ? [request.decision] : [];
+        const receipts = decisions.map((decision) => `<li>${esc(decision.actor_user_id || "Unknown user")}: ${esc(decision.option_label)} · ${esc(formatDate(decision.resolved_at))}${decision.text ? `<p>${esc(decision.text)}</p>` : ""}</li>`).join("");
+        const ageMinutes = Math.max(0, Math.floor((Date.now() - new Date(request.created_at).getTime()) / 60000));
+        const age = request.status === "pending" && Number.isFinite(ageMinutes) ? ` · waiting ${ageMinutes < 60 ? `${ageMinutes}m` : `${Math.floor(ageMinutes / 60)}h`}` : "";
+        return `<tr><td>${esc(request.title)}<br><code>${esc(request.id)}</code>${receipts ? `<details><summary>${decisions.length} decision receipt(s)</summary><ul>${receipts}</ul></details>` : ""}</td><td>${esc(request.channel_id)}</td><td>${esc(request.status + age)}</td><td>${esc(formatDate(request.updated_at))}</td></tr>`;
+      }).join("") || '<tr><td colspan="4">No recent requests.</td></tr>';
+      $("activityDeliveries").innerHTML = (activity.deliveries || []).map((delivery) => `<tr><td><code>${esc(delivery.request_id)}</code></td><td>${esc(delivery.device_id)}</td><td>${esc(delivery.status)}</td><td>${esc(delivery.attempts)}</td><td>${esc(formatDate(delivery.updated_at))}<br>${esc(delivery.error || "")}</td></tr>`).join("") || '<tr><td colspan="5">No push delivery attempts. WebSocket clients receive requests through their live connection.</td></tr>';
+    }
+
     function render() {
       setActiveTab(state.activeTab || tabFromHash(), false);
       renderSummary();
@@ -1439,6 +1464,7 @@
       renderTestChannelOptions();
       renderTestRecipients();
       renderSettings();
+      renderActivity();
       renderSubscriptionModal();
       updateUserSlug();
       updateChannelSlug();
@@ -1459,6 +1485,38 @@
           <button type="button" data-copy-secret="${esc(value)}">Copy</button>
         </div>
       `;
+    }
+
+    async function copySecret(button) {
+      const value = button.dataset.copySecret;
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(value);
+          setStatus("Copied", "ok");
+          return;
+        } catch (_) { /* Private HTTP and browser permissions can disable clipboard access. */ }
+      }
+      let field = button.nextElementSibling;
+      if (!field?.hasAttribute("data-copy-fallback")) {
+        field = document.createElement("textarea");
+        field.readOnly = true;
+        field.rows = 3;
+        field.setAttribute("aria-label", "Text to copy");
+        field.setAttribute("data-copy-fallback", "");
+        button.insertAdjacentElement("afterend", field);
+      }
+      field.value = value;
+      field.focus();
+      field.select();
+      let copied = false;
+      try { copied = document.execCommand?.("copy") === true; } catch (_) { /* Keep the selected text for manual copying. */ }
+      if (copied) {
+        field.remove();
+        button.focus();
+        setStatus("Copied", "ok");
+      } else {
+        setStatus("Text selected. Press Ctrl+C or Command+C to copy.");
+      }
     }
 
     function subscriptionDiffs() {
@@ -2021,10 +2079,8 @@
     $("userName").addEventListener("input", updateUserSlug);
     $("resetChannelForm").addEventListener("click", resetChannelForm);
     $("channelName").addEventListener("input", updateChannelSlug);
-    $("channelEmojiPicker").addEventListener("emoji-click", (event) => {
-      const unicode = event.detail && event.detail.unicode;
-      if (!unicode) return;
-      setChannelEmoji(unicode);
+    $("applyChannelEmoji").addEventListener("click", () => {
+      setChannelEmoji($("channelEmojiPicker").value.trim());
       setEmojiPickerOpen(false);
       $("emojiPickerToggle").focus();
     });
@@ -2125,6 +2181,18 @@
           `Enrollment code for ${name}, expires ${formatDate(data.expires_at)}`,
           data.code
         );
+        const link = new URL("nod://enroll");
+        link.searchParams.set("server", `${location.origin}${basePath}`);
+        link.searchParams.set("code", data.code);
+        const linkRow = document.createElement("div");
+        linkRow.className = "secret";
+        const description = document.createElement("p");
+        description.textContent = "Open this link on the new device or paste it into Nod registration. It contains the one-use code; share it only with this user.";
+        const copy = document.createElement("button");
+        copy.type = "button"; copy.textContent = "Copy enrollment link"; copy.dataset.copySecret = link.href;
+        const open = document.createElement("a");
+        open.href = link.href; open.textContent = "Open in Nod";
+        linkRow.append(description, copy, open); $("deviceEnrollmentSecret").append(linkRow);
         setStatus("Enrollment code created", "ok");
       } catch (err) {
         setStatus(err.message, "danger-text");
@@ -2198,17 +2266,26 @@
 
     $("testRequestForm").addEventListener("submit", async (event) => {
       event.preventDefault();
+      const button = $("testRequestSubmit");
+      if (button.disabled) return;
+      button.disabled = true;
       try {
-        const data = await api("/test-requests", {
-          method: "POST",
-          body: JSON.stringify(buildTestRequestPayload())
-        });
-        await loadAll();
+        const draft = buildTestRequestPayload();
+        const fingerprint = JSON.stringify({ ...draft, expires_at: $("testExpires").value });
+        if (!state.testAttempt || state.testAttempt.fingerprint !== fingerprint) {
+          // getRandomValues also works on private HTTP hosts; randomUUID requires a secure context.
+          const identity = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+          state.testAttempt = { fingerprint, payload: { ...draft, idempotency_key: `admin-test-${identity}` } };
+        }
+        const data = await api("/test-requests", { method: "POST", body: JSON.stringify(state.testAttempt.payload) });
+        state.testAttempt = null;
         showTestRequestResult(data);
-        setStatus(data.deduped ? "Test matched existing pending request" : "Test request sent", "ok");
-      } catch (err) {
-        setStatus(err.message, "danger-text");
-      }
+        try {
+          await loadAll();
+          setStatus(data.deduped ? "Recovered existing test request" : "Test request created; check Activity & Delivery for delivery status", "ok");
+        } catch (refreshError) { setStatus(`Test request was created. Activity refresh failed: ${refreshError.message}`, "danger-text"); }
+      } catch (err) { setStatus(`${err.message}. The test draft is kept; retry uses the same request identity.`, "danger-text"); }
+      finally { button.disabled = state.channels.length === 0; }
     });
 
     $("tokenForm").addEventListener("submit", async (event) => {
@@ -2245,8 +2322,7 @@
       }
 
       if (button.dataset.copySecret) {
-        await navigator.clipboard.writeText(button.dataset.copySecret);
-        setStatus("Copied", "ok");
+        await copySecret(button);
         return;
       }
 

@@ -2,7 +2,7 @@ use std::{path::Path, str::FromStr};
 
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
-    SqlitePool,
+    Row, SqlitePool,
 };
 use url::Url;
 
@@ -29,7 +29,48 @@ async fn create_greenfield_schema(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::raw_sql(include_str!("schema.sql"))
         .execute(pool)
         .await?;
+    migrate_existing_databases(pool).await?;
     seed_defaults(pool).await?;
+    Ok(())
+}
+
+async fn migrate_existing_databases(pool: &SqlitePool) -> anyhow::Result<()> {
+    // Additive migrations preserve installed enrollments and the original v1
+    // request snapshots. The random salt is never included in device views.
+    for (table, column, definition) in [
+        ("users", "deleted_at", "TEXT"),
+        ("devices", "revoked_at", "TEXT"),
+        (
+            "devices",
+            "notification_preferences_json",
+            "TEXT NOT NULL DEFAULT '{}'",
+        ),
+        ("requests", "recipient_salt", "TEXT NOT NULL DEFAULT ''"),
+        (
+            "requests",
+            "explicit_recipients",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+    ] {
+        let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+            .fetch_all(pool)
+            .await?;
+        if !rows
+            .iter()
+            .any(|row| row.get::<String, _>("name") == column)
+        {
+            sqlx::query(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            ))
+            .execute(pool)
+            .await?;
+        }
+    }
+    sqlx::query(
+        "UPDATE requests SET recipient_salt = lower(hex(randomblob(32))) WHERE recipient_salt = ''",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -86,4 +127,68 @@ fn ensure_sqlite_parent(database_url: &str) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn additive_upgrade_preserves_installed_enrollment_and_stable_commitment_salt() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = Config::with_admin_token("test-admin");
+        config.data_dir = directory.path().join("data");
+        config.database_url = format!("sqlite://{}", directory.path().join("old.sqlite").display());
+        let options = SqliteConnectOptions::from_str(&config.database_url)
+            .unwrap()
+            .create_if_missing(true);
+        let old = SqlitePool::connect_with(options).await.unwrap();
+        let previous_schema = include_str!("schema.sql")
+            .replace(
+                "    updated_at TEXT NOT NULL,\n    deleted_at TEXT",
+                "    updated_at TEXT NOT NULL",
+            )
+            .replace("    revoked_at TEXT,\n", "")
+            .replace(
+                "    notification_preferences_json TEXT NOT NULL DEFAULT '{}',\n",
+                "",
+            )
+            .replace("    recipient_salt TEXT NOT NULL DEFAULT '',\n", "")
+            .replace("    explicit_recipients INTEGER NOT NULL DEFAULT 0,\n", "");
+        sqlx::raw_sql(&previous_schema).execute(&old).await.unwrap();
+        seed_defaults(&old).await.unwrap();
+        sqlx::query("INSERT INTO devices(id,user_id,name,platform,token_hash,signing_public_key,last_seen_at,created_at) VALUES('installed','owner','Phone','ios','preserved-token-hash','preserved-public-key','2026-09-01T00:00:00.000Z','2026-09-01T00:00:00.000Z')")
+            .execute(&old).await.unwrap();
+        sqlx::query("INSERT INTO requests(id,channel_id,title,summary,body_markdown,fields_json,links_json,status,created_at,updated_at) VALUES('old-request','default','Old','','','[]','[]','pending','2026-09-01T00:00:00.000Z','2026-09-01T00:00:00.000Z')")
+            .execute(&old).await.unwrap();
+        old.close().await;
+        let upgraded = connect(&config).await.unwrap();
+        let device: (String, String, Option<String>) = sqlx::query_as(
+            "SELECT token_hash,signing_public_key,revoked_at FROM devices WHERE id='installed'",
+        )
+        .fetch_one(&upgraded)
+        .await
+        .unwrap();
+        assert_eq!(
+            device,
+            (
+                "preserved-token-hash".to_string(),
+                "preserved-public-key".to_string(),
+                None
+            )
+        );
+        let salt: String =
+            sqlx::query_scalar("SELECT recipient_salt FROM requests WHERE id='old-request'")
+                .fetch_one(&upgraded)
+                .await
+                .unwrap();
+        assert_eq!(salt.len(), 64);
+        migrate_existing_databases(&upgraded).await.unwrap();
+        let retained: String =
+            sqlx::query_scalar("SELECT recipient_salt FROM requests WHERE id='old-request'")
+                .fetch_one(&upgraded)
+                .await
+                .unwrap();
+        assert_eq!(retained, salt);
+    }
 }

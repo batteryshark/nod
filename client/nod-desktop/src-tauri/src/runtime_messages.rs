@@ -5,7 +5,7 @@ use std::sync::Arc;
 use nod_client_core::models::ClientState;
 use nod_client_core::NodClientMessage;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use nod_client_core::{NodClientRuntime, SelectRequestParams, SubmitOptionParams};
+use nod_client_core::{NodClientRuntime, OpenRequestParams, SubmitRequestOptionParams};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
@@ -52,22 +52,25 @@ async fn desktop_side_effect_error(
     message: &NodClientMessage,
 ) -> Option<NodClientMessage> {
     match message {
-        NodClientMessage::NotificationCandidate { request } => {
-            request_attention(app);
-            notifier
-                .show(request)
-                .await
-                .err()
-                .map(|error| transient_desktop_error("show desktop notification", error))
-        }
-        NodClientMessage::NotificationRemoved { request_id } => notifier
-            .remove(request_id)
+        NodClientMessage::NotificationCandidate { server_id, request } => notifier
+            .show(server_id, request)
+            .await
+            .err()
+            .map(|error| transient_desktop_error("show desktop notification", error)),
+        NodClientMessage::NotificationRemoved {
+            server_id,
+            request_id,
+        } => notifier
+            .remove(server_id, request_id)
             .await
             .err()
             .map(|error| transient_desktop_error("remove desktop notification", error)),
-        NodClientMessage::State(state) => update_badge(app, state)
-            .err()
-            .map(|error| transient_desktop_error("update desktop badge", error)),
+        NodClientMessage::State(state) => {
+            notifier.set_sound(&state.notification_sound).await;
+            update_badge(app, state)
+                .err()
+                .map(|error| transient_desktop_error("update desktop badge", error))
+        }
         _ => None,
     }
 }
@@ -97,39 +100,36 @@ fn set_pending_badge(window: &tauri::WebviewWindow, pending: usize) -> tauri::Re
     })
 }
 
-// Flash the taskbar button (bounce the Dock on macOS dev builds) when a
-// request arrives while the window is in the background.
-fn request_attention(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-    if !window.is_focused().unwrap_or(false) {
-        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
-    }
-}
-
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 async fn handle_activation(
     runtime: &Arc<Mutex<NodClientRuntime>>,
     activation: NotificationActivation,
 ) -> Option<NodClientMessage> {
     match activation {
-        NotificationActivation::Open { request_id } => {
+        NotificationActivation::Open {
+            server_id,
+            request_id,
+        } => {
             let request_id = request_id?;
             let mut runtime = runtime.lock().await;
             runtime
-                .select_request(SelectRequestParams { request_id })
+                .open_request(OpenRequestParams {
+                    server_id,
+                    request_id,
+                })
                 .await
                 .err()
                 .map(|error| transient_desktop_error("open notification", error))
         }
         NotificationActivation::Submit {
+            server_id,
             request_id,
             option_id,
         } => {
             let mut runtime = runtime.lock().await;
             runtime
-                .submit_option(SubmitOptionParams {
+                .submit_request_option(SubmitRequestOptionParams {
+                    server_id,
                     request_id,
                     option_id,
                     text: None,

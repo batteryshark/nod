@@ -13,12 +13,11 @@ use crate::{
 };
 
 use super::{
-    session::DecisionSignatureInput, ChannelParams, EnrollParams, NodClientMessage,
-    NodClientRuntime, RegisterPushTokenParams, RenameDeviceParams, RevokeDeviceParams,
-    SelectRequestParams, SetSubscriptionParams, SignerBackend, SubmitOptionParams,
+    ChannelParams, DeviceNotificationPreferenceParams, EnrollParams, NodClientMessage,
+    NodClientRuntime, OpenRequestParams, RegisterPushTokenParams, RenameDeviceParams,
+    RevokeDeviceParams, SelectRequestParams, SetSubscriptionParams, SignerBackend,
+    SubmitOptionParams, SubmitRequestOptionParams,
 };
-
-const REFRESH_EVENT_LIMIT: usize = 500;
 
 impl NodClientRuntime {
     pub async fn enroll(&mut self, params: EnrollParams) -> Result<ClientState> {
@@ -27,7 +26,7 @@ impl NodClientRuntime {
         // Provision the device key from the active backend: a software key the
         // store will persist, or a Secure Enclave key the host already holds.
         let (device_signing_key, software_key) = self.provision_device_signing_key(&profile_id)?;
-        let api = crate::api::NodApi::new(&normalized_url, None)?;
+        let api = crate::api::NodApi::with_client(&normalized_url, None, self.http_client.clone())?;
         let response = api
             .enroll(EnrollDeviceRequest {
                 code: &params.code.trim().to_ascii_uppercase(),
@@ -44,6 +43,7 @@ impl NodClientRuntime {
             .await?;
         let profile = ServerProfile {
             id: profile_id.clone(),
+            credential_id: None,
             name: display_name_for(&normalized_url),
             base_url_string: normalized_url,
             device_name: params.device_name.trim().to_string(),
@@ -72,6 +72,7 @@ impl NodClientRuntime {
             self.store.save(persisted.clone()).await?;
         }
 
+        self.disconnect_sync().await;
         {
             let mut reducer = self.reducer.lock().await;
             reducer.upsert_server(profile);
@@ -82,7 +83,18 @@ impl NodClientRuntime {
             reducer.set_notification_delivery_mode(response.notification_delivery.mode);
         }
 
-        self.refresh().await
+        match self.refresh().await {
+            Ok(state) => Ok(state),
+            Err(error) => {
+                // Enrollment already consumed the code and persisted credentials.
+                // A failed inbox fetch must not invite a second enrollment attempt.
+                self.reducer.lock().await.set_error(format!(
+                    "Enrollment completed. Inbox sync will retry: {error}"
+                ));
+                self.emit_state().await;
+                Ok(self.state().await)
+            }
+        }
     }
 
     pub async fn select_server(&mut self, server_id: String) -> Result<ClientState> {
@@ -101,25 +113,31 @@ impl NodClientRuntime {
 
         self.disconnect_sync().await;
         self.reducer.lock().await.set_selected_server(server_id);
-        self.refresh().await?;
         self.connect_sync().await?;
         Ok(self.state().await)
     }
 
     pub async fn forget_server(&mut self, server_id: &str) -> Result<ClientState> {
-        self.disconnect_sync().await;
+        let profile = self.server_profile(server_id).await?;
+        let server_id = profile.id.as_str();
+        let was_selected = self.state().await.selected_server_id.as_deref() == Some(server_id);
+        if was_selected {
+            self.disconnect_sync().await;
+        }
         // Drop the host-held hardware key (no-op for the software backend, whose
         // key lives in the store and is cleared below). Done outside the store
         // lock so the foreign callback isn't held across the mutex.
         if let SignerBackend::Foreign(backend) = self.signer_backend() {
-            backend.remove(server_id)?;
+            backend.remove(profile.credential_id())?;
         }
         {
             let mut persisted = self.persisted.lock().await;
             persisted.servers.retain(|server| server.id != server_id);
-            self.store.delete_token(&mut persisted, server_id).await?;
             self.store
-                .delete_signing_key(&mut persisted, server_id)
+                .delete_token(&mut persisted, profile.credential_id())
+                .await?;
+            self.store
+                .delete_signing_key(&mut persisted, profile.credential_id())
                 .await?;
             if persisted.selected_server_id.as_deref() == Some(server_id) {
                 persisted.selected_server_id =
@@ -129,64 +147,128 @@ impl NodClientRuntime {
         }
 
         self.reducer.lock().await.remove_server(server_id);
+        if was_selected && self.state().await.is_registered {
+            self.connect_sync().await?;
+        }
         self.emit_state().await;
         Ok(self.state().await)
     }
 
     pub async fn refresh(&mut self) -> Result<ClientState> {
-        let api = self.api().await?;
-        let current_user = api.current_user().await?;
-        let mut devices = api.devices().await?;
-        if !devices
-            .iter()
-            .any(|device| device.id == current_user.current_device.id)
-        {
-            devices.insert(0, current_user.current_device.clone());
-        }
+        self.snapshot_context().await?.refresh().await
+    }
 
-        let channels = api.channels().await?;
-        let requests = api.requests(None, Some(REFRESH_EVENT_LIMIT)).await?;
-        let candidates = {
-            let mut reducer = self.reducer.lock().await;
-            reducer.set_notification_delivery_mode(current_user.notification_delivery.mode);
-            reducer.apply_refresh(Some(current_user.user), devices, channels, requests)
+    pub async fn query_history(
+        &self,
+        params: super::QueryHistoryParams,
+    ) -> Result<crate::models::RequestsResponse> {
+        let profile = match params.server_id.as_deref() {
+            Some(id) => self.server_profile(id).await?,
+            None => self.selected_server_profile().await?,
         };
-        self.emit_notifications(candidates).await;
+        self.api_for_profile(&profile)
+            .await?
+            .query_history(&params)
+            .await
+    }
+
+    pub async fn open_request(&mut self, params: OpenRequestParams) -> Result<ClientState> {
+        let profile = self.server_profile(&params.server_id).await?;
+        let request = self
+            .api_for_profile(&profile)
+            .await?
+            .get_request(&params.request_id)
+            .await?;
+        if self.state().await.selected_server_id.as_deref() != Some(&profile.id) {
+            self.select_server(profile.id).await?;
+        }
+        {
+            let mut reducer = self.reducer.lock().await;
+            reducer.apply_request_update(request.clone());
+            reducer.select_channel(Some(request.channel_id));
+            reducer.state.selected_request_id = Some(request.id);
+        }
         self.emit_state().await;
         Ok(self.state().await)
     }
 
     pub async fn submit_option(&mut self, params: SubmitOptionParams) -> Result<Request> {
-        let text = params.text.as_deref().and_then(trimmed_text);
+        let profile = self.selected_server_profile().await?;
+        self.submit_request_option(SubmitRequestOptionParams {
+            server_id: profile.id,
+            request_id: params.request_id,
+            option_id: params.option_id,
+            text: params.text,
+        })
+        .await
+    }
+
+    pub async fn submit_request_option(
+        &mut self,
+        params: SubmitRequestOptionParams,
+    ) -> Result<Request> {
+        let profile = self.server_profile(&params.server_id).await?;
+        let api = self.api_for_profile(&profile).await?;
+        let authoritative = api.get_request(&params.request_id).await?;
+        if authoritative.status != RequestStatus::Pending {
+            self.apply_targeted_request(&profile.id, authoritative)
+                .await;
+            return Err(anyhow!(
+                "This request has already been handled. Refresh to see its outcome."
+            ));
+        }
+        let option = SubmitOptionParams {
+            request_id: params.request_id,
+            option_id: params.option_id,
+            text: params
+                .text
+                .as_deref()
+                .and_then(trimmed_text)
+                .map(str::to_string),
+        };
         let signature = self
-            .decision_signature(DecisionSignatureInput {
-                request_id: &params.request_id,
-                option_id: &params.option_id,
-                text,
-            })
+            .decision_signature(&profile, &authoritative, &option)
             .await?;
-        let request = self
-            .api()
-            .await?
+        let result = api
             .submit_option(SubmitOptionRequest {
-                request_id: &params.request_id,
-                option_id: &params.option_id,
-                text,
+                request_id: &option.request_id,
+                option_id: &option.option_id,
+                text: option.text.as_deref(),
                 signature: signature.as_ref(),
             })
-            .await?;
-        self.reducer
-            .lock()
-            .await
-            .apply_request_update(request.clone());
+            .await;
+        match result {
+            Ok(request) => {
+                self.apply_targeted_request(&profile.id, request.clone())
+                    .await;
+                Ok(request)
+            }
+            Err(error) => {
+                // The response may have been lost after commit. Re-read without
+                // resubmitting so the user can distinguish an uncertain outcome.
+                if let Ok(current) = api.get_request(&option.request_id).await {
+                    self.apply_targeted_request(&profile.id, current).await;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn apply_targeted_request(&self, server_id: &str, request: Request) {
+        if self.state().await.selected_server_id.as_deref() == Some(server_id) {
+            self.reducer
+                .lock()
+                .await
+                .apply_request_update(request.clone());
+            self.emit_state().await;
+        }
         if request.status != RequestStatus::Pending {
             self.emit_message(NodClientMessage::NotificationRemoved {
-                request_id: request.id.clone(),
+                server_id: server_id.to_string(),
+                request_id: request.id,
             })
             .await;
         }
-        self.emit_state().await;
-        Ok(request)
     }
 
     pub async fn clear_channel(&mut self, params: ChannelParams) -> Result<ClientState> {
@@ -200,6 +282,37 @@ impl NodClientRuntime {
             .set_subscription(&params.channel_id, params.subscribed)
             .await?;
         self.refresh().await
+    }
+
+    pub async fn set_device_notification_preferences(
+        &mut self,
+        params: DeviceNotificationPreferenceParams,
+    ) -> Result<ClientState> {
+        let profile = match params.server_id {
+            Some(server_id) => self.server_profile(&server_id).await?,
+            None => self.selected_server_profile().await?,
+        };
+        self.api_for_profile(&profile)
+            .await?
+            .set_device_notification_preferences(&params.preferences)
+            .await?;
+        if self.state().await.selected_server_id.as_deref() == Some(&profile.id) {
+            {
+                let mut reducer = self.reducer.lock().await;
+                if let Some(device) = reducer
+                    .state
+                    .devices
+                    .iter_mut()
+                    .find(|device| Some(device.id.as_str()) == profile.device_id.as_deref())
+                {
+                    device.notification_preferences = params.preferences;
+                }
+            }
+            self.emit_state().await;
+            self.refresh().await
+        } else {
+            Ok(self.state().await)
+        }
     }
 
     pub async fn set_notification_preference(
@@ -227,14 +340,26 @@ impl NodClientRuntime {
         params: RegisterPushTokenParams,
     ) -> Result<ClientState> {
         let servers = { self.persisted.lock().await.servers.clone() };
+        let mut failures = Vec::new();
         for server in &servers {
-            let token = {
-                let persisted = self.persisted.lock().await;
-                self.store.load_token(&persisted, &server.id)
-            };
-            let api = crate::api::NodApi::new(&server.base_url_string, token)?;
-            api.update_push_token(&params.provider, &params.native_app_id, &params.token)
-                .await?;
+            let result = async {
+                self.api_for_profile(server)
+                    .await?
+                    .update_push_token(&params.provider, &params.native_app_id, &params.token)
+                    .await
+            }
+            .await;
+            if let Err(error) = result {
+                failures.push(format!("{}: {error}", server.name));
+            }
+        }
+        if !failures.is_empty() {
+            return Err(anyhow!(
+                "Push registration updated on {} of {} servers. Retry the failed servers: {}",
+                servers.len() - failures.len(),
+                servers.len(),
+                failures.join("; ")
+            ));
         }
         self.refresh().await
     }
@@ -272,8 +397,27 @@ impl NodClientRuntime {
     }
 
     pub async fn select_channel(&mut self, params: ChannelParams) -> Result<ClientState> {
-        self.reducer.lock().await.state.selected_channel_id = Some(params.channel_id);
-        self.refresh().await
+        if !self
+            .state()
+            .await
+            .channels
+            .iter()
+            .any(|channel| channel.id == params.channel_id && channel.subscribed)
+        {
+            return Err(anyhow!("channel is unavailable or unsubscribed"));
+        }
+        self.reducer
+            .lock()
+            .await
+            .select_channel(Some(params.channel_id));
+        self.emit_state().await;
+        Ok(self.state().await)
+    }
+
+    pub async fn select_all_channels(&mut self) -> Result<ClientState> {
+        self.reducer.lock().await.select_channel(None);
+        self.emit_state().await;
+        Ok(self.state().await)
     }
 
     pub async fn select_request(&mut self, params: SelectRequestParams) -> Result<ClientState> {

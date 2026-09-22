@@ -29,6 +29,7 @@ struct ServerConfigFile {
     database_url: Option<String>,
     data_dir: Option<std::path::PathBuf>,
     retention_days: Option<i64>,
+    callback_allowed_origins: Option<Vec<String>>,
     #[serde(default)]
     notifications: NotificationsConfigFile,
     #[serde(default)]
@@ -51,6 +52,7 @@ impl ServerConfigFile {
             config.retention_days = retention_days;
         }
         config.notifications = self.notifications.into_config();
+        config.callback_allowed_origins = self.callback_allowed_origins;
         config.device_attestation = self.device_attestation.into_config()?;
         Ok(config)
     }

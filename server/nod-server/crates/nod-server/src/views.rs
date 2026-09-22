@@ -29,12 +29,7 @@ impl RequestDecisionView {
             decision_resolution: request.decision_resolution.clone(),
             recipients: request.recipients.clone(),
             pending_recipients: pending_recipients(request),
-            // Stamped canonical digest for projections; computed from the
-            // snapshot only when this is an unprojected request.
-            request_digest: request
-                .canonical_digest
-                .clone()
-                .or_else(|| nod_proto::request_digest(&request.into()).ok()),
+            request_digest: request.to_wire().request_digest,
             timed_out: None,
         }
     }
@@ -130,7 +125,8 @@ mod tests {
             user_decisions: Vec::new(),
             callback_url: None,
             options: Vec::new(),
-            canonical_digest: None,
+            private_recipients: false,
+            signing: None,
         };
 
         let callback = serde_json::to_value(CallbackPayload::from_request(&request)).unwrap();

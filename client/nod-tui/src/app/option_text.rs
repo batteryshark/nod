@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use nod_client_core::{models::Request, SubmitOptionParams};
 
-use super::{is_close_key, RuntimeCommand, TextInput};
+use super::{RuntimeCommand, TextInput};
 use crate::domain::OptionChoice;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,16 +37,20 @@ impl OptionTextForm {
     }
 
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> ModalResult<Self> {
-        if is_close_key(key) {
+        if key.code == KeyCode::Esc {
             return ModalResult::closed();
         }
 
         if key.code == KeyCode::Enter {
-            return ModalResult::commands(vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
-                request_id: self.request_id.clone(),
-                option_id: self.option_id.clone(),
-                text: Some(self.input.value().to_string()),
-            })]);
+            return ModalResult::submitting(
+                self.clone(),
+                vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
+                    request_id: self.request_id.clone(),
+                    option_id: self.option_id.clone(),
+                    text: (!self.input.value().trim().is_empty())
+                        .then(|| self.input.value().to_string()),
+                })],
+            );
         }
 
         self.input.handle_key(key);
@@ -75,9 +79,9 @@ impl<T> ModalResult<T> {
         }
     }
 
-    pub(super) fn commands(commands: Vec<RuntimeCommand>) -> Self {
+    pub(super) fn submitting(modal: T, commands: Vec<RuntimeCommand>) -> Self {
         Self {
-            modal: None,
+            modal: Some(modal),
             commands,
         }
     }
@@ -116,6 +120,28 @@ mod tests {
 
         assert!(result.modal.is_none());
         assert!(result.commands.is_empty());
+    }
+
+    #[test]
+    fn text_capable_option_can_submit_without_notes() {
+        let mut form = OptionTextForm::from_choice(
+            &request("deploy", "default"),
+            OptionChoice {
+                id: "approve_notes",
+                label: "Approve with notes",
+                placeholder: None,
+                requires_text: true,
+            },
+        );
+        let result = form.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            result.commands,
+            vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
+                request_id: "deploy".into(),
+                option_id: "approve_notes".into(),
+                text: None
+            })]
+        );
     }
 
     fn key(code: KeyCode) -> KeyEvent {

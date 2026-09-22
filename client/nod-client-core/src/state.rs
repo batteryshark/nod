@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::models::{
     Channel, ClientState, NotificationDeliveryMode, Request, RequestStatus, ServerProfile,
-    SyncEnvelope, User, UserDevice,
+    SyncEnvelope, SyncPhase, User, UserDevice,
 };
 
 const HANDLED_REQUEST_DISPLAY_LIMIT: usize = 500;
@@ -13,6 +13,9 @@ pub struct StateReducer {
     pub state: ClientState,
     known_pending_request_channels: BTreeMap<String, String>,
     has_loaded_pending_snapshot: bool,
+    requests_by_id: BTreeMap<String, Request>,
+    revision: u64,
+    request_revisions: BTreeMap<String, u64>,
 }
 
 impl StateReducer {
@@ -37,10 +40,15 @@ impl StateReducer {
                 notification_delivery_mode: NotificationDeliveryMode::Websocket,
                 is_registered,
                 is_sync_connected: false,
+                sync_phase: SyncPhase::Offline,
+                last_synced_at: None,
                 last_error: None,
             },
             known_pending_request_channels: BTreeMap::new(),
             has_loaded_pending_snapshot: false,
+            requests_by_id: BTreeMap::new(),
+            revision: 0,
+            request_revisions: BTreeMap::new(),
         }
     }
 
@@ -81,6 +89,7 @@ impl StateReducer {
         self.clear_loaded_data();
     }
 
+    #[cfg(test)]
     pub fn apply_refresh(
         &mut self,
         current_user: Option<User>,
@@ -88,19 +97,62 @@ impl StateReducer {
         channels: Vec<Channel>,
         requests: Vec<Request>,
     ) -> Vec<Request> {
+        self.apply_snapshot(current_user, devices, channels, requests, self.revision)
+    }
+
+    pub fn pending_request_ids(&self) -> BTreeSet<String> {
+        self.known_pending_request_channels
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn apply_snapshot(
+        &mut self,
+        current_user: Option<User>,
+        devices: Vec<UserDevice>,
+        channels: Vec<Channel>,
+        requests: Vec<Request>,
+        started_at_revision: u64,
+    ) -> Vec<Request> {
         self.state.current_user = current_user;
         self.state.devices = devices;
         self.state.channels = channels;
         self.ensure_selected_channel();
 
-        let pending_requests = pending_requests(&requests);
+        let mut snapshot: BTreeMap<_, _> = requests
+            .into_iter()
+            .map(|request| (request.id.clone(), request))
+            .collect();
+        // A submission or live event may finish while HTTP is in flight. Keep
+        // those later mutations instead of letting an older snapshot undo them.
+        for (id, request) in &self.requests_by_id {
+            let changed_during_fetch =
+                self.request_revisions.get(id).copied().unwrap_or(0) > started_at_revision;
+            let snapshot_is_newer = snapshot
+                .get(id)
+                .is_some_and(|current| request_is_stale(request, current));
+            if changed_during_fetch && !snapshot_is_newer {
+                snapshot.insert(id.clone(), request.clone());
+            }
+        }
+        self.requests_by_id = snapshot;
+        self.request_revisions
+            .retain(|id, _| self.requests_by_id.contains_key(id));
+        let pending_requests =
+            pending_requests(&self.requests_by_id.values().cloned().collect::<Vec<_>>());
         self.state.pending_counts_by_channel = count_pending_by_channel(&pending_requests);
         let notification_candidates = self.notification_candidates_after_refresh(&pending_requests);
         self.remember_pending_requests(&pending_requests);
 
-        self.state.requests = self.visible_requests_for_selected_channel(requests);
+        self.update_visible_requests();
         self.ensure_selected_request();
         self.state.last_error = None;
+        self.state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
         notification_candidates
     }
 
@@ -111,8 +163,8 @@ impl StateReducer {
             self.upsert_channel(channel);
         }
         if let Some(request) = envelope.payload.request {
-            let should_notify =
-                envelope.kind == SYNC_KIND_CREATED && self.apply_request_update(request.clone());
+            let is_new_pending = self.apply_request_update(request.clone());
+            let should_notify = envelope.kind == SYNC_KIND_CREATED && is_new_pending;
             if should_notify {
                 notification_candidates.push(request);
             }
@@ -121,29 +173,31 @@ impl StateReducer {
     }
 
     pub fn apply_request_update(&mut self, request: Request) -> bool {
-        let is_new_pending = self.update_pending_tracking(&request);
-        if self.state.selected_channel_id.as_deref() == Some(request.channel_id.as_str())
-            || self.state.selected_channel_id.is_none()
+        if self
+            .requests_by_id
+            .get(&request.id)
+            .is_some_and(|existing| request_is_stale(&request, existing))
         {
-            self.upsert_visible_request(request);
+            return false;
         }
+        let is_new_pending = self.update_pending_tracking(&request);
+        self.revision += 1;
+        self.request_revisions
+            .insert(request.id.clone(), self.revision);
+        self.requests_by_id.insert(request.id.clone(), request);
+        self.update_visible_requests();
         is_new_pending
     }
 
-    fn upsert_visible_request(&mut self, request: Request) {
-        if let Some(existing) = self
-            .state
-            .requests
-            .iter_mut()
-            .find(|existing| existing.id == request.id)
-        {
-            *existing = request;
-        } else {
-            self.state.requests.insert(0, request);
-        }
-        let requests = std::mem::take(&mut self.state.requests);
-        self.state.requests = visible_requests(requests);
+    fn update_visible_requests(&mut self) {
+        self.state.requests = self
+            .visible_requests_for_selected_channel(self.requests_by_id.values().cloned().collect());
         self.ensure_selected_request();
+    }
+
+    pub fn select_channel(&mut self, channel_id: Option<String>) {
+        self.state.selected_channel_id = channel_id;
+        self.update_visible_requests();
     }
 
     fn upsert_channel(&mut self, channel: Channel) {
@@ -182,6 +236,14 @@ impl StateReducer {
 
     pub fn mark_sync_connected(&mut self, connected: bool) {
         self.state.is_sync_connected = connected;
+        if !connected && self.state.sync_phase != SyncPhase::Revoked {
+            self.state.sync_phase = SyncPhase::Offline;
+        }
+    }
+
+    pub fn set_sync_phase(&mut self, phase: SyncPhase) {
+        self.state.is_sync_connected = phase == SyncPhase::Current;
+        self.state.sync_phase = phase;
     }
 
     pub fn set_notification_delivery_mode(&mut self, mode: NotificationDeliveryMode) {
@@ -202,9 +264,15 @@ impl StateReducer {
         self.state.selected_request_id = None;
         self.known_pending_request_channels.clear();
         self.has_loaded_pending_snapshot = false;
+        self.requests_by_id.clear();
+        self.request_revisions.clear();
+        self.state.last_synced_at = None;
     }
 
     fn ensure_selected_channel(&mut self) {
+        if self.state.selected_channel_id.is_none() {
+            return;
+        }
         let visible_channel_ids: BTreeSet<_> = self
             .state
             .channels
@@ -220,12 +288,7 @@ impl StateReducer {
             .unwrap_or(false);
 
         if !selection_is_visible {
-            self.state.selected_channel_id = self
-                .state
-                .channels
-                .iter()
-                .find(|channel| channel.subscribed)
-                .map(|channel| channel.id.clone());
+            self.state.selected_channel_id = None;
         }
     }
 
@@ -305,7 +368,7 @@ impl StateReducer {
                     .collect(),
             )
         } else {
-            Vec::new()
+            visible_requests(requests)
         }
     }
 
@@ -325,6 +388,13 @@ impl StateReducer {
             .first()
             .map(|request| request.id.clone());
     }
+}
+
+fn request_is_stale(candidate: &Request, current: &Request) -> bool {
+    current.updated_at > candidate.updated_at
+        || (current.updated_at == candidate.updated_at
+            && current.status != RequestStatus::Pending
+            && candidate.status == RequestStatus::Pending)
 }
 
 fn pending_requests(requests: &[Request]) -> Vec<Request> {
@@ -430,6 +500,7 @@ mod tests {
             callback_url: None,
             options: Vec::new(),
             request_digest: None,
+            signing: None,
         }
     }
 
@@ -458,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_selects_first_subscribed_channel_when_selection_is_hidden() {
+    fn refresh_returns_to_all_channels_when_selection_is_hidden() {
         let mut reducer = StateReducer::new(Vec::new(), None, "default".to_string());
         reducer.state.selected_channel_id = Some("hidden".to_string());
 
@@ -469,10 +540,7 @@ mod tests {
             vec![request("a", "visible", RequestStatus::Pending)],
         );
 
-        assert_eq!(
-            reducer.state.selected_channel_id.as_deref(),
-            Some("visible")
-        );
+        assert_eq!(reducer.state.selected_channel_id.as_deref(), None);
         assert_eq!(reducer.state.requests[0].channel_id, "visible");
     }
 
@@ -546,5 +614,89 @@ mod tests {
 
         assert!(visible.iter().any(|request| request.id == "pending"));
         assert_eq!(handled_count, HANDLED_REQUEST_DISPLAY_LIMIT);
+    }
+    #[test]
+    fn every_terminal_envelope_updates_pending_state() {
+        for (kind, status) in [
+            ("resolved", RequestStatus::Resolved),
+            ("expired", RequestStatus::Expired),
+            ("cancelled", RequestStatus::Cancelled),
+        ] {
+            let mut reducer = StateReducer::new(Vec::new(), None, "default".into());
+            reducer.apply_request_update(request("a", "default", RequestStatus::Pending));
+            let candidates = reducer.apply_sync_envelope(SyncEnvelope {
+                kind: kind.into(),
+                at: Utc::now(),
+                notification_delivery: None,
+                payload: crate::models::SyncPayload {
+                    request: Some(request("a", "default", status.clone())),
+                    ..Default::default()
+                },
+            });
+            assert_eq!(reducer.state.requests[0].status, status);
+            assert!(reducer.state.pending_counts_by_channel.is_empty());
+            assert!(candidates.is_empty());
+        }
+    }
+
+    #[test]
+    fn stale_created_event_cannot_undo_snapshot_resolution() {
+        let mut reducer = StateReducer::new(Vec::new(), None, "default".into());
+        reducer.apply_refresh(
+            None,
+            vec![],
+            vec![],
+            vec![request("a", "default", RequestStatus::Resolved)],
+        );
+        assert!(!reducer.apply_request_update(request("a", "default", RequestStatus::Pending)));
+        assert_eq!(reducer.state.requests[0].status, RequestStatus::Resolved);
+    }
+
+    #[test]
+    fn snapshot_does_not_overwrite_events_received_during_fetch() {
+        let mut reducer = StateReducer::new(Vec::new(), None, "default".into());
+        let revision = reducer.revision();
+        reducer.apply_request_update(request("a", "default", RequestStatus::Resolved));
+        reducer.apply_snapshot(
+            None,
+            vec![],
+            vec![],
+            vec![request("a", "default", RequestStatus::Pending)],
+            revision,
+        );
+        assert_eq!(reducer.state.requests[0].status, RequestStatus::Resolved);
+    }
+
+    #[test]
+    fn delayed_event_during_fetch_cannot_overwrite_newer_snapshot() {
+        for seconds_later in [0, 1] {
+            let mut reducer = StateReducer::new(Vec::new(), None, "default".into());
+            let revision = reducer.revision();
+            reducer.apply_request_update(request("a", "default", RequestStatus::Pending));
+            let mut resolved = request("a", "default", RequestStatus::Resolved);
+            resolved.updated_at += chrono::Duration::seconds(seconds_later);
+            reducer.apply_snapshot(None, vec![], vec![], vec![resolved], revision);
+            assert_eq!(reducer.state.requests[0].status, RequestStatus::Resolved);
+            assert!(reducer.state.pending_counts_by_channel.is_empty());
+        }
+    }
+
+    #[test]
+    fn channel_selection_uses_the_complete_cached_inbox() {
+        let mut reducer = StateReducer::new(Vec::new(), None, "default".into());
+        reducer.apply_refresh(
+            None,
+            vec![],
+            vec![channel("a", true), channel("b", true)],
+            vec![
+                request("one", "a", RequestStatus::Pending),
+                request("two", "b", RequestStatus::Pending),
+            ],
+        );
+        reducer.select_channel(Some("b".into()));
+        assert_eq!(reducer.state.requests.len(), 1);
+        assert_eq!(reducer.state.requests[0].id, "two");
+        reducer.select_channel(None);
+        assert_eq!(reducer.state.requests.len(), 2);
     }
 }

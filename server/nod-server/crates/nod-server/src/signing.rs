@@ -55,15 +55,22 @@ pub fn verify_decision_signature(
 
     // to_wire honors a stamped canonical digest, so even a per-user projection
     // reaching this path would verify against the full-snapshot digest.
-    let request_digest = request
-        .to_wire()
+    let wire = request.to_wire();
+    let legacy_digest = wire
         .request_digest
         .ok_or_else(|| ApiError::Internal("could not compute request digest".to_string()))?;
-    if provided.request_digest != request_digest {
+    let private_digest = wire
+        .signing
+        .as_ref()
+        .map(|context| context.request_digest.as_str());
+    if provided.request_digest != legacy_digest
+        && Some(provided.request_digest.as_str()) != private_digest
+    {
         return Err(ApiError::BadRequest(
             "decision signature request_digest does not match the request snapshot".to_string(),
         ));
     }
+    let request_digest = provided.request_digest.clone();
 
     let signed_at = DateTime::parse_from_rfc3339(&provided.signed_at)
         .map_err(|_| ApiError::BadRequest("decision signature signed_at is invalid".to_string()))?

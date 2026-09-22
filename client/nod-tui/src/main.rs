@@ -91,7 +91,7 @@ async fn run_message_loop(
             // them would replay stale intent against whatever state the
             // in-flight command produces.
             if in_flight_commands > 0 {
-                app.set_error("Another command is still running.".to_string());
+                app.set_busy_notice();
                 break;
             }
             if start_command(&runtime, &command_tx, &mut app, command) {

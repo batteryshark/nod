@@ -55,6 +55,7 @@ pub struct Device {
     pub signing_key_algorithm: Option<String>,
     pub signing_public_key: Option<String>,
     pub notification_sound: String,
+    pub notification_preferences: nod_proto::DeviceNotificationPreferences,
     pub last_seen_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
@@ -71,6 +72,7 @@ pub struct AdminDevice {
     pub has_push_token: bool,
     pub has_signing_key: bool,
     pub notification_sound: String,
+    pub notification_preferences: nod_proto::DeviceNotificationPreferences,
     pub attestation: Option<DeviceAttestationSummary>,
     pub last_seen_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
@@ -88,6 +90,7 @@ pub struct UserDevice {
     pub has_push_token: bool,
     pub has_signing_key: bool,
     pub notification_sound: String,
+    pub notification_preferences: nod_proto::DeviceNotificationPreferences,
     pub attestation: Option<DeviceAttestationSummary>,
     pub last_seen_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,

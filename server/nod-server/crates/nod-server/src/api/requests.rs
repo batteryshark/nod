@@ -29,6 +29,8 @@ pub(super) struct CreateRequestRequest {
     #[serde(default = "default_channel")]
     channel_id: String,
     #[serde(default)]
+    pub(super) idempotency_key: Option<String>,
+    #[serde(default)]
     recipients: Option<Vec<String>>,
     #[serde(default)]
     decision_resolution: Option<DecisionResolution>,
@@ -100,8 +102,16 @@ pub(super) async fn create_request(
         auth::Principal::Issuer(token) => Some(token.id.as_str()),
         _ => None,
     };
-    let response =
-        services::requests::create(&state, req.into(), created_by_issuer_token_id).await?;
+    let idempotency_key = req.idempotency_key.clone();
+    let response = services::requests::create(
+        &state,
+        req.into(),
+        db::CreateRequestMetadata {
+            created_by_issuer_token_id,
+            idempotency_key: idempotency_key.as_deref(),
+        },
+    )
+    .await?;
     Ok(Json(CreateRequestResponse::from_created_request(&response)))
 }
 
@@ -119,10 +129,15 @@ pub(super) async fn list_requests(
             include_cleared: query.include_cleared.unwrap_or(false),
             handled_limit: query.limit.unwrap_or(100),
             retention_days: state.config.retention_days,
+            search: query.search.as_deref(),
+            before: query.before.as_deref(),
         },
     )
     .await?;
-    Ok(Json(RequestsResponse::from_requests(&requests)))
+    Ok(Json(RequestsResponse::from_page(
+        requests.requests,
+        requests.next_cursor,
+    )))
 }
 
 pub(super) async fn get_request(
@@ -217,6 +232,8 @@ pub(super) struct ListRequestsQuery {
     channel_id: Option<String>,
     include_cleared: Option<bool>,
     limit: Option<i64>,
+    search: Option<String>,
+    before: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

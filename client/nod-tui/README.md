@@ -35,16 +35,27 @@ the local core config file instead.
 - `r`: reject the selected request when a reject option exists (same
   editor behavior for with-text rejects).
 - `d`: dismiss the selected request.
-- `n`: open the text response editor for note-required options.
-- `c`: clear the selected channel.
+- `n`: open the text response editor for options that collect notes.
+- `o`: choose any offered action, including custom options.
+- `c`: confirm hiding handled requests in the selected channel; pending work remains.
 - `R`: refresh from the server.
-- `/`: filter visible requests.
+- `/`: search request text locally and on the server; Enter fetches matching history.
+- `H`: load the first history page; `]`: load older history, including cleared items.
+- `0`: show all subscribed channels; `e`: enroll another server.
+- `PageUp`/`PageDown`: move through lists or scroll request detail.
+- `Home`/`End`: jump to the top/bottom of request detail.
 - `s`: focus the server list.
 - `,`: open settings.
 - `m`: mute or unmute terminal alerts.
 - `?`: show help.
-- `q` or Esc: close a modal; `q` quits from the main screen.
+- `Esc`: close a modal; `q` quits from the main screen or closes non-text menus.
+  In notes, search, enrollment, and device names, `q` is ordinary text.
 - `Ctrl-C` or `Ctrl-D`: quit from any screen.
+
+The status bar distinguishes connecting, reconciling, current, and offline.
+Missed requests reconcile automatically after reconnect. Reply and rename drafts
+stay open after errors so Enter can retry; Enter is disabled while submitting.
+Options that collect text allow an empty note, matching the server contract.
 
 ## Settings
 

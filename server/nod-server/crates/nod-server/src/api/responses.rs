@@ -97,12 +97,14 @@ impl CreateRequestResponse {
 #[derive(Debug, Serialize)]
 pub(super) struct RequestsResponse {
     requests: Vec<nod_proto::Request>,
+    next_cursor: Option<String>,
 }
 
 impl RequestsResponse {
-    pub(super) fn from_requests(requests: &[DecisionRequest]) -> Self {
+    pub(super) fn from_page(requests: Vec<DecisionRequest>, next_cursor: Option<String>) -> Self {
         Self {
             requests: requests.iter().map(DecisionRequest::to_wire).collect(),
+            next_cursor,
         }
     }
 }

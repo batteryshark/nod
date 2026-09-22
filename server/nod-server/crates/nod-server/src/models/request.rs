@@ -15,7 +15,7 @@ pub use nod_proto::DecisionSignature as SubmitDecisionSignature;
 /// [`DecisionRequest::to_wire`]. Differs from the wire shape deliberately: it
 /// carries `user_decisions` (the wire calls it `decisions`) and omits the
 /// duplicated `request_id`; the wire `request_digest` is computed at
-/// projection time (or carried via `canonical_digest`, see that field).
+/// projection time for full snapshots and single-recipient views.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecisionRequest {
     pub id: String,
@@ -40,12 +40,11 @@ pub struct DecisionRequest {
     pub user_decisions: Vec<UserDecision>,
     pub callback_url: Option<String>,
     pub options: Vec<RequestOption>,
-    /// Canonical full-snapshot digest, stamped by per-user projections.
-    /// Signatures bind to the full immutable snapshot, so a filtered view must
-    /// carry this instead of recomputing a digest over filtered recipients.
-    /// `None` means "this is the unprojected snapshot — compute at wire time".
+    /// Multi-recipient device projections omit the unsalted v1 digest: it
+    /// otherwise permits guessing hidden recipient IDs offline.
     #[serde(skip)]
-    pub canonical_digest: Option<String>,
+    pub private_recipients: bool,
+    pub signing: Option<nod_proto::RequestSigningContext>,
 }
 
 /// Server-internal result of creating a request (carries the internal model).
@@ -57,16 +56,13 @@ pub struct CreatedDecisionRequest {
 }
 
 impl DecisionRequest {
-    /// Project onto the canonical wire request, attaching the request digest
-    /// that clients bind their signatures to: the stamped canonical digest
-    /// when this is a per-user projection, computed from the snapshot
-    /// otherwise.
+    /// Full snapshots retain the legacy digest. Private device views use
+    /// the independently verifiable, salted v2 signing context instead.
     pub fn to_wire(&self) -> nod_proto::Request {
         let mut wire = nod_proto::Request::from(self);
-        wire.request_digest = self
-            .canonical_digest
-            .clone()
-            .or_else(|| nod_proto::request_digest(&wire).ok());
+        if !self.private_recipients {
+            wire.request_digest = nod_proto::request_digest(&wire).ok();
+        }
         wire
     }
 }
@@ -97,6 +93,7 @@ impl From<&DecisionRequest> for nod_proto::Request {
             callback_url: request.callback_url.clone(),
             options: request.options.clone(),
             request_digest: None,
+            signing: request.signing.clone(),
         }
     }
 }

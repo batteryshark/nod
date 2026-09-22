@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS devices (
@@ -26,7 +27,9 @@ CREATE TABLE IF NOT EXISTS devices (
     signing_key_id TEXT,
     signing_key_algorithm TEXT,
     signing_public_key TEXT,
+    revoked_at TEXT,
     notification_sound TEXT NOT NULL DEFAULT 'default',
+    notification_preferences_json TEXT NOT NULL DEFAULT '{}',
     last_seen_at TEXT NOT NULL,
     created_at TEXT NOT NULL,
     CHECK (
@@ -116,6 +119,8 @@ CREATE TABLE IF NOT EXISTS requests (
     decision_json TEXT,
     callback_url TEXT,
     decision_resolution TEXT NOT NULL DEFAULT 'shared',
+    recipient_salt TEXT NOT NULL DEFAULT '',
+    explicit_recipients INTEGER NOT NULL DEFAULT 0,
     created_by_issuer_token_id TEXT REFERENCES issuer_tokens(id)
 );
 
@@ -173,4 +178,25 @@ CREATE TABLE IF NOT EXISTS decision_nonces (
     nonce TEXT NOT NULL,
     used_at TEXT NOT NULL,
     PRIMARY KEY (device_id, key_id, nonce)
+);
+
+CREATE TABLE IF NOT EXISTS push_deliveries (
+    request_id TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    error TEXT,
+    PRIMARY KEY(request_id,device_id)
+);
+CREATE INDEX IF NOT EXISTS idx_push_deliveries_status_updated
+ON push_deliveries(status,updated_at);
+
+CREATE TABLE IF NOT EXISTS request_idempotency (
+    scope TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    request_id TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    PRIMARY KEY(scope,channel_id,key)
 );

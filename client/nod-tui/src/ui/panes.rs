@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
@@ -71,25 +71,47 @@ fn render_servers(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         })
         .collect();
 
-    frame.render_widget(
+    let selected = app
+        .client_state()
+        .servers
+        .iter()
+        .position(|server| Some(server.id.as_str()) == selected_id);
+    frame.render_stateful_widget(
         List::new(items)
             .block(focused_block("Servers", app.focus() == Focus::Servers))
             .style(Style::default().fg(Color::White)),
         area,
+        &mut ListState::default().with_selected(selected),
     );
 }
 
 fn render_channels(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let selected_id =
         domain::selected_channel(app.client_state()).map(|channel| channel.id.as_str());
-    let items: Vec<ListItem<'_>> = domain::subscribed_channels(app.client_state())
+    let mut items: Vec<ListItem<'_>> = domain::subscribed_channels(app.client_state())
         .iter()
         .map(|channel| channel_item(channel, selected_id, app))
         .collect();
 
-    frame.render_widget(
+    items.insert(
+        0,
+        ListItem::new(format!(
+            "{}All channels (0)",
+            selected_marker(selected_id.is_none())
+        )),
+    );
+    let selected = selected_id
+        .and_then(|id| {
+            domain::subscribed_channels(app.client_state())
+                .iter()
+                .position(|channel| channel.id == id)
+        })
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    frame.render_stateful_widget(
         List::new(items).block(focused_block("Channels", app.focus() == Focus::Channels)),
         area,
+        &mut ListState::default().with_selected(Some(selected)),
     );
 }
 
@@ -103,17 +125,16 @@ fn channel_item<'a>(channel: &Channel, selected_id: Option<&str>, app: &AppState
 }
 
 fn render_request_list(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let selected_id =
-        domain::selected_request(app.client_state()).map(|request| request.id.as_str());
+    let selected_id = app.selected_request().map(|request| request.id.as_str());
     let items: Vec<ListItem<'_>> = app
         .visible_requests()
         .into_iter()
         .map(|request| request_item(request, selected_id))
         .collect();
     let title = if app.filter().is_empty() {
-        "Requests".to_string()
+        format!("Requests{}", app.history_hint())
     } else {
-        format!("Requests /{}", app.filter())
+        format!("Requests /{}{}", app.filter(), app.history_hint())
     };
 
     let empty = if items.is_empty() {
@@ -121,9 +142,14 @@ fn render_request_list(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     } else {
         items
     };
-    frame.render_widget(
+    let selected = app
+        .visible_requests()
+        .iter()
+        .position(|request| Some(request.id.as_str()) == selected_id);
+    frame.render_stateful_widget(
         List::new(empty).block(focused_block(&title, app.focus() == Focus::Requests)),
         area,
+        &mut ListState::default().with_selected(selected),
     );
 }
 
@@ -145,7 +171,7 @@ fn request_item<'a>(request: &Request, selected_id: Option<&str>) -> ListItem<'a
 }
 
 fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let Some(request) = domain::selected_request(app.client_state()) else {
+    let Some(request) = app.selected_request() else {
         frame.render_widget(
             Paragraph::new("Select a request")
                 .block(focused_block("Detail", app.focus() == Focus::Detail)),
@@ -166,7 +192,12 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         Line::from(""),
     ];
     if !request.body_markdown.is_empty() {
-        lines.push(Line::from(request.body_markdown.clone()));
+        lines.extend(
+            request
+                .body_markdown
+                .lines()
+                .map(|line| Line::from(line.to_string())),
+        );
         lines.push(Line::from(""));
     }
     for field in &request.fields {
@@ -179,6 +210,25 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             lines.push(Line::from(format!("{} - {}", link.label, link.url)));
         }
     }
+    if let Some(expires_at) = request.expires_at {
+        lines.push(Line::from(format!("Expires: {expires_at}")));
+    }
+    if let Some(decision) = &request.decision {
+        lines.push(Line::from(format!(
+            "Decision: {} · {}",
+            decision.option_label, decision.resolved_at
+        )));
+        if let Some(actor) = &decision.actor_user_id {
+            lines.push(Line::from(format!("By: {actor}")));
+        }
+        if let Some(notes) = &decision.text {
+            lines.push(Line::from(format!("Notes: {notes}")));
+        }
+    }
+    lines.push(Line::from(format!(
+        "Request: {} · Channel: {}",
+        request.id, request.channel_id
+    )));
     if request.status == RequestStatus::Pending {
         lines.push(Line::from(""));
         lines.push(Line::from("Options"));
@@ -195,20 +245,38 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         }
     }
 
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let height = area.height.saturating_sub(2);
+    let line_count = paragraph.line_count(area.width.saturating_sub(2));
+    let maximum = line_count
+        .saturating_sub(usize::from(height))
+        .min(usize::from(u16::MAX)) as u16;
+    let scroll = app.clamp_detail_scroll(maximum);
+    let title = if maximum > 0 {
+        format!(
+            "Detail · {}/{} · PgUp/PgDn",
+            scroll.saturating_add(1),
+            maximum.saturating_add(1)
+        )
+    } else {
+        "Detail".into()
+    };
     frame.render_widget(
-        Paragraph::new(lines)
-            .block(focused_block("Detail", app.focus() == Focus::Detail))
-            .wrap(Wrap { trim: false }),
+        paragraph
+            .scroll((scroll, 0))
+            .block(focused_block(&title, app.focus() == Focus::Detail)),
         area,
     );
 }
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let pending = domain::total_pending_count(app.client_state());
-    let sync = if app.client_state().is_sync_connected {
-        "sync:on"
-    } else {
-        "sync:off"
+    let sync = match app.client_state().sync_phase {
+        nod_client_core::models::SyncPhase::Current => "sync:current",
+        nod_client_core::models::SyncPhase::Connecting => "sync:connecting",
+        nod_client_core::models::SyncPhase::Reconciling => "sync:reconciling",
+        nod_client_core::models::SyncPhase::Revoked => "sync:revoked",
+        nod_client_core::models::SyncPhase::Offline => "sync:offline",
     };
     let alerts = if app.alerts().muted() {
         "alerts:muted"

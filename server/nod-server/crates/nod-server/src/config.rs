@@ -11,6 +11,8 @@ pub struct Config {
     pub database_url: String,
     pub data_dir: PathBuf,
     pub retention_days: i64,
+    /// None preserves trusted-issuer callbacks; Some([]) disables them.
+    pub callback_allowed_origins: Option<Vec<String>>,
     pub notifications: NotificationsConfig,
     pub device_attestation: DeviceAttestationConfig,
     secrets: ServerSecrets,
@@ -43,6 +45,7 @@ impl Config {
             database_url: default_database_url(),
             data_dir: default_data_dir(),
             retention_days: default_retention_days(),
+            callback_allowed_origins: None,
             notifications: NotificationsConfig::default(),
             device_attestation: DeviceAttestationConfig::default(),
             secrets: ServerSecrets::empty(),
@@ -55,6 +58,21 @@ impl Config {
         }
         if self.retention_days < 1 {
             bail!("retention_days must be at least 1");
+        }
+        if let Some(origins) = &self.callback_allowed_origins {
+            for origin in origins {
+                let url = url::Url::parse(origin)?;
+                if !matches!(url.scheme(), "http" | "https")
+                    || url.host_str().is_none()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+                    || url.path() != "/"
+                {
+                    bail!("callback_allowed_origins must contain only HTTP(S) origins");
+                }
+            }
         }
         self.notifications.apns_direct.validate()?;
         self.notifications.apns_relay.validate()?;

@@ -11,6 +11,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
+"$ROOT/scripts/prepare-test-fixtures"
+
 if [[ $# -eq 0 ]]; then
   exec cargo test --manifest-path "$ROOT/Cargo.toml" -p nod-server --test e2e_smoke smoke_in_process_server
 elif [[ $# -eq 2 ]]; then

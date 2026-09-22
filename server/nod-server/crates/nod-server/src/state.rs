@@ -23,6 +23,7 @@ pub struct AppState {
     pub(crate) notification_delivery: NotificationDelivery,
     pub(crate) push_route: Option<PushRoute>,
     pub(crate) http: Client,
+    pub(crate) callback_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -40,11 +41,26 @@ impl AppState {
             notification_delivery,
             push_route: built_push.route,
             http: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(10))
                 .build()?,
+            callback_slots: Arc::new(tokio::sync::Semaphore::new(16)),
         };
         state.spawn_maintenance();
+        crate::services::push_delivery::spawn_worker(state.clone());
         Ok(state)
+    }
+
+    pub(crate) fn delivery_for_device(
+        &self,
+        device: &crate::models::Device,
+    ) -> NotificationDelivery {
+        let eligible = self.push.has_route(device)
+            && device
+                .push_token
+                .as_deref()
+                .is_some_and(|token| !token.trim().is_empty());
+        notification_delivery_for_route(if eligible { self.push_route } else { None })
     }
 
     fn spawn_maintenance(&self) {

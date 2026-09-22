@@ -195,6 +195,24 @@ async fn device_responses_hide_apns_relay_route_behind_push_delivery() {
         .request(Method::GET, "/api/v1/users/me", Some(&device_token), None)
         .await;
     assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["notification_delivery"]["mode"], "websocket");
+    app.request(
+        Method::PUT,
+        "/api/v1/devices/me/push-token",
+        Some(&device_token),
+        Some(
+            json!({"provider":"apple_apns","token":"device-token","native_app_id":"wrong.bundle"}),
+        ),
+    )
+    .await;
+    let (_, wrong_route) = app
+        .request(Method::GET, "/api/v1/users/me", Some(&device_token), None)
+        .await;
+    assert_eq!(wrong_route["notification_delivery"]["mode"], "websocket");
+    app.request(Method::PUT, "/api/v1/devices/me/push-token", Some(&device_token), Some(json!({"provider":"apple_apns","token":"device-token","native_app_id":"com.example.NodTests"}))).await;
+    let (_, me) = app
+        .request(Method::GET, "/api/v1/users/me", Some(&device_token), None)
+        .await;
     assert_eq!(me["notification_delivery"]["mode"], "push");
     assert!(me["push_route"].is_null(), "{me}");
 }

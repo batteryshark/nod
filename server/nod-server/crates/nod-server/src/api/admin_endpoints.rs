@@ -333,6 +333,15 @@ pub(super) async fn create_admin_test_request(
     Json(req): Json<CreateRequestRequest>,
 ) -> Result<Json<CreateRequestResponse>, ApiError> {
     auth::require_admin(&headers, state.config.admin_token()).await?;
-    let response = services::requests::create(&state, req.into(), None).await?;
+    let idempotency_key = req.idempotency_key.clone();
+    let response = services::requests::create(
+        &state,
+        req.into(),
+        db::CreateRequestMetadata {
+            created_by_issuer_token_id: None,
+            idempotency_key: idempotency_key.as_deref(),
+        },
+    )
+    .await?;
     Ok(Json(CreateRequestResponse::from_created_request(&response)))
 }

@@ -24,6 +24,7 @@ use crate::request::{OptionKind, Request};
 
 /// Version tag prefixing the request digest snapshot.
 pub const REQUEST_DIGEST_VERSION: &str = "nod-request-v1";
+pub const PRIVATE_REQUEST_DIGEST_VERSION: &str = "nod-request-v2";
 /// Version tag prefixing the decision signing payload.
 pub const DECISION_PAYLOAD_VERSION: &str = "nod-decision-v1";
 
@@ -45,6 +46,8 @@ pub enum SigningError {
     InvalidSignatureEncoding,
     #[error("signature verification failed")]
     SignatureMismatch,
+    #[error("invalid recipient commitment")]
+    InvalidRecipientCommitment,
 }
 
 /// A freshly generated P-256 signing key, both halves base64url (no padding).
@@ -159,6 +162,51 @@ pub fn request_digest(request: &Request) -> Result<String, SigningError> {
         options = sha256_hex(options.as_bytes()),
     );
     Ok(sha256_hex(snapshot.as_bytes()))
+}
+
+/// Salt remains on the server; exposing it would make small recipient lists
+/// guessable. Preserve it with the original request for evidence export.
+pub fn recipients_commitment(recipients: &[String], salt: &str) -> Result<String, SigningError> {
+    let encoded = serde_json::to_string(&(salt, recipients))?;
+    Ok(sha256_hex(
+        format!("nod-recipients-v2\n{encoded}").as_bytes(),
+    ))
+}
+
+/// Recompute the content digest of a private projection. The visible recipient
+/// list is a delivery view; only the immutable commitment participates in v2.
+/// The v1 content encoding stays frozen for historical signature verification.
+pub fn request_digest_v2(request: &Request, commitment: &str) -> Result<String, SigningError> {
+    if commitment.len() != 64 || !commitment.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(SigningError::InvalidRecipientCommitment);
+    }
+    // Structured encoding keeps free-form URLs and dedupe keys from changing
+    // field boundaries. Delivery state and recipient projections are excluded.
+    let content = serde_json::json!({
+        "request_id": request.id,
+        "channel_id": request.channel_id,
+        "recipients_commitment": commitment,
+        "decision_resolution": request.decision_resolution,
+        "title": request.title,
+        "summary": request.summary,
+        "body_markdown": request.body_markdown,
+        "fields": request.fields,
+        "links": request.links,
+        "image_url": request.image_url,
+        "notification": request.notification,
+        "dedupe_key": request.dedupe_key,
+        "expires_at": request.expires_at.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        "created_at": request.created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "callback_url": request.callback_url,
+        "options": request.options,
+    });
+    Ok(sha256_hex(
+        format!(
+            "{PRIVATE_REQUEST_DIGEST_VERSION}\n{}\n",
+            serde_json::to_string(&content)?
+        )
+        .as_bytes(),
+    ))
 }
 
 // --- P-256 signing crypto ----------------------------------------------------
@@ -306,6 +354,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn private_digest_verifies_projected_content_without_recipients() {
+        let mut request = canonical_request();
+        let commitment = recipients_commitment(&request.recipients, "fixed-test-salt").unwrap();
+        let expected = request_digest_v2(&request, &commitment).unwrap();
+        // Independently calculated from the canonical JSON with Python's
+        // hashlib/json; freezes v2 without changing the original v1 vector.
+        assert_eq!(
+            expected,
+            "fdcd92dc9e5001b0cf171bdaf2f7d013f5898b2605c3d829f3e0f75aa2523dc3"
+        );
+        request.recipients = vec!["owner".to_string()];
+        assert_eq!(request_digest_v2(&request, &commitment).unwrap(), expected);
+        request.title.push_str(" changed");
+        assert_ne!(request_digest_v2(&request, &commitment).unwrap(), expected);
+    }
+
+    #[test]
+    fn recipient_commitment_binds_recipient_list_and_salt() {
+        let recipients = canonical_request().recipients;
+        let original = recipients_commitment(&recipients, "salt-a").unwrap();
+        assert_ne!(
+            original,
+            recipients_commitment(&recipients, "salt-b").unwrap()
+        );
+        assert_ne!(
+            original,
+            recipients_commitment(&recipients[..1], "salt-a").unwrap()
+        );
+    }
+
     fn canonical_request() -> Request {
         Request {
             id: "request-1".to_string(),
@@ -355,6 +434,7 @@ mod tests {
                 foreground: false,
             }],
             request_digest: None,
+            signing: None,
         }
     }
 

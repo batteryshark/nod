@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Generate ignored test-only keys when a fresh checkout has no usable fixtures.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+prepare() {
+  local directory="$1"
+  shift
+  local file
+  for file in "$@"; do
+    if [[ ! -s "$directory/$file" ]]; then
+      "$directory/generate"
+      return
+    fi
+    if [[ "$file" == *.crt ]] && ! openssl x509 -checkend 86400 -noout -in "$directory/$file" >/dev/null; then
+      "$directory/generate"
+      return
+    fi
+  done
+}
+
+prepare "$REPO_ROOT/server/nod-apns-relay/tests/fixtures/mtls" \
+  server-ca.crt server-ca.key server.crt server.key \
+  client-ca.crt client-ca.key client.crt client.key \
+  untrusted-client-ca.crt untrusted-client-ca.key untrusted-client.crt untrusted-client.key \
+  apns-auth-key.p8
+prepare "$REPO_ROOT/server/nod-server/crates/nod-server/tests/fixtures/relay-tls" \
+  server-ca.crt server-ca.key client.crt client.key

@@ -53,6 +53,9 @@ pub async fn enroll_device(
     let code_hash = hash_secret(req.code.trim());
     let now = Utc::now();
     let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let push = normalized_push_registration(&req)?;
+    let signing_key = normalized_signing_key(req.signing_key.as_ref())?;
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
     let row = sqlx::query(
         r#"
         SELECT user_id, expires_at, consumed_at
@@ -61,7 +64,7 @@ pub async fn enroll_device(
         "#,
     )
     .bind(&code_hash)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *transaction)
     .await?
     .ok_or(ApiError::NotFound)?;
 
@@ -73,9 +76,12 @@ pub async fn enroll_device(
         ));
     }
     let user_id: String = row.get("user_id");
-    let user = get_user(pool, &user_id).await?;
-    let push = normalized_push_registration(&req)?;
-    let signing_key = normalized_signing_key(req.signing_key.as_ref())?;
+    let user_name: String =
+        sqlx::query_scalar("SELECT name FROM users WHERE id = ? AND deleted_at IS NULL")
+            .bind(&user_id)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or(ApiError::NotFound)?;
 
     let consumed = sqlx::query(
         r#"
@@ -86,7 +92,7 @@ pub async fn enroll_device(
     )
     .bind(&now_text)
     .bind(&code_hash)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
     if consumed.rows_affected() == 0 {
         return Err(ApiError::Conflict(
@@ -118,15 +124,16 @@ pub async fn enroll_device(
     .bind(signing_key.as_ref().map(|key| key.public_key.as_str()))
     .bind(&now_text)
     .bind(&now_text)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
 
+    transaction.commit().await?;
     let channels = list_channels_for_device(pool, &device_id).await?;
     let devices = list_user_devices(pool, &user_id, &device_id).await?;
     Ok(EnrollDeviceResponse {
         device_id,
-        user_id: user.id,
-        user_name: user.name,
+        user_id,
+        user_name,
         token,
         notification_delivery,
         channels,

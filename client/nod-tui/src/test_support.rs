@@ -19,6 +19,7 @@ pub fn client_state() -> ClientState {
     ClientState {
         servers: vec![ServerProfile {
             id: "local".to_string(),
+            credential_id: None,
             name: "Local".to_string(),
             base_url_string: "http://localhost:8767".to_string(),
             device_name: "terminal".to_string(),
@@ -44,6 +45,8 @@ pub fn client_state() -> ClientState {
         notification_delivery_mode: NotificationDeliveryMode::Websocket,
         is_registered: true,
         is_sync_connected: false,
+        sync_phase: Default::default(),
+        last_synced_at: None,
         last_error: None,
     }
 }
@@ -77,6 +80,7 @@ pub fn request_with_status(id: &str, channel_id: &str, status: RequestStatus) ->
         callback_url: None,
         options: Vec::new(),
         request_digest: Some("digest".to_string()),
+        signing: None,
     }
 }
 
@@ -86,6 +90,7 @@ pub fn request_with_status(id: &str, channel_id: &str, status: RequestStatus) ->
 pub struct FakeRuntime {
     pub calls: Vec<&'static str>,
     pub fail_submit: bool,
+    pub fail_connect: bool,
     /// Returned by every state-yielding method (enroll, refresh, selects, …).
     pub state: ClientState,
     /// Returned by `submit_option` when `fail_submit` is false.
@@ -97,6 +102,7 @@ impl Default for FakeRuntime {
         Self {
             calls: Vec::new(),
             fail_submit: false,
+            fail_connect: false,
             state: client_state(),
             submit_result: request("deploy", "default"),
         }
@@ -117,6 +123,9 @@ impl RuntimePort for FakeRuntime {
 
     async fn connect_sync(&mut self) -> anyhow::Result<()> {
         self.calls.push("connect_sync");
+        if self.fail_connect {
+            return Err(anyhow!("connection unavailable"));
+        }
         Ok(())
     }
 
@@ -132,6 +141,22 @@ impl RuntimePort for FakeRuntime {
 
     async fn select_channel(&mut self, _params: ChannelParams) -> anyhow::Result<ClientState> {
         self.calls.push("select_channel");
+        Ok(self.state.clone())
+    }
+
+    async fn query_history(
+        &mut self,
+        _params: nod_client_core::QueryHistoryParams,
+    ) -> anyhow::Result<nod_client_core::models::RequestsResponse> {
+        Ok(nod_client_core::models::RequestsResponse {
+            requests: self.state.requests.clone(),
+            next_cursor: None,
+        })
+    }
+
+    async fn select_all_channels(&mut self) -> anyhow::Result<ClientState> {
+        self.calls.push("select_all_channels");
+        self.state.selected_channel_id = None;
         Ok(self.state.clone())
     }
 
@@ -200,6 +225,7 @@ pub fn user_device(name: &str) -> UserDevice {
         has_signing_key: false,
         attestation: None,
         notification_sound: "default".to_string(),
+        notification_preferences: Default::default(),
         last_seen_at: Utc.with_ymd_and_hms(2026, 5, 31, 12, 0, 0).unwrap(),
         created_at: Utc.with_ymd_and_hms(2026, 5, 31, 12, 0, 0).unwrap(),
         is_current: false,

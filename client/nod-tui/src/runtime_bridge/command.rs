@@ -1,8 +1,8 @@
 use nod_client_core::{
     models::{ClientState, Request, UserDevice},
-    ChannelParams, EnrollParams, NotificationPreferenceParams, RenameDeviceParams,
-    RevokeDeviceParams, SelectRequestParams, SelectServerParams, SetSubscriptionParams,
-    SubmitOptionParams,
+    ChannelParams, EnrollParams, NotificationPreferenceParams, QueryHistoryParams,
+    RenameDeviceParams, RevokeDeviceParams, SelectRequestParams, SelectServerParams,
+    SetSubscriptionParams, SubmitOptionParams,
 };
 
 #[derive(Debug, Clone)]
@@ -13,6 +13,8 @@ pub(crate) enum RuntimeCommand {
     SelectServer(SelectServerParams),
     ForgetServer(SelectServerParams),
     SelectChannel(ChannelParams),
+    SelectAllChannels,
+    QueryHistory(QueryHistoryParams),
     SelectRequest(SelectRequestParams),
     SubmitOption(SubmitOptionParams),
     ClearChannel(ChannelParams),
@@ -31,7 +33,9 @@ impl RuntimeCommand {
             Self::ConnectSync => "Connecting sync",
             Self::SelectServer(_) => "Switching server",
             Self::ForgetServer(_) => "Forgetting server",
-            Self::SelectChannel(_) => "Loading channel",
+            Self::SelectChannel(_) => "Selecting channel",
+            Self::SelectAllChannels => "Showing all channels",
+            Self::QueryHistory(_) => "Searching history",
             Self::SelectRequest(_) => "Selecting request",
             Self::SubmitOption(_) => "Submitting option",
             Self::ClearChannel(_) => "Clearing channel",
@@ -55,8 +59,11 @@ impl PartialEq for RuntimeCommand {
                     && left.notification_sound == right.notification_sound
                     && left.platform == right.platform
             }
-            (Self::Refresh, Self::Refresh) => true,
+            (Self::Refresh, Self::Refresh) | (Self::SelectAllChannels, Self::SelectAllChannels) => {
+                true
+            }
             (Self::ConnectSync, Self::ConnectSync) => true,
+            (Self::QueryHistory(left), Self::QueryHistory(right)) => left == right,
             (Self::SelectServer(left), Self::SelectServer(right))
             | (Self::ForgetServer(left), Self::ForgetServer(right)) => {
                 left.server_id == right.server_id
@@ -100,5 +107,9 @@ pub(crate) enum RuntimeCommandOutcome {
     Request(Box<Request>),
     Device(Box<UserDevice>),
     Devices(Vec<UserDevice>),
+    History {
+        query: QueryHistoryParams,
+        page: nod_client_core::models::RequestsResponse,
+    },
     None,
 }

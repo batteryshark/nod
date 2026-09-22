@@ -130,6 +130,17 @@ async fn clearing_channel_is_per_user() {
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
 
+    let request_id = created["request_id"].as_str().unwrap();
+    let (status, cancelled) = app
+        .request(
+            Method::POST,
+            &format!("/api/v1/requests/{request_id}/cancel"),
+            Some("admin-test-token"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{cancelled}");
+
     let (status, cleared) = app
         .request(
             Method::POST,

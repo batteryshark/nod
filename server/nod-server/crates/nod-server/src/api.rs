@@ -7,6 +7,7 @@ use tower_http::cors::{Any, CorsLayer};
 use self::responses::HealthResponse;
 use crate::{admin, state::AppState};
 
+mod activity;
 mod admin_endpoints;
 mod device_endpoints;
 mod requests;
@@ -73,6 +74,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/admin/test-requests",
             post(admin_endpoints::create_admin_test_request),
         )
+        .route("/api/v1/admin/activity", get(activity::activity))
         .route("/api/v1/admin/summary", get(admin_endpoints::admin_summary))
         .route(
             "/api/v1/admin/settings",
@@ -91,6 +93,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/devices/me/push-token",
             put(device_endpoints::update_push_token),
+        )
+        .route(
+            "/api/v1/devices/me/notification-preferences",
+            put(device_endpoints::update_notification_preferences),
         )
         .route(
             "/api/v1/devices/me/preferences",

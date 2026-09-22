@@ -86,7 +86,7 @@ pub async fn update_push_token(
         r#"
         UPDATE devices
         SET push_provider = ?, push_token = ?, native_app_id = ?, last_seen_at = ?
-        WHERE id = ?
+        WHERE id = ? AND revoked_at IS NULL
         "#,
     )
     .bind(provider)
@@ -106,7 +106,7 @@ pub async fn update_device_preferences(
 ) -> Result<(), ApiError> {
     if let Some(notification_sound) = req.notification_sound {
         let notification_sound = normalize_notification_sound(&notification_sound)?;
-        sqlx::query("UPDATE devices SET notification_sound = ?, last_seen_at = ? WHERE id = ?")
+        sqlx::query("UPDATE devices SET notification_sound = ?, last_seen_at = ? WHERE id = ? AND revoked_at IS NULL")
             .bind(notification_sound)
             .bind(now_string())
             .bind(device_id)
@@ -114,4 +114,28 @@ pub async fn update_device_preferences(
             .await?;
     }
     Ok(())
+}
+
+pub async fn update_notification_preferences(
+    pool: &SqlitePool,
+    device_id: &str,
+    mut preferences: nod_proto::DeviceNotificationPreferences,
+) -> Result<nod_proto::DeviceNotificationPreferences, ApiError> {
+    if preferences.muted_channels.len() > 100 {
+        return Err(ApiError::BadRequest(
+            "at most 100 muted channels are supported".to_string(),
+        ));
+    }
+    for channel_id in &mut preferences.muted_channels {
+        *channel_id = channel_id.trim().to_string();
+        super::validation::validate_id(channel_id, "muted channel id")?;
+    }
+    preferences.muted_channels.sort();
+    preferences.muted_channels.dedup();
+    let updated=sqlx::query("UPDATE devices SET notification_preferences_json=?,last_seen_at=? WHERE id=? AND revoked_at IS NULL")
+        .bind(serde_json::to_string(&preferences)?).bind(now_string()).bind(device_id).execute(pool).await?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiError::NotFound);
+    }
+    Ok(preferences)
 }

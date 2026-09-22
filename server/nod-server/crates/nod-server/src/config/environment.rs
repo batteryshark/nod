@@ -32,6 +32,9 @@ pub(super) fn apply_server_env(config: &mut Config) -> anyhow::Result<()> {
     if let Some(value) = injected_value("NOD_ADMIN_TOKEN")? {
         config.secrets.set_admin_token(value);
     }
+    if let Some(value) = raw_env("NOD_CALLBACK_ALLOWED_ORIGINS") {
+        config.callback_allowed_origins = Some(split_secret_list(&value));
+    }
     apply_apns_direct_env(&mut config.notifications.apns_direct)?;
     apply_apns_relay_env(&mut config.notifications.apns_relay)?;
     apply_apple_app_attest_env(&mut config.device_attestation.apple_app_attest)?;

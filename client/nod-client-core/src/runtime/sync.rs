@@ -1,41 +1,39 @@
-use std::{io::ErrorKind, sync::Arc, time::Duration};
+use std::{io::ErrorKind, time::Duration};
 
-use anyhow::{Error, Result};
-use futures_util::StreamExt;
-use tokio::sync::Mutex;
+use anyhow::{anyhow, Error, Result};
+use futures_util::{SinkExt, StreamExt};
+use tokio::time::Instant;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{error::ProtocolError, Error as WebSocketError, Message},
 };
-use url::Url;
 
 use crate::{
-    models::{NotificationDeliveryMode, RequestStatus, SyncEnvelope},
-    state::StateReducer,
+    api::ApiStatusError,
+    models::{NotificationDeliveryMode, RequestStatus, SyncEnvelope, SyncPhase},
 };
 
-use super::{emit_to, NodClientMessage, NodClientRuntime, Outbox};
+use super::{emit_to, snapshot::SnapshotContext, NodClientMessage, NodClientRuntime};
 
-type SharedReducer = Arc<Mutex<StateReducer>>;
-
-const RECONNECT_DELAY: Duration = Duration::from_secs(2);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+const LIVENESS_TIMEOUT: Duration = Duration::from_secs(50);
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 
 impl NodClientRuntime {
     pub async fn connect_sync(&mut self) -> Result<()> {
         self.disconnect_sync().await;
-        let api = self.api().await?;
-        let url = api.websocket_url()?;
-        let reducer = self.reducer.clone();
-        let tx = self.tx.clone();
-
-        self.sync_task = Some(tokio::spawn(run_sync_loop(url, reducer, tx)));
-
+        let context = self.snapshot_context().await?;
+        self.sync_task = Some(tokio::spawn(run_sync_loop(context)));
         Ok(())
     }
 
     pub async fn disconnect_sync(&mut self) {
         if let Some(task) = self.sync_task.take() {
             task.abort();
+            // Await cancellation before changing profiles so an old snapshot
+            // can never write into the newly selected server's state.
+            let _ = task.await;
         }
         self.reducer.lock().await.mark_sync_connected(false);
         self.emit_message(NodClientMessage::SyncStatus { connected: false })
@@ -44,16 +42,42 @@ impl NodClientRuntime {
     }
 }
 
-async fn run_sync_loop(url: Url, reducer: SharedReducer, tx: Outbox) {
+async fn run_sync_loop(context: SnapshotContext) {
     let mut has_connected = false;
-
+    let mut failures = 0u32;
     loop {
-        match run_connection(&url, &reducer, &tx).await {
-            Ok(()) => has_connected = true,
-            Err(error) if is_expected_reconnect_error(&error, has_connected) => {}
-            Err(error) => {
+        context.phase(SyncPhase::Connecting).await;
+        let started = Instant::now();
+        let result = run_connection(&context).await;
+        if let Err(error) = &result {
+            if is_unauthorized(error) {
+                let (state, pending_ids) = {
+                    let mut reducer = context.reducer.lock().await;
+                    let pending_ids = reducer.pending_request_ids();
+                    reducer.clear_loaded_data();
+                    reducer.set_error(
+                        "This device registration was revoked. Enroll again to reconnect.",
+                    );
+                    (reducer.state.clone(), pending_ids)
+                };
+                for request_id in pending_ids {
+                    emit_to(
+                        &context.tx,
+                        NodClientMessage::NotificationRemoved {
+                            server_id: context.server_id.clone(),
+                            request_id,
+                        },
+                    )
+                    .await;
+                }
+                emit_to(&context.tx, NodClientMessage::State(Box::new(state))).await;
+                context.phase(SyncPhase::Revoked).await;
+                emit_to(&context.tx, NodClientMessage::AuthRevoked {}).await;
+                return;
+            }
+            if !is_expected_reconnect_error(error, has_connected) {
                 emit_to(
-                    &tx,
+                    &context.tx,
                     NodClientMessage::TransientError {
                         message: error.to_string(),
                     },
@@ -61,15 +85,37 @@ async fn run_sync_loop(url: Url, reducer: SharedReducer, tx: Outbox) {
                 .await;
             }
         }
-
-        if reducer.lock().await.state.is_sync_connected {
-            has_connected = true;
-        }
-
-        publish_connection_state(&reducer, &tx, false).await;
-        tokio::time::sleep(RECONNECT_DELAY).await;
+        has_connected |= context.reducer.lock().await.state.is_sync_connected;
+        failures = if started.elapsed() >= HEARTBEAT_INTERVAL {
+            0
+        } else {
+            failures.saturating_add(1)
+        };
+        context.phase(SyncPhase::Offline).await;
+        tokio::time::sleep(reconnect_delay(failures)).await;
     }
 }
+
+fn reconnect_delay(failures: u32) -> Duration {
+    let seconds = 1u64 << failures.min(5);
+    let jitter = u64::from(uuid::Uuid::new_v4().as_bytes()[0]) * 4;
+    Duration::from_millis((seconds * 1000 + jitter).min(MAX_RECONNECT_DELAY.as_millis() as u64))
+}
+
+fn is_unauthorized(error: &Error) -> bool {
+    if error
+        .downcast_ref::<ApiStatusError>()
+        .is_some_and(|error| error.status == reqwest::StatusCode::UNAUTHORIZED)
+    {
+        return true;
+    }
+    matches!(error.downcast_ref::<WebSocketError>(), Some(WebSocketError::Http(response)) if response.status().as_u16() == 401)
+        || error.downcast_ref::<RegistrationRevoked>().is_some()
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("This device registration was revoked.")]
+struct RegistrationRevoked;
 
 fn is_expected_reconnect_error(error: &Error, has_connected: bool) -> bool {
     let Some(websocket_error) = error.downcast_ref::<WebSocketError>() else {
@@ -92,36 +138,63 @@ fn is_expected_reconnect_error(error: &Error, has_connected: bool) -> bool {
     }
 }
 
-async fn run_connection(url: &Url, reducer: &SharedReducer, tx: &Outbox) -> Result<()> {
-    let (mut socket, _) = connect_async(url.as_str()).await?;
-    publish_connection_state(reducer, tx, true).await;
-
-    while let Some(message) = socket.next().await {
-        let message = message?;
-        let Some(envelope) = envelope_from_message(message) else {
-            continue;
-        };
-        apply_sync_envelope(reducer, tx, envelope).await;
+async fn run_connection(context: &SnapshotContext) -> Result<()> {
+    let url = context.api.websocket_url()?;
+    let (mut socket, _) =
+        tokio::time::timeout(CONNECT_TIMEOUT, connect_async(url.as_str())).await??;
+    // Subscribe before taking a snapshot. Events arriving during HTTP remain
+    // buffered on the socket; the reducer ignores versions older than the snapshot.
+    context.phase(SyncPhase::Reconciling).await;
+    context.refresh().await?;
+    context.phase(SyncPhase::Current).await;
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut received_at = Instant::now();
+    loop {
+        tokio::select! {
+            incoming = socket.next() => {
+                let Some(message) = incoming else { return Ok(()); };
+                let message = message?;
+                received_at = Instant::now();
+                if matches!(message, Message::Close(_)) { return Ok(()); }
+                if let Some(envelope) = envelope_from_message(message)? {
+                    let should_resync = should_resync_after(&envelope);
+                    apply_sync_envelope(context, envelope).await?;
+                    if should_resync {
+                        context.phase(SyncPhase::Reconciling).await;
+                        context.refresh().await?;
+                        context.phase(SyncPhase::Current).await;
+                    }
+                }
+            }
+            _ = heartbeat.tick() => {
+                socket.send(Message::Ping(Vec::new())).await?;
+            }
+            _ = tokio::time::sleep_until(received_at + LIVENESS_TIMEOUT) => {
+                return Err(anyhow!("No response from sync server; reconnecting."));
+            }
+        }
     }
-
-    Ok(())
 }
 
-fn envelope_from_message(message: Message) -> Option<SyncEnvelope> {
+fn envelope_from_message(message: Message) -> Result<Option<SyncEnvelope>> {
     if !message.is_text() && !message.is_binary() {
-        return None;
+        return Ok(None);
     }
     let raw = message.into_data();
     if raw.is_empty() {
-        return None;
+        return Ok(None);
     }
-    serde_json::from_slice(&raw).ok()
+    serde_json::from_slice(&raw).map(Some).map_err(|_| {
+        anyhow!("Invalid sync message received; reconnecting to restore current state.")
+    })
 }
 
-async fn apply_sync_envelope(reducer: &SharedReducer, tx: &Outbox, envelope: SyncEnvelope) {
+async fn apply_sync_envelope(context: &SnapshotContext, envelope: SyncEnvelope) -> Result<()> {
+    let reducer = &context.reducer;
+    let tx = &context.tx;
     let notification_removal = notification_removal_for(&envelope);
-    let auth_revoked = is_current_device_revoked(reducer, &envelope).await;
-    let should_resync = should_resync_after(&envelope);
+    let auth_revoked = is_current_device_revoked(context, &envelope).await;
     let delivery_mode = notification_delivery_mode_for(&envelope);
 
     let candidates = {
@@ -132,35 +205,25 @@ async fn apply_sync_envelope(reducer: &SharedReducer, tx: &Outbox, envelope: Syn
         reducer.apply_sync_envelope(envelope)
     };
 
-    for request in candidates {
+    context.emit_candidates(candidates).await;
+    if let Some(request_id) = notification_removal {
         emit_to(
             tx,
-            NodClientMessage::NotificationCandidate {
-                request: Box::new(request),
+            NodClientMessage::NotificationRemoved {
+                server_id: context.server_id.clone(),
+                request_id,
             },
         )
         .await;
-    }
-    if let Some(request_id) = notification_removal {
-        emit_to(tx, NodClientMessage::NotificationRemoved { request_id }).await;
     }
 
     let state = reducer.lock().await.state.clone();
     emit_to(tx, NodClientMessage::State(Box::new(state))).await;
 
     if auth_revoked {
-        emit_to(tx, NodClientMessage::AuthRevoked {}).await;
+        return Err(RegistrationRevoked.into());
     }
-    if should_resync {
-        emit_to(tx, NodClientMessage::ResyncRequired {}).await;
-    }
-}
-
-async fn publish_connection_state(reducer: &SharedReducer, tx: &Outbox, connected: bool) {
-    let mut reducer = reducer.lock().await;
-    reducer.mark_sync_connected(connected);
-    emit_to(tx, NodClientMessage::SyncStatus { connected }).await;
-    emit_to(tx, NodClientMessage::State(Box::new(reducer.state.clone()))).await;
+    Ok(())
 }
 
 fn notification_removal_for(envelope: &SyncEnvelope) -> Option<String> {
@@ -180,7 +243,7 @@ fn notification_delivery_mode_for(envelope: &SyncEnvelope) -> Option<Notificatio
         .map(|delivery| delivery.mode.clone())
 }
 
-async fn is_current_device_revoked(reducer: &SharedReducer, envelope: &SyncEnvelope) -> bool {
+async fn is_current_device_revoked(context: &SnapshotContext, envelope: &SyncEnvelope) -> bool {
     if envelope.kind != "device_revoked" {
         return false;
     }
@@ -193,7 +256,8 @@ async fn is_current_device_revoked(reducer: &SharedReducer, envelope: &SyncEnvel
         return false;
     };
 
-    reducer
+    context
+        .reducer
         .lock()
         .await
         .selected_server()

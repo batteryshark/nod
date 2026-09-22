@@ -6,7 +6,7 @@ mod rename_device;
 mod settings;
 mod text_input;
 
-use std::time::Instant;
+use std::{cell::Cell, time::Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nod_client_core::{
@@ -45,6 +45,44 @@ pub(crate) enum Modal {
     RenameDevice(RenameDeviceForm),
     Filter(TextInput),
     Help,
+    Actions {
+        request: Box<Request>,
+        selected: usize,
+    },
+    Confirm(DestructiveAction),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DestructiveAction {
+    Clear { channel_id: String, name: String },
+    Forget { server_id: String, name: String },
+    Revoke { device_id: String, name: String },
+}
+
+impl DestructiveAction {
+    pub(crate) fn prompt(&self) -> String {
+        match self {
+            Self::Clear { name, .. } => {
+                format!("Hide handled requests in {name}? Pending requests remain; history stays searchable.")
+            }
+            Self::Forget { name, .. } => format!("Forget {name}? Re-enrollment will be required."),
+            Self::Revoke { name, .. } => format!("Revoke {name}? It will lose access immediately."),
+        }
+    }
+
+    fn command(&self) -> RuntimeCommand {
+        match self {
+            Self::Clear { channel_id, .. } => RuntimeCommand::ClearChannel(ChannelParams {
+                channel_id: channel_id.clone(),
+            }),
+            Self::Forget { server_id, .. } => RuntimeCommand::ForgetServer(SelectServerParams {
+                server_id: server_id.clone(),
+            }),
+            Self::Revoke { device_id, .. } => RuntimeCommand::RevokeDevice(RevokeDeviceParams {
+                device_id: device_id.clone(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +97,11 @@ pub(crate) struct AppState {
     running: Option<String>,
     alerts: AlertState,
     should_quit: bool,
+    detail_scroll: Cell<u16>,
+    history_requests: Vec<Request>,
+    history_next_cursor: Option<String>,
+    history_selected_id: Option<String>,
+    history_loaded: bool,
 }
 
 impl AppState {
@@ -81,6 +124,11 @@ impl AppState {
             running: None,
             alerts: AlertState::new(),
             should_quit: false,
+            detail_scroll: Cell::new(0),
+            history_requests: Vec::new(),
+            history_next_cursor: None,
+            history_selected_id: None,
+            history_loaded: false,
         }
     }
 
@@ -104,12 +152,20 @@ impl AppState {
         &self.filter
     }
 
+    pub(crate) fn clamp_detail_scroll(&self, maximum: u16) -> u16 {
+        let scroll = self.detail_scroll.get().min(maximum);
+        self.detail_scroll.set(scroll);
+        scroll
+    }
+
     pub(crate) fn status(&self) -> &str {
         &self.status
     }
 
     pub(crate) fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error
+            .as_deref()
+            .or(self.client_state.last_error.as_deref())
     }
 
     pub(crate) fn running(&self) -> Option<&str> {
@@ -130,10 +186,51 @@ impl AppState {
 
     pub(crate) fn visible_requests(&self) -> Vec<&Request> {
         let query = self.filter.trim().to_lowercase();
-        domain::ordered_requests(&self.client_state.requests)
-            .into_iter()
-            .filter(|request| query.is_empty() || request_matches(request, &query))
-            .collect()
+        domain::ordered_request_refs(self.client_state.requests.iter().chain(
+            self.history_requests.iter().filter(|historical| {
+                !self
+                    .client_state
+                    .requests
+                    .iter()
+                    .any(|live| live.id == historical.id)
+            }),
+        ))
+        .into_iter()
+        .filter(|request| query.is_empty() || request_matches(request, &query))
+        .collect()
+    }
+
+    pub(crate) fn selected_request(&self) -> Option<&Request> {
+        self.history_selected_id
+            .as_deref()
+            .and_then(|id| {
+                self.client_state
+                    .requests
+                    .iter()
+                    .chain(self.history_requests.iter())
+                    .find(|request| request.id == id)
+            })
+            .or_else(|| domain::selected_request(&self.client_state))
+    }
+
+    pub(crate) fn history_hint(&self) -> &str {
+        if self.history_next_cursor.is_some() {
+            " · ] older"
+        } else if self.history_loaded {
+            " · end of history"
+        } else {
+            " · H history"
+        }
+    }
+
+    fn history_command(&self, before: Option<String>) -> RuntimeCommand {
+        RuntimeCommand::QueryHistory(nod_client_core::QueryHistoryParams {
+            server_id: self.client_state.selected_server_id.clone(),
+            channel_id: self.client_state.selected_channel_id.clone(),
+            search: (!self.filter.is_empty()).then(|| self.filter.clone()),
+            before,
+            limit: Some(100),
+        })
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Vec<RuntimeCommand> {
@@ -144,6 +241,10 @@ impl AppState {
         if is_interrupt_key(key) {
             self.should_quit = true;
             self.modal = None;
+            return Vec::new();
+        }
+
+        if self.running.is_some() && key.code == KeyCode::Enter {
             return Vec::new();
         }
 
@@ -162,11 +263,59 @@ impl AppState {
 
     pub(crate) fn apply_runtime_outcome(&mut self, outcome: RuntimeCommandOutcome) {
         match outcome {
-            RuntimeCommandOutcome::State(state) => self.apply_state(*state),
-            RuntimeCommandOutcome::Request(request) => self.apply_request(*request),
-            RuntimeCommandOutcome::Device(device) => self.apply_device(*device),
+            RuntimeCommandOutcome::State(state) => {
+                let enrolled = self.running.as_deref() == Some("Enrolling") && state.is_registered;
+                self.apply_state(*state);
+                if enrolled {
+                    self.modal = None;
+                }
+            }
+            RuntimeCommandOutcome::Request(request) => {
+                self.apply_request(*request);
+                if matches!(self.modal, Some(Modal::OptionText(_))) {
+                    self.modal = None;
+                }
+            }
+            RuntimeCommandOutcome::Device(device) => {
+                self.apply_device(*device);
+                if matches!(self.modal, Some(Modal::RenameDevice(_))) {
+                    self.modal = None;
+                }
+            }
             RuntimeCommandOutcome::Devices(devices) => self.devices = devices,
+            RuntimeCommandOutcome::History { query, page } => {
+                if query.server_id == self.client_state.selected_server_id
+                    && query.channel_id == self.client_state.selected_channel_id
+                {
+                    if query.before.is_none() {
+                        self.history_requests.clear();
+                    }
+                    for request in page.requests {
+                        self.history_requests
+                            .retain(|existing| existing.id != request.id);
+                        self.history_requests.push(request);
+                    }
+                    self.history_next_cursor = page.next_cursor;
+                    self.history_loaded = true;
+                    if self.selected_request().is_none_or(|selected| {
+                        !self
+                            .visible_requests()
+                            .iter()
+                            .any(|candidate| candidate.id == selected.id)
+                    }) {
+                        self.history_selected_id = self
+                            .visible_requests()
+                            .first()
+                            .map(|request| request.id.clone());
+                    }
+                }
+            }
             RuntimeCommandOutcome::None => {}
+        }
+        if let Some(Modal::Confirm(action)) = &self.modal {
+            if self.running.as_deref() == Some(action.command().label()) {
+                self.modal = None;
+            }
         }
         self.running = None;
         self.status = "Ready".to_string();
@@ -188,9 +337,11 @@ impl AppState {
                 self.set_error("This device registration was revoked.".to_string());
             }
             NodClientMessage::ResyncRequired {} => {
-                self.status = "Server requested resync. Press R to refresh.".to_string();
+                self.status = "Reconciling with server…".to_string();
             }
-            NodClientMessage::TransientError { message } => self.set_error(message),
+            NodClientMessage::TransientError { message } => {
+                self.client_state.last_error = Some(message)
+            }
             NodClientMessage::NotificationCandidate { .. }
             | NodClientMessage::NotificationRemoved { .. } => {}
         }
@@ -201,19 +352,32 @@ impl AppState {
         self.alerts.tick(Instant::now());
     }
 
+    pub(crate) fn set_busy_notice(&mut self) {
+        self.error = Some("Another command is still running.".into());
+    }
+
     pub(crate) fn set_error(&mut self, message: String) {
         self.running = None;
         self.error = Some(message);
     }
 
     fn apply_state(&mut self, state: ClientState) {
+        if self.client_state.selected_server_id != state.selected_server_id
+            || self.client_state.selected_channel_id != state.selected_channel_id
+        {
+            self.history_requests.clear();
+            self.history_next_cursor = None;
+            self.history_selected_id = None;
+            self.history_loaded = false;
+        }
+        if self.client_state.selected_request_id != state.selected_request_id
+            || self.client_state.selected_server_id != state.selected_server_id
+        {
+            self.detail_scroll.set(0);
+        }
         self.client_state = state;
         self.devices = self.client_state.devices.clone();
-        if self.client_state.is_registered {
-            if matches!(self.modal, Some(Modal::Enrollment(_))) {
-                self.modal = None;
-            }
-        } else {
+        if !self.client_state.is_registered && !matches!(self.modal, Some(Modal::Enrollment(_))) {
             self.modal = Some(Modal::Enrollment(EnrollmentForm::new()));
         }
     }
@@ -222,6 +386,13 @@ impl AppState {
     // in place when known, inserted at the top when new — so a submit/decision
     // result updates the list without waiting for the next full state snapshot.
     fn apply_request(&mut self, request: Request) {
+        if let Some(existing) = self
+            .history_requests
+            .iter_mut()
+            .find(|existing| existing.id == request.id)
+        {
+            *existing = request.clone();
+        }
         if let Some(existing) = self
             .client_state
             .requests
@@ -275,6 +446,37 @@ impl AppState {
                 Vec::new()
             }
             KeyCode::Char('R') => vec![RuntimeCommand::Refresh],
+            KeyCode::Char('H') => vec![self.history_command(None)],
+            KeyCode::Char(']') => self
+                .history_next_cursor
+                .clone()
+                .map(|cursor| self.history_command(Some(cursor)))
+                .into_iter()
+                .collect(),
+            KeyCode::Char('0') => vec![RuntimeCommand::SelectAllChannels],
+            KeyCode::Char('e') => {
+                self.modal = Some(Modal::Enrollment(EnrollmentForm::new()));
+                Vec::new()
+            }
+            KeyCode::Char('o') => {
+                if let Some(request) = self.selected_request() {
+                    self.modal = Some(Modal::Actions {
+                        request: Box::new(request.clone()),
+                        selected: 0,
+                    });
+                }
+                Vec::new()
+            }
+            KeyCode::PageDown => self.move_selection(10),
+            KeyCode::PageUp => self.move_selection(-10),
+            KeyCode::Home if self.focus == Focus::Detail => {
+                self.detail_scroll.set(0);
+                Vec::new()
+            }
+            KeyCode::End if self.focus == Focus::Detail => {
+                self.detail_scroll.set(u16::MAX);
+                Vec::new()
+            }
             KeyCode::Char('m') => {
                 self.alerts.toggle_mute();
                 Vec::new()
@@ -334,7 +536,43 @@ impl AppState {
             }
             Modal::Filter(mut input) => {
                 self.handle_filter_key(&mut input, key);
+                if key.code == KeyCode::Enter {
+                    vec![self.history_command(None)]
+                } else {
+                    Vec::new()
+                }
+            }
+            Modal::Actions {
+                request,
+                mut selected,
+            } => {
+                let options = domain::submittable_options(&request);
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => return Vec::new(),
+                    KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        selected = (selected + 1).min(options.len().saturating_sub(1))
+                    }
+                    KeyCode::Enter => {
+                        if let Some(option) = options.get(selected) {
+                            return self.command_for_choice(
+                                &request,
+                                domain::OptionChoice::from_option(option),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+                self.modal = Some(Modal::Actions { request, selected });
                 Vec::new()
+            }
+            Modal::Confirm(action) => {
+                if key.code == KeyCode::Esc {
+                    return Vec::new();
+                }
+                let command = (key.code == KeyCode::Enter).then(|| action.command());
+                self.modal = Some(Modal::Confirm(action));
+                command.into_iter().collect()
             }
             Modal::Help => {
                 if is_close_key(key) {
@@ -377,20 +615,22 @@ impl AppState {
             }
             KeyCode::Char('x') => {
                 if let Some(device) = settings.selected_device(&self.devices) {
-                    return SettingsResult::open(vec![RuntimeCommand::RevokeDevice(
-                        RevokeDeviceParams {
-                            device_id: device.id.clone(),
-                        },
-                    )]);
+                    self.modal = Some(Modal::Confirm(DestructiveAction::Revoke {
+                        device_id: device.id.clone(),
+                        name: device.name.clone(),
+                    }));
+                    return SettingsResult::closed();
                 }
             }
             KeyCode::Char('f') => {
-                if let Some(server_id) = domain::selected_server_id(&self.client_state) {
-                    return SettingsResult::open(vec![RuntimeCommand::ForgetServer(
-                        SelectServerParams {
-                            server_id: server_id.to_string(),
-                        },
-                    )]);
+                if let Some(server) = self.client_state.servers.iter().find(|server| {
+                    Some(server.id.as_str()) == domain::selected_server_id(&self.client_state)
+                }) {
+                    self.modal = Some(Modal::Confirm(DestructiveAction::Forget {
+                        server_id: server.id.clone(),
+                        name: server.name.clone(),
+                    }));
+                    return SettingsResult::closed();
                 }
             }
             _ => {}
@@ -400,7 +640,7 @@ impl AppState {
     }
 
     fn handle_filter_key(&mut self, input: &mut TextInput, key: KeyEvent) {
-        if is_close_key(key) {
+        if key.code == KeyCode::Esc {
             self.modal = None;
             return;
         }
@@ -422,7 +662,13 @@ impl AppState {
             Focus::Servers => self.move_server(delta),
             Focus::Channels => self.move_channel(delta),
             Focus::Requests => self.move_request(delta),
-            Focus::Detail => Vec::new(),
+            Focus::Detail => {
+                self.detail_scroll
+                    .set(self.detail_scroll.get().saturating_add_signed(
+                        delta.clamp(i16::MIN as isize, i16::MAX as isize) as i16,
+                    ));
+                Vec::new()
+            }
         }
     }
 
@@ -448,22 +694,24 @@ impl AppState {
         let current =
             domain::selected_channel(&self.client_state).map(|channel| channel.id.as_str());
         let Some(next_id) = selected_id_after(
-            channels.iter().map(|channel| channel.id.as_str()),
-            current,
+            std::iter::once("").chain(channels.iter().map(|channel| channel.id.as_str())),
+            Some(current.unwrap_or("")),
             delta,
         ) else {
             return Vec::new();
         };
 
+        if next_id.is_empty() {
+            return vec![RuntimeCommand::SelectAllChannels];
+        }
         vec![RuntimeCommand::SelectChannel(ChannelParams {
             channel_id: next_id,
         })]
     }
 
-    fn move_request(&self, delta: isize) -> Vec<RuntimeCommand> {
+    fn move_request(&mut self, delta: isize) -> Vec<RuntimeCommand> {
         let requests = self.visible_requests();
-        let current =
-            domain::selected_request(&self.client_state).map(|request| request.id.as_str());
+        let current = self.selected_request().map(|request| request.id.as_str());
         let Some(next_id) = selected_id_after(
             requests.iter().map(|request| request.id.as_str()),
             current,
@@ -472,21 +720,37 @@ impl AppState {
             return Vec::new();
         };
 
+        if self.history_loaded {
+            self.history_selected_id = Some(next_id);
+            self.detail_scroll.set(0);
+            return Vec::new();
+        }
         vec![RuntimeCommand::SelectRequest(SelectRequestParams {
             request_id: next_id,
         })]
     }
 
     fn command_for_option_kind(&mut self, kind: OptionKind) -> Vec<RuntimeCommand> {
-        let Some(request) = domain::selected_request(&self.client_state) else {
+        let Some(request) = self.selected_request().cloned() else {
             self.set_error("No request selected.".to_string());
             return Vec::new();
         };
-        let Some(option) = domain::option_for_kind(request, kind) else {
+        let Some(option) = domain::option_for_kind(&request, kind) else {
             self.set_error("Selected request does not offer that option.".to_string());
             return Vec::new();
         };
+        self.command_for_choice(&request, option)
+    }
 
+    fn command_for_choice(
+        &mut self,
+        request: &Request,
+        option: domain::OptionChoice<'_>,
+    ) -> Vec<RuntimeCommand> {
+        if request.status != nod_client_core::models::RequestStatus::Pending {
+            self.set_error("This request has already been handled.".into());
+            return Vec::new();
+        }
         if option.requires_text {
             self.modal = Some(Modal::OptionText(OptionTextForm::from_choice(
                 request, option,
@@ -502,7 +766,7 @@ impl AppState {
     }
 
     fn command_for_text_option(&mut self) -> Vec<RuntimeCommand> {
-        let Some(request) = domain::selected_request(&self.client_state) else {
+        let Some(request) = self.selected_request() else {
             self.set_error("No request selected.".to_string());
             return Vec::new();
         };
@@ -517,14 +781,16 @@ impl AppState {
         Vec::new()
     }
 
-    fn command_for_clear_channel(&self) -> Vec<RuntimeCommand> {
+    fn command_for_clear_channel(&mut self) -> Vec<RuntimeCommand> {
         let Some(channel) = domain::selected_channel(&self.client_state) else {
             return Vec::new();
         };
 
-        vec![RuntimeCommand::ClearChannel(ChannelParams {
+        self.modal = Some(Modal::Confirm(DestructiveAction::Clear {
             channel_id: channel.id.clone(),
-        })]
+            name: channel.name.clone(),
+        }));
+        Vec::new()
     }
 }
 
@@ -686,6 +952,106 @@ mod tests {
 
         assert!(app.should_quit());
         assert!(app.modal().is_none());
+    }
+
+    #[test]
+    fn text_draft_survives_q_busy_and_submission_failure() {
+        let mut app = AppState::new(client_state());
+        app.modal = Some(Modal::RenameDevice(RenameDeviceForm::new(
+            &crate::test_support::user_device("desk"),
+        )));
+        app.handle_key(key(KeyCode::Char('q')));
+        let command = app.handle_key(key(KeyCode::Enter)).remove(0);
+        app.begin_command(&command);
+        app.set_busy_notice();
+        app.apply_runtime_message(NodClientMessage::TransientError {
+            message: "Sync reconnecting".into(),
+        });
+        assert!(app.running().is_some());
+        assert!(app.handle_key(key(KeyCode::Enter)).is_empty());
+        app.set_error("Rename failed".into());
+        assert!(
+            matches!(app.modal(), Some(Modal::RenameDevice(form)) if form.input().value() == "deskq")
+        );
+        assert_eq!(app.handle_key(key(KeyCode::Enter)), vec![command]);
+    }
+
+    #[test]
+    fn custom_action_picker_submits_option_without_text() {
+        let mut state = client_state();
+        state.requests[0].options = vec![RequestOption {
+            id: "restart".into(),
+            label: "Restart service".into(),
+            kind: OptionKind::Custom,
+            style: "default".into(),
+            requires_text: false,
+            text_placeholder: None,
+            destructive: false,
+            foreground: false,
+        }];
+        let mut app = AppState::new(state);
+        app.handle_key(key(KeyCode::Char('o')));
+        assert_eq!(
+            app.handle_key(key(KeyCode::Enter)),
+            vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
+                request_id: "deploy".into(),
+                option_id: "restart".into(),
+                text: None
+            })]
+        );
+    }
+
+    #[test]
+    fn history_pages_are_navigable_without_losing_authoritative_updates() {
+        let mut app = AppState::new(client_state());
+        let RuntimeCommand::QueryHistory(query) = app.handle_key(key(KeyCode::Char('H'))).remove(0)
+        else {
+            panic!("expected history query")
+        };
+        let historical = crate::test_support::request_with_status(
+            "older",
+            "default",
+            nod_client_core::models::RequestStatus::Resolved,
+        );
+        app.apply_runtime_outcome(RuntimeCommandOutcome::History {
+            query: query.clone(),
+            page: nod_client_core::models::RequestsResponse {
+                requests: vec![historical],
+                next_cursor: Some("older-cursor".into()),
+            },
+        });
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(
+            app.selected_request().map(|request| request.id.as_str()),
+            Some("older")
+        );
+        let RuntimeCommand::QueryHistory(next) = app.handle_key(key(KeyCode::Char(']'))).remove(0)
+        else {
+            panic!("expected next page")
+        };
+        assert_eq!(next.before.as_deref(), Some("older-cursor"));
+        app.history_selected_id = Some("deploy".into());
+        app.history_requests.push(request("deploy", "default"));
+        let mut updated = app.client_state().clone();
+        updated.requests[0].status = nod_client_core::models::RequestStatus::Resolved;
+        app.apply_runtime_message(NodClientMessage::State(Box::new(updated)));
+        assert_eq!(
+            app.selected_request().unwrap().status,
+            nod_client_core::models::RequestStatus::Resolved
+        );
+        let mut foreign_query = query;
+        foreign_query.server_id = Some("elsewhere".into());
+        app.apply_runtime_outcome(RuntimeCommandOutcome::History {
+            query: foreign_query,
+            page: nod_client_core::models::RequestsResponse {
+                requests: vec![request("foreign", "default")],
+                next_cursor: None,
+            },
+        });
+        assert!(!app
+            .visible_requests()
+            .iter()
+            .any(|request| request.id == "foreign"));
     }
 
     fn key(code: KeyCode) -> KeyEvent {

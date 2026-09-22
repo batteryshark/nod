@@ -7,6 +7,7 @@ mod device_attestations;
 mod devices;
 mod enrollment;
 mod issuer_tokens;
+pub(crate) mod push_deliveries;
 mod requests;
 mod rows;
 mod subscriptions;
@@ -26,7 +27,7 @@ pub use enrollment::{create_enrollment_code, enroll_device};
 pub use issuer_tokens::{create_issuer_token, list_issuer_tokens_for_admin, revoke_issuer_token};
 pub use subscriptions::{
     clear_channel, set_subscription, set_user_subscription, update_device_preferences,
-    update_push_token,
+    update_notification_preferences, update_push_token,
 };
 pub use users::{
     create_user, delete_user, get_user, list_user_subscriptions_for_admin, list_users_for_admin,
@@ -37,8 +38,9 @@ use crate::{error::ApiError, models::AdminCounts};
 pub use connection::connect;
 pub use requests::{
     cancel_request, create_request, expire_due_requests, get_request, list_requests_for_device,
-    prune_retention, push_devices_for_request, record_decision, request_created_by_issuer_token_id,
-    request_for_user, request_visible_to_user, DecisionSubmission, ListRequestsForDevice,
+    prune_retention, recent_requests, record_decision, request_created_by_issuer_token_id,
+    request_delivery_eligible, request_for_user, request_visible_to_user, CreateRequestMetadata,
+    DecisionSubmission, ListRequestsForDevice,
 };
 
 pub const DEFAULT_USER_ID: &str = "owner";
@@ -48,13 +50,13 @@ pub fn now_string() -> String {
 }
 
 pub async fn admin_counts(pool: &SqlitePool) -> Result<AdminCounts, ApiError> {
-    let users = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+    let users = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL")
         .fetch_one(pool)
         .await?;
     let channels = sqlx::query_scalar("SELECT COUNT(*) FROM channels")
         .fetch_one(pool)
         .await?;
-    let devices = sqlx::query_scalar("SELECT COUNT(*) FROM devices")
+    let devices = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL")
         .fetch_one(pool)
         .await?;
     let active_issuer_tokens =

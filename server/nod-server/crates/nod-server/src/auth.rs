@@ -14,7 +14,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum Principal {
     Admin,
-    Device(Device),
+    Device(Box<Device>),
     Issuer(IssuerToken),
 }
 
@@ -115,7 +115,7 @@ pub async fn authenticate(
     let hash = hash_secret(token);
     if let Some(device) = find_device_by_hash(pool, &hash).await? {
         touch_device(pool, &device.id).await?;
-        return Ok(Principal::Device(device));
+        return Ok(Principal::Device(Box::new(device)));
     }
 
     if let Some(issuer) = find_issuer_token_by_hash(pool, &hash).await? {
@@ -182,9 +182,9 @@ pub async fn find_device_by_hash(
         r#"
         SELECT id, COALESCE(user_id, 'owner') AS user_id, name, platform, native_app_id,
             push_provider, push_token, signing_key_id, signing_key_algorithm, signing_public_key,
-            notification_sound, last_seen_at, created_at
+            notification_sound, notification_preferences_json, last_seen_at, created_at
         FROM devices
-        WHERE token_hash = ?
+        WHERE token_hash = ? AND revoked_at IS NULL
         "#,
     )
     .bind(hash)
@@ -204,6 +204,9 @@ pub async fn find_device_by_hash(
             signing_key_algorithm: row.get("signing_key_algorithm"),
             signing_public_key: row.get("signing_public_key"),
             notification_sound: row.get("notification_sound"),
+            notification_preferences: serde_json::from_str(
+                &row.get::<String, _>("notification_preferences_json"),
+            )?,
             last_seen_at: parse_time(row.get("last_seen_at"))?,
             created_at: parse_time(row.get("created_at"))?,
         })
@@ -239,9 +242,12 @@ pub async fn find_issuer_token_by_hash(
 }
 
 async fn touch_device(pool: &SqlitePool, device_id: &str) -> Result<(), ApiError> {
-    sqlx::query("UPDATE devices SET last_seen_at = ? WHERE id = ?")
+    let cutoff = (Utc::now() - chrono::Duration::seconds(30))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    sqlx::query("UPDATE devices SET last_seen_at = ? WHERE id = ? AND last_seen_at < ? AND revoked_at IS NULL")
         .bind(crate::db::now_string())
         .bind(device_id)
+        .bind(cutoff)
         .execute(pool)
         .await?;
     Ok(())

@@ -35,6 +35,17 @@ impl RuntimePort for NodClientRuntime {
         self.select_channel(params).await
     }
 
+    async fn query_history(
+        &mut self,
+        params: nod_client_core::QueryHistoryParams,
+    ) -> Result<nod_client_core::models::RequestsResponse> {
+        NodClientRuntime::query_history(self, params).await
+    }
+
+    async fn select_all_channels(&mut self) -> Result<ClientState> {
+        self.select_all_channels().await
+    }
+
     async fn select_request(&mut self, params: SelectRequestParams) -> Result<ClientState> {
         self.select_request(params).await
     }

@@ -23,6 +23,8 @@ pub(crate) async fn enroll(
     apply_attested_native_app_id(&mut request, attestation.as_ref());
     let mut response =
         db::enroll_device(&state.pool, request, state.notification_delivery.clone()).await?;
+    response.notification_delivery =
+        state.delivery_for_device(&db::get_device(&state.pool, &response.device_id).await?);
     if let Some(attestation) = attestation {
         match db::record_device_attestation(&state.pool, &response.device_id, attestation).await {
             Ok(()) => {
@@ -112,6 +114,11 @@ pub(crate) async fn update_push_token(
     let provider = request.provider.clone();
     let native_app_id = request.native_app_id.clone();
     db::update_push_token(&state.pool, &device.id, request).await?;
+    let _ = state.sync.send(sync::targeted_envelope(
+        "device_push_updated",
+        json!({"device_id":device.id}),
+        vec![device.user_id.clone()],
+    ));
     state
         .audit
         .record(

@@ -6,6 +6,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::time::{interval, Duration};
 
 use crate::{auth, error::ApiError, state::AppState, sync};
 
@@ -35,8 +36,12 @@ pub(super) async fn handle_socket(
     user_id: String,
 ) {
     let mut rx = state.sync.subscribe();
+    let mut authorization_check = interval(Duration::from_secs(15));
     let (mut sender, mut receiver) = socket.split();
-    let hello = sync_hello(&device_id, &state.notification_delivery);
+    let Ok(device) = crate::db::get_device(&state.pool, &device_id).await else {
+        return;
+    };
+    let hello = sync_hello(&device_id, &state.delivery_for_device(&device));
     if let Ok(text) = serde_json::to_string(&hello) {
         if sender.send(Message::Text(text.into())).await.is_err() {
             return;
@@ -48,9 +53,22 @@ pub(super) async fn handle_socket(
             msg = rx.recv() => {
                 match msg {
                     Ok(envelope) => {
+                        // The database is authoritative even if a revocation
+                        // broadcast was missed or this client ignores it.
+                        if !device_is_active(&state, &device_id).await {
+                            let _ = sender.send(Message::Close(None)).await;
+                            break;
+                        }
                         if let Some(targets) = envelope.target_user_ids.as_ref() {
                             if !targets.iter().any(|target| target == &user_id) {
                                 continue;
+                            }
+                        }
+                        if let Some(request_id) = envelope.payload.get("request").and_then(|request| request.get("id")).and_then(Value::as_str) {
+                            match crate::db::request_delivery_eligible(&state.pool, request_id, &user_id).await {
+                                Ok(true) => {},
+                                Ok(false) => continue,
+                                Err(error) => { tracing::warn!(%error, "closing socket after delivery eligibility check failed"); break; }
                             }
                         }
                         let envelope = sync_envelope_for_user(envelope, &user_id);
@@ -74,6 +92,12 @@ pub(super) async fn handle_socket(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
+            _ = authorization_check.tick() => {
+                if !device_is_active(&state, &device_id).await {
+                    let _ = sender.send(Message::Close(None)).await;
+                    break;
+                }
+            }
             incoming = receiver.next() => {
                 match incoming {
                     Some(Ok(Message::Close(_))) | None => break,
@@ -84,6 +108,22 @@ pub(super) async fn handle_socket(
                     }
                 }
             }
+        }
+    }
+}
+
+async fn device_is_active(state: &AppState, device_id: &str) -> bool {
+    match sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM devices WHERE id = ? AND revoked_at IS NULL)",
+    )
+    .bind(device_id)
+    .fetch_one(&state.pool)
+    .await
+    {
+        Ok(active) => active,
+        Err(error) => {
+            tracing::warn!(%error, device_id, "closing socket after authorization check failed");
+            false
         }
     }
 }
@@ -118,6 +158,13 @@ fn filter_request_for_user(request: &mut Value, user_id: &str) {
     let Value::Object(object) = request else {
         return;
     };
+    if object
+        .get("recipients")
+        .and_then(Value::as_array)
+        .is_some_and(|recipients| recipients.len() > 1)
+    {
+        object.insert("request_digest".to_string(), Value::Null);
+    }
     object.insert("recipients".to_string(), json!([user_id]));
 
     let decision_resolution = object

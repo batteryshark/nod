@@ -38,6 +38,9 @@ pub struct DecisionSignatureRecord {
     pub signing_payload: String,
     pub signature: String,
     pub verified: bool,
+    /// Retained with the receipt so device revocation cannot erase its verifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
 }
 
 /// A recorded decision on a request. Carries the optional signature record so
