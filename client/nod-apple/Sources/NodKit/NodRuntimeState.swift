@@ -19,6 +19,8 @@ public struct NodRuntimeState: Codable, Sendable {
   public var notificationDeliveryMode: NodNotificationDeliveryMode
   public var isRegistered: Bool
   public var isSyncConnected: Bool
+  public var syncPhase: String
+  public var lastSyncedAt: Date?
   public var lastError: String?
 
   enum CodingKeys: String, CodingKey {
@@ -32,6 +34,8 @@ public struct NodRuntimeState: Codable, Sendable {
     case notificationDeliveryMode = "notification_delivery_mode"
     case isRegistered = "is_registered"
     case isSyncConnected = "is_sync_connected"
+    case syncPhase = "sync_phase"
+    case lastSyncedAt = "last_synced_at"
     case lastError = "last_error"
   }
 
@@ -53,6 +57,8 @@ public struct NodRuntimeState: Codable, Sendable {
       ?? .websocket
     isRegistered = try c.decodeIfPresent(Bool.self, forKey: .isRegistered) ?? false
     isSyncConnected = try c.decodeIfPresent(Bool.self, forKey: .isSyncConnected) ?? false
+    syncPhase = try c.decodeIfPresent(String.self, forKey: .syncPhase) ?? (isSyncConnected ? "current" : "offline")
+    lastSyncedAt = try c.decodeIfPresent(Date.self, forKey: .lastSyncedAt)
     lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
   }
 
@@ -80,6 +86,7 @@ public struct NodRuntimeServerProfile: Codable, Identifiable, Hashable, Sendable
   public var deviceId: String?
   public var userId: String?
   public var userName: String?
+  public var credentialId: String?
 
   enum CodingKeys: String, CodingKey {
     case id, name
@@ -88,6 +95,7 @@ public struct NodRuntimeServerProfile: Codable, Identifiable, Hashable, Sendable
     case deviceId = "device_id"
     case userId = "user_id"
     case userName = "user_name"
+    case credentialId = "credential_id"
   }
 }
 
@@ -96,8 +104,8 @@ public struct NodRuntimeServerProfile: Codable, Identifiable, Hashable, Sendable
 public enum NodRuntimeMessage: Sendable {
   case ready(statePath: String)
   case state(NodRuntimeState)
-  case notificationCandidate(NodRequest)
-  case notificationRemoved(requestId: String)
+  case notificationCandidate(serverId: String?, request: NodRequest)
+  case notificationRemoved(serverId: String?, requestId: String)
   case syncStatus(connected: Bool)
   case authRevoked
   case resyncRequired
@@ -118,12 +126,11 @@ public enum NodRuntimeMessage: Sendable {
     case "state":
       self = .state(try decoder.decode(Envelope<NodRuntimeState>.self, from: data).payload)
     case "notification_candidate":
-      self = .notificationCandidate(
-        try decoder.decode(Envelope<NotificationCandidatePayload>.self, from: data).payload.request)
+      let payload = try decoder.decode(Envelope<NotificationCandidatePayload>.self, from: data).payload
+      self = .notificationCandidate(serverId: payload.serverId, request: payload.request)
     case "notification_removed":
-      self = .notificationRemoved(
-        requestId: try decoder.decode(Envelope<NotificationRemovedPayload>.self, from: data)
-          .payload.requestId)
+      let payload = try decoder.decode(Envelope<NotificationRemovedPayload>.self, from: data).payload
+      self = .notificationRemoved(serverId: payload.serverId, requestId: payload.requestId)
     case "sync_status":
       self = .syncStatus(
         connected: try decoder.decode(Envelope<SyncStatusPayload>.self, from: data).payload
@@ -148,10 +155,15 @@ public enum NodRuntimeMessage: Sendable {
     let statePath: String
     enum CodingKeys: String, CodingKey { case statePath = "state_path" }
   }
-  private struct NotificationCandidatePayload: Decodable { let request: NodRequest }
+  private struct NotificationCandidatePayload: Decodable {
+    let request: NodRequest
+    let serverId: String?
+    enum CodingKeys: String, CodingKey { case request; case serverId = "server_id" }
+  }
   private struct NotificationRemovedPayload: Decodable {
     let requestId: String
-    enum CodingKeys: String, CodingKey { case requestId = "request_id" }
+    let serverId: String?
+    enum CodingKeys: String, CodingKey { case requestId = "request_id"; case serverId = "server_id" }
   }
   private struct SyncStatusPayload: Decodable { let connected: Bool }
   private struct TransientErrorPayload: Decodable { let message: String }

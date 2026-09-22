@@ -189,11 +189,47 @@ The clients register:
 - `NOD_APPROVAL`
 - `NOD_APPROVAL_TEXT`
 
-These categories map APNs notifications back to the server option endpoints.
+APNs uses approval categories only when the request has the exact supported
+option IDs and labels; other requests use Open Nod. Local notifications register
+request-specific actions for up to three options; longer or redacted requests
+open the app. Responses require device authentication. Notifications carry the
+originating device/server identity so responding does not depend on the server
+currently selected in the app.
+
+Local alerts use the same safe title/body projection as APNs. In Settings,
+Alerts on This Device saves preferences for this device on the selected server:
+hide content, mute individual channels, and pause alerts for 1, 8, or 24 hours.
+These preferences apply to server push and local alerts while requests remain in
+the inbox. Use system Focus for scheduled quiet hours. The notification test
+checks this device's presentation, not server push delivery. iOS settings show
+when background push is unavailable and only foreground sync is configured.
+
+## Inbox and setup
+
+Choose All requests to work across the selected server's channels. Search filters
+the loaded inbox; Search History queries the server and can load older pages.
+Connection status shows whether the view is current and when it last updated.
+Decision details show the recorded actor, timestamp and server verification result.
+
+Informational requests acknowledge on open by default. Turn off the Reading
+preference to use an explicit Acknowledge action; for shared requests either
+action completes the item for everyone. Response drafts remain in memory when navigating or
+retrying a failed send, and are cleared after successful submission. Text-capable
+actions collect optional notes; an empty response remains valid.
+
+A setup link uses `nod://enroll?server=<encoded URL>&code=<8-character code>` with
+an optional `name` query parameter. Open it from a QR code or paste it into the
+registration screen, verify the server, then tap Register Device. Opening a link
+never enrolls automatically.
+
+Remote images and link previews are off by default. Enable them in Privacy or
+load an individual image explicitly. Image downloads have a size/time limit and
+are downsampled before display; notification delivery never waits for images.
+macOS also offers Launch Nod at login in Settings.
 
 ## Notification Sounds
 
-Notification sounds are a client preference, not a request field. Change the sound in the Apple client's Subscriptions sheet. The setting is synced to each paired server as a device preference because APNs requires the provider to include the sound filename in the per-device push payload.
+Notification sounds are a client preference, not a request field. Change the sound in the Apple client's Subscriptions sheet. The setting is synced to the selected server as a device preference because APNs requires the provider to include the sound filename in the per-device push payload.
 
 Bundled options:
 

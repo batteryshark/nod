@@ -39,6 +39,7 @@ public struct NodServerProfile: Codable, Identifiable, Hashable, Sendable {
   public var deviceId: String?
   public var userId: String?
   public var userName: String?
+  public var credentialId: String?
 
   public init(
     id: String,
@@ -47,7 +48,8 @@ public struct NodServerProfile: Codable, Identifiable, Hashable, Sendable {
     deviceName: String,
     deviceId: String? = nil,
     userId: String? = nil,
-    userName: String? = nil
+    userName: String? = nil,
+    credentialId: String? = nil
   ) {
     self.id = id
     self.name = name
@@ -56,6 +58,7 @@ public struct NodServerProfile: Codable, Identifiable, Hashable, Sendable {
     self.deviceId = deviceId
     self.userId = userId
     self.userName = userName
+    self.credentialId = credentialId
   }
 }
 
@@ -72,6 +75,31 @@ public struct NodUser: Codable, Identifiable, Hashable, Sendable {
   }
 }
 
+public struct NodDeviceNotificationPreferences: Codable, Hashable, Sendable {
+  public var hideContent: Bool
+  public var mutedChannels: [String]
+  public var snoozedUntil: Date?
+
+  public init(hideContent: Bool = false, mutedChannels: [String] = [], snoozedUntil: Date? = nil) {
+    self.hideContent = hideContent
+    self.mutedChannels = mutedChannels
+    self.snoozedUntil = snoozedUntil
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case hideContent = "hide_content"
+    case mutedChannels = "muted_channels"
+    case snoozedUntil = "snoozed_until"
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    hideContent = try container.decodeIfPresent(Bool.self, forKey: .hideContent) ?? false
+    mutedChannels = try container.decodeIfPresent([String].self, forKey: .mutedChannels) ?? []
+    snoozedUntil = try container.decodeIfPresent(Date.self, forKey: .snoozedUntil)
+  }
+}
+
 public struct NodUserDevice: Codable, Identifiable, Hashable, Sendable {
   public let id: String
   public let userId: String
@@ -82,6 +110,7 @@ public struct NodUserDevice: Codable, Identifiable, Hashable, Sendable {
   public let hasPushToken: Bool
   public let hasSigningKey: Bool
   public let notificationSound: String
+  public let notificationPreferences: NodDeviceNotificationPreferences
   public let attestation: NodDeviceAttestationSummary?
   public let lastSeenAt: Date
   public let createdAt: Date
@@ -95,6 +124,7 @@ public struct NodUserDevice: Codable, Identifiable, Hashable, Sendable {
     case hasPushToken = "has_push_token"
     case hasSigningKey = "has_signing_key"
     case notificationSound = "notification_sound"
+    case notificationPreferences = "notification_preferences"
     case attestation
     case lastSeenAt = "last_seen_at"
     case createdAt = "created_at"
@@ -118,6 +148,7 @@ public struct NodUserDevice: Codable, Identifiable, Hashable, Sendable {
     hasPushToken = try c.decodeIfPresent(Bool.self, forKey: .hasPushToken) ?? false
     hasSigningKey = try c.decodeIfPresent(Bool.self, forKey: .hasSigningKey) ?? false
     notificationSound = try c.decodeIfPresent(String.self, forKey: .notificationSound) ?? "default"
+    notificationPreferences = try c.decodeIfPresent(NodDeviceNotificationPreferences.self, forKey: .notificationPreferences) ?? .init()
     attestation = try c.decodeIfPresent(NodDeviceAttestationSummary.self, forKey: .attestation)
     isCurrent = try c.decodeIfPresent(Bool.self, forKey: .isCurrent) ?? false
   }
@@ -296,6 +327,7 @@ public struct NodDecisionSignatureRecord: Codable, Hashable, Sendable {
   public let signingPayload: String
   public let signature: String
   public let verified: Bool
+  public let publicKey: String?
 
   enum CodingKeys: String, CodingKey {
     case algorithm, nonce, signature, verified
@@ -303,6 +335,7 @@ public struct NodDecisionSignatureRecord: Codable, Hashable, Sendable {
     case signedAt = "signed_at"
     case requestDigest = "request_digest"
     case signingPayload = "signing_payload"
+    case publicKey = "public_key"
   }
 }
 
@@ -344,6 +377,18 @@ public struct NodRequestNotification: Codable, Hashable, Sendable {
   }
 }
 
+public struct NodRequestSigning: Codable, Hashable, Sendable {
+  public let version: String
+  public let recipientsCommitment: String
+  public let requestDigest: String
+
+  enum CodingKeys: String, CodingKey {
+    case version
+    case recipientsCommitment = "recipients_commitment"
+    case requestDigest = "request_digest"
+  }
+}
+
 public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
   public let id: String
   public let requestId: String
@@ -368,6 +413,7 @@ public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
   public let callbackUrl: String?
   public let options: [NodRequestOption]
   public let requestDigest: String?
+  public let signing: NodRequestSigning?
 
   public init(
     id: String,
@@ -392,7 +438,8 @@ public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
     decisions: [NodUserDecision],
     callbackUrl: String?,
     options: [NodRequestOption],
-    requestDigest: String?
+    requestDigest: String?,
+    signing: NodRequestSigning? = nil
   ) {
     self.id = id
     self.requestId = requestId
@@ -417,10 +464,11 @@ public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
     self.callbackUrl = callbackUrl
     self.options = options
     self.requestDigest = requestDigest
+    self.signing = signing
   }
 
   enum CodingKeys: String, CodingKey {
-    case id, title, summary, fields, links, notification, status, decision, decisions, options
+    case id, title, summary, fields, links, notification, status, decision, decisions, options, signing
     case requestId = "request_id"
     case channelId = "channel_id"
     case recipients
@@ -464,6 +512,7 @@ public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
     callbackUrl = try container.decodeIfPresent(String.self, forKey: .callbackUrl)
     options = try container.decode([NodRequestOption].self, forKey: .options)
     requestDigest = try container.decodeIfPresent(String.self, forKey: .requestDigest)
+    signing = try container.decodeIfPresent(NodRequestSigning.self, forKey: .signing)
   }
 }
 

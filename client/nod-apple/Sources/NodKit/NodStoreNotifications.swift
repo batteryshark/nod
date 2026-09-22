@@ -14,6 +14,7 @@ extension NodStore {
         reportMissingGrant: reportMissingGrant
       )
     } catch {
+      notificationPermissionIssue = "Could not request notification permission: \(error.localizedDescription)"
       lastError = error.localizedDescription
     }
   }
@@ -25,7 +26,7 @@ extension NodStore {
 
   public func requestAndTestNotifications() async {
     await requestNotifications()
-    guard shouldPresentLocalNotificationFromSync(), notificationPermissionIssue == nil else {
+    guard notificationPermissionIssue == nil else {
       return
     }
 
@@ -41,56 +42,33 @@ extension NodStore {
     }
   }
 
-  public func openNotification(requestId: String?, channelId: String?) async {
-    guard isRegistered else {
-      return
-    }
-    if let channelId, !channelId.isEmpty {
-      selectedChannelId = channelId
-    }
-    await refresh()
-    if let channelId, !channelId.isEmpty {
-      selectedChannelId = channelId
-    }
-    if let requestId, !requestId.isEmpty {
-      selectedRequestId = requestId
-    }
-    notificationOpenRequest = NodNotificationOpenRequest(
-      requestId: selectedRequestId,
-      channelId: selectedChannelId ?? channelId
-    )
-    connectSync()
-  }
-
-  /// Present local notifications for the candidates the runtime emitted. The
-  /// runtime already de-dups against its known-pending snapshot and respects
-  /// the delivery mode; this just renders them through `UserNotifications`.
-  func presentNotificationCandidates(_ candidates: [NodRequest]) async {
-    guard shouldPresentLocalNotificationFromSync() else {
-      // Drop them silently; record so a later mode flip doesn't replay a backlog.
-      for request in candidates {
-        presentedNotificationRequestIds.insert(request.id)
-      }
-      return
-    }
-
-    for request in candidates where !presentedNotificationRequestIds.contains(request.id) {
-      presentedNotificationRequestIds.insert(request.id)
-      await presentLocalNotification(for: request)
-    }
-  }
-
-  func presentLocalNotification(for request: NodRequest) async {
+  public func openNotification(_ target: NodNotificationTarget) async {
     do {
-      try await NodNotificationController.shared.presentLocalNotification(
-        for: request,
-        soundName: notificationSound
-      )
-    } catch {
-      let settings = await NodNotificationController.shared.notificationSettings()
-      notificationPermissionIssue =
-        notificationPermissionIssue(for: settings, reportMissingGrant: true)
-        ?? "Could not show Nod notification: \(error.localizedDescription)"
+      try await ensureRuntimeStarted()
+      let profiles = runtime.state?.servers.map { NodServerProfile(id: $0.id, name: $0.name, baseURLString: $0.baseUrlString, deviceName: $0.deviceName, deviceId: $0.deviceId) } ?? servers
+      guard let serverId = NodNotificationPolicy.serverId(for: target, servers: profiles), let requestId = target.requestId else {
+        throw NodStoreError.ambiguousNotificationServer
+      }
+      try await runtime.openRequest(serverId: serverId, requestId: requestId)
+      // Apply selection before publishing navigation, without waiting for Combine delivery.
+      selectedChannelId = runtime.state?.selectedChannelId ?? target.channelId
+      selectedRequestId = requestId
+      notificationOpenRequest = NodNotificationOpenRequest(requestId: requestId, channelId: selectedChannelId, serverId: serverId)
+      connectSync()
+    } catch { mapRuntimeError(error) }
+  }
+
+  func presentNotificationCandidates(_ candidates: [NodNotificationCandidate]) async {
+    guard shouldPresentLocalNotificationFromSync() else { return }
+    for candidate in candidates {
+      let key = candidate.target.notificationId
+      guard !presentedNotificationRequestIds.contains(key) else { continue }
+      do {
+        try await NodNotificationController.shared.presentLocalNotification(for: candidate, soundName: notificationSound)
+        presentedNotificationRequestIds.insert(key)
+      } catch {
+        notificationPermissionIssue = "Could not show Nod notification: \(error.localizedDescription)"
+      }
     }
   }
 
@@ -129,14 +107,10 @@ extension NodStore {
     for settings: NodNotificationSettings,
     reportMissingGrant: Bool
   ) -> String? {
-    guard shouldPresentLocalNotificationFromSync() else {
-      return nil
-    }
-
     switch settings.authorizationStatus {
     case .denied:
       return
-        "Notifications are disabled for Nod. Enable them in System Settings > Notifications to see desktop alerts."
+        "Notifications are disabled for Nod. Enable them in Settings > Notifications to receive alerts."
     case .notDetermined:
       if reportMissingGrant {
         return "Nod has not been granted notification permission yet."
@@ -147,7 +121,7 @@ extension NodStore {
 
     if settings.alertSetting == .disabled {
       return
-        "Nod notifications are allowed, but alert banners are disabled. Enable banners for Nod in System Settings > Notifications."
+        "Nod notifications are allowed, but alert banners are disabled. Enable banners for Nod in Settings > Notifications."
     }
 
     return nil

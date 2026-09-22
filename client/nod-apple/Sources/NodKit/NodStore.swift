@@ -5,6 +5,7 @@ public struct NodNotificationOpenRequest: Identifiable, Equatable, Sendable {
   public let id = UUID()
   public let requestId: String?
   public let channelId: String?
+  public let serverId: String?
 }
 
 /// The SwiftUI-facing store. After the cutover onto the shared Rust runtime
@@ -28,6 +29,19 @@ public final class NodStore: ObservableObject {
   @Published public var lastError: String?
   @Published public var isRegistered: Bool = false
   @Published public var isSyncConnected: Bool = false
+  @Published public var syncPhase = "offline"
+  @Published public var lastSyncedAt: Date?
+  @Published public var pendingActions = Set<String>()
+  @Published public var responseDrafts: [String: String] = [:]
+  @Published public var isRegistering = false
+  @Published public var isRefreshing = false
+  @Published public var acknowledgeOnOpen = UserDefaults.standard.object(forKey: "nod.acknowledgeOnOpen") as? Bool ?? true {
+    didSet { defaults.set(acknowledgeOnOpen, forKey: "nod.acknowledgeOnOpen") }
+  }
+  @Published public private(set) var deviceNotificationPreferences = NodDeviceNotificationPreferences()
+  public var isUpdatingNotificationPreferences: Bool {
+    pendingActions.contains("notification_preferences:" + (selectedServerId ?? ""))
+  }
   @Published public internal(set) var notificationDeliveryMode: NodNotificationDeliveryMode = .push
 
   // The selection is owned by the UI (views bind to it directly) but is also
@@ -38,7 +52,13 @@ public final class NodStore: ObservableObject {
       guard !isApplyingRuntimeState, selectedChannelId != oldValue else { return }
       if let selectedChannelId {
         let channelId = selectedChannelId
-        Task { try? await runtime.selectChannel(channelId) }
+        Task {
+          do { try await runtime.selectChannel(channelId) } catch { mapRuntimeError(error) }
+        }
+      } else {
+        Task {
+          do { try await runtime.selectAllChannels() } catch { mapRuntimeError(error) }
+        }
       }
       recomputeVisibleRequests()
     }
@@ -119,14 +139,12 @@ public final class NodStore: ObservableObject {
   /// observers don't echo the change back into the runtime.
   private var isApplyingRuntimeState = false
   private var hasStarted = false
+  private var startupTask: Task<Void, Error>?
   /// Pending request ids already turned into a local notification, so a backlog
   /// isn't replayed as a burst. The runtime de-dups candidates, this guards a
   /// second time across app restarts within a session.
   var presentedNotificationRequestIds = Set<String>()
-  /// Informational requests already auto-dismissed this session, so the
-  /// read-receipt dismiss fires at most once per request (a second submit would
-  /// 409 "request is no longer pending").
-  private var informationalDismissSubmissions = Set<String>()
+  private var reconciledNotificationIds = Set<String>()
   /// The latest APNs token, cached so re-enrollment can forward it again.
   var pushToken: String?
 
@@ -150,13 +168,11 @@ public final class NodStore: ObservableObject {
 
     if configureNotificationController {
       NodNotificationController.shared.configure(
-        onOpen: { [weak self] requestId, channelId in
-          Task { @MainActor in
-            await self?.openNotification(requestId: requestId, channelId: channelId)
-          }
+        onOpen: { [weak self] target in
+          Task { @MainActor in await self?.openNotification(target) }
         },
-        onOption: { [weak self] requestId, optionId, text in
-          await self?.submitNotificationOption(requestId: requestId, optionId: optionId, text: text)
+        onOption: { [weak self] target, optionId, text in
+          await self?.submitNotificationOption(target: target, optionId: optionId, text: text) ?? false
         }
       )
     }
@@ -171,7 +187,7 @@ public final class NodStore: ObservableObject {
     guard !hasStarted else { return }
     hasStarted = true
     do {
-      try await runtime.start()
+      try await ensureRuntimeStarted()
       try? await runtime.refresh()
       // Open the realtime sync socket if a server is enrolled. Without this the
       // app gets no push of new/resolved requests — no badge, no local
@@ -180,8 +196,17 @@ public final class NodStore: ObservableObject {
         connectSync()
       }
     } catch {
-      lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+      hasStarted = false
+      mapRuntimeError(error)
     }
+  }
+
+  func ensureRuntimeStarted() async throws {
+    if let startupTask { return try await startupTask.value }
+    let runtime = self.runtime
+    let task = Task { try await runtime.start() }
+    startupTask = task
+    do { try await task.value } catch { startupTask = nil; throw error }
   }
 
   private func subscribeToRuntime() {
@@ -207,9 +232,13 @@ public final class NodStore: ObservableObject {
       .sink { [weak self] removed in
         guard let self, !removed.isEmpty else { return }
         let drained = self.runtime.takeRemovedNotificationRequestIds()
-        for requestId in drained {
-          self.presentedNotificationRequestIds.remove(requestId)
+        for target in drained {
+          self.presentedNotificationRequestIds.remove(target.notificationId)
         }
+        let targets = drained.map { target in
+          NodNotificationTarget(serverId: target.serverId, deviceId: self.servers.first { $0.id == target.serverId }?.deviceId, requestId: target.requestId)
+        }
+        Task { await NodNotificationController.shared.removeNotifications(for: targets) }
       }
       .store(in: &cancellables)
 
@@ -243,18 +272,28 @@ public final class NodStore: ObservableObject {
         deviceName: profile.deviceName,
         deviceId: profile.deviceId,
         userId: profile.userId,
-        userName: profile.userName
+        userName: profile.userName,
+        credentialId: profile.credentialId
       )
+    }
+    serverConnectionIssuesById = serverConnectionIssuesById.filter { issue in
+      servers.contains { $0.id == issue.key }
+    }
+    if state.syncPhase == "current", let serverId = state.selectedServerId {
+      serverConnectionIssuesById.removeValue(forKey: serverId)
     }
     selectedServerId = state.selectedServerId
     currentUser = state.currentUser
     registeredDevices = state.devices
+    deviceNotificationPreferences = state.devices.first { $0.isCurrent }?.notificationPreferences ?? .init()
     channels = state.channels
     pendingCountsByChannel = state.pendingCountsByChannel
     notificationSound = state.notificationSound
     notificationDeliveryMode = state.notificationDeliveryMode
     isRegistered = state.isRegistered
     isSyncConnected = state.isSyncConnected
+    syncPhase = state.syncPhase
+    lastSyncedAt = state.lastSyncedAt
 
     if selectedChannelId != state.selectedChannelId {
       selectedChannelId = state.selectedChannelId
@@ -265,6 +304,15 @@ public final class NodStore: ObservableObject {
 
     allVisibleRequests = state.requests
     recomputeVisibleRequests()
+    if let serverId = state.selectedServerId {
+      let deviceId = state.servers.first { $0.id == serverId }?.deviceId
+      let completed = state.requests.filter { $0.status != .pending }.compactMap { request -> NodNotificationTarget? in
+        let key = serverId + ":" + request.id
+        guard reconciledNotificationIds.insert(key).inserted else { return nil }
+        return NodNotificationTarget(serverId: serverId, deviceId: deviceId, requestId: request.id)
+      }
+      if !completed.isEmpty { Task { await NodNotificationController.shared.removeNotifications(for: completed) } }
+    }
 
     if let error = state.lastError {
       lastError = error
@@ -274,12 +322,24 @@ public final class NodStore: ObservableObject {
   /// The views expect `requests` to be the selected channel's visible items.
   private func recomputeVisibleRequests() {
     guard let selectedChannelId else {
-      requests = []
+      requests = NodRequestInbox.visibleRequests(allVisibleRequests)
       return
     }
     requests = NodRequestInbox.visibleRequests(
       allVisibleRequests.filter { $0.channelId == selectedChannelId }
     )
+  }
+
+  public func importEnrollmentLink(_ url: URL) {
+    guard !isRegistering else { return }
+    do {
+      let link = try NodEnrollmentLink(url: url)
+      baseURLString = link.serverURL
+      enrollmentCode = link.code
+      if let name = link.deviceName, !name.isEmpty { deviceName = name }
+      registrationPromptRequestId = UUID()
+      lastError = nil
+    } catch { mapRuntimeError(error) }
   }
 
   // MARK: - View-facing actions
@@ -298,11 +358,17 @@ public final class NodStore: ObservableObject {
       return
     }
     selectedServerId = serverId
-    Task { try? await runtime.selectServer(serverId) }
+    Task {
+      do { try await runtime.selectServer(serverId) } catch { mapRuntimeError(error) }
+    }
   }
 
   public func refresh() async {
+    guard !isRefreshing else { return }
+    isRefreshing = true
+    defer { isRefreshing = false }
     do {
+      try await ensureRuntimeStarted()
       try await runtime.refresh()
       lastError = nil
     } catch {
@@ -312,6 +378,11 @@ public final class NodStore: ObservableObject {
 
   /// Account/device metadata lives in the same `ClientState`, so a plain refresh
   /// is enough; kept as a separate method to preserve the view surface.
+  public func queryHistory(serverId: String?, channelId: String?, search: String, before: String?) async throws -> NodHistoryPage {
+    try await ensureRuntimeStarted()
+    return try await runtime.queryHistory(serverId: serverId, channelId: channelId, search: search, before: before)
+  }
+
   public func refreshAccount() async {
     await refresh()
   }
@@ -332,34 +403,17 @@ public final class NodStore: ObservableObject {
     Task { try? await runtime.disconnectSync() }
   }
 
-  public func submit(request: NodRequest, option: NodRequestOption, text: String? = nil) async {
-    do {
-      try await runtime.submitOption(requestId: request.id, optionId: option.id, text: text)
-      lastError = nil
-    } catch {
-      mapRuntimeError(error)
-      // If the request was already resolved server-side (stale local view),
-      // refresh so the UI reconciles instead of leaving a dead pending item.
-      await reconcileIfStale(error)
-    }
+  @discardableResult
+  public func submit(request: NodRequest, option: NodRequestOption, text: String? = nil, serverId: String? = nil) async -> Bool {
+    guard let serverId = serverId ?? selectedServer?.id else { return false }
+    return await submitNotificationOption(target: NodNotificationTarget(serverId: serverId, requestId: request.id, channelId: request.channelId), optionId: option.id, text: text)
   }
 
-  public func dismissIfInformational(request: NodRequest) async {
-    // Informational items (pending with no options) are dismissed on open as a
-    // read receipt. Best-effort: a failed acknowledgement should not surface.
-    guard request.status == .pending, request.options.isEmpty else {
-      return
-    }
-    // Fire at most once per request: the detail view auto-dismisses on open and
-    // a manual tap can also reach here; a second dismiss would 409.
-    guard informationalDismissSubmissions.insert(request.id).inserted else {
-      return
-    }
-    do {
-      try await runtime.submitOption(requestId: request.id, optionId: "dismiss", text: nil)
-    } catch {
-      await reconcileIfStale(error)
-    }
+  @discardableResult
+  public func dismissIfInformational(request: NodRequest, serverId: String? = nil) async -> Bool {
+    guard request.status == .pending, request.options.isEmpty, let serverId = serverId ?? selectedServer?.id else { return false }
+    let target = NodNotificationTarget(serverId: serverId, requestId: request.id, channelId: request.channelId)
+    return await submitNotificationOption(target: target, optionId: "dismiss", text: nil)
   }
 
   /// Refresh when a submit fails because the local request list is stale (the
@@ -384,13 +438,41 @@ public final class NodStore: ObservableObject {
   }
 
   public func setNotificationSound(_ sound: String) async {
+    let previousSound = notificationSound
     notificationSound = sound
     defaults.set(sound, forKey: "nod.notificationSound")
     do {
       try await runtime.setNotificationPreference(sound: sound)
       lastError = nil
     } catch {
+      notificationSound = previousSound
+      defaults.set(previousSound, forKey: "nod.notificationSound")
       mapRuntimeError(error)
+    }
+  }
+
+  @discardableResult
+  public func setDeviceNotificationPreferences(_ preferences: NodDeviceNotificationPreferences, serverId: String? = nil) async -> Bool {
+    guard let serverId = serverId ?? selectedServerId else { return false }
+    let action = "notification_preferences:" + serverId
+    guard pendingActions.insert(action).inserted else { return false }
+    defer { pendingActions.remove(action) }
+    do {
+      try await runtime.setDeviceNotificationPreferences(preferences, serverId: serverId)
+      if selectedServerId == serverId { deviceNotificationPreferences = preferences }
+      let deviceId = servers.first { $0.id == serverId }?.deviceId
+      let targets: [NodNotificationTarget]
+      if preferences.hideContent || preferences.snoozedUntil.map({ $0 > Date() }) == true {
+        targets = [NodNotificationTarget(serverId: serverId, deviceId: deviceId)]
+      } else {
+        targets = preferences.mutedChannels.map { NodNotificationTarget(serverId: serverId, deviceId: deviceId, channelId: $0) }
+      }
+      if !targets.isEmpty { await NodNotificationController.shared.removeNotifications(for: targets) }
+      lastError = nil
+      return true
+    } catch {
+      mapRuntimeError(error)
+      return false
     }
   }
 
@@ -406,25 +488,41 @@ public final class NodStore: ObservableObject {
     }
   }
 
-  public func renameDevice(_ device: NodUserDevice, name: String) async {
+  @discardableResult
+  public func renameDevice(_ device: NodUserDevice, name: String) async -> Bool {
+    let action = "rename:" + device.id
+    guard pendingActions.insert(action).inserted else { return false }
+    defer { pendingActions.remove(action) }
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else {
-      return
+      return false
     }
     do {
       try await runtime.renameDevice(deviceId: device.id, name: trimmed)
       lastError = nil
+      return true
     } catch {
       mapRuntimeError(error)
+      return false
     }
   }
 
-  public func revokeDevice(_ device: NodUserDevice) async {
+  @discardableResult
+  public func revokeDevice(_ device: NodUserDevice) async -> Bool {
+    let server = selectedServer
+    let action = "revoke:" + device.id
+    guard pendingActions.insert(action).inserted else { return false }
+    defer { pendingActions.remove(action) }
     do {
       try await runtime.revokeDevice(device.id)
+      if device.isCurrent, let server {
+        await NodNotificationController.shared.removeNotifications(for: NodNotificationTarget(serverId: server.id, deviceId: device.id))
+      }
       lastError = nil
+      return true
     } catch {
       mapRuntimeError(error)
+      return false
     }
   }
 
@@ -442,11 +540,14 @@ public final class NodStore: ObservableObject {
 
   public func forgetServers(_ serverIds: [String]) {
     for serverId in serverIds {
-      try? appAttest.delete(account: Self.appAttestKeyAccount(for: serverId))
+      let server = servers.first { $0.id == serverId }
+      responseDrafts = responseDrafts.filter { !$0.key.hasPrefix(serverId + ":") }
+      try? appAttest.delete(account: Self.appAttestKeyAccount(for: server?.credentialId ?? serverId))
+      Task { await NodNotificationController.shared.removeNotifications(for: NodNotificationTarget(serverId: serverId, deviceId: server?.deviceId)) }
     }
     Task {
       for serverId in serverIds {
-        try? await runtime.forgetServer(serverId)
+        do { try await runtime.forgetServer(serverId) } catch { mapRuntimeError(error) }
       }
     }
   }
@@ -466,8 +567,7 @@ public final class NodStore: ObservableObject {
     enrollmentCode = ""
     lastError = nil
     reEnrollmentServerId = nil
-    try? appAttest.delete(account: Self.appAttestKeyAccount(for: server.id))
-    Task { try? await runtime.forgetServer(server.id) }
+    forgetServers([server.id])
 
     if shouldPromptRegistration {
       registrationPromptRequestId = UUID()
@@ -481,9 +581,13 @@ public final class NodStore: ObservableObject {
   /// signer callback uses the same keychain account, so it sees the same key),
   /// its public key feeds the App Attest `clientDataHash`, and the resulting
   /// attestation blob is forwarded to the runtime's `enroll` RPC.
-  public func register(pushToken: String? = nil) async {
-    await startRuntimeIfNeeded()
+  @discardableResult
+  public func register(pushToken: String? = nil) async -> Bool {
+    guard !isRegistering else { return false }
+    isRegistering = true
+    defer { isRegistering = false }
     do {
+      try await ensureRuntimeStarted()
       guard !baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         throw NodStoreError.invalidServerURL
       }
@@ -529,8 +633,10 @@ public final class NodStore: ObservableObject {
       // Start realtime sync immediately after enrolling so notifications and
       // badge counts work without waiting for a relaunch.
       connectSync()
+      return true
     } catch {
       mapRuntimeError(error)
+      return false
     }
   }
 
@@ -540,8 +646,8 @@ public final class NodStore: ObservableObject {
       lastError = NodStoreError.missingNativeAppId.localizedDescription
       return
     }
-    await startRuntimeIfNeeded()
     do {
+      try await ensureRuntimeStarted()
       try await runtime.registerPushToken(
         provider: Self.applePushProvider, nativeAppId: nativeAppId, token: token)
       lastError = nil
@@ -558,14 +664,31 @@ public final class NodStore: ObservableObject {
     ]
   }
 
-  func submitNotificationOption(requestId: String, optionId: String, text: String?) async {
+  func submitNotificationOption(target: NodNotificationTarget, optionId: String, text: String?) async -> Bool {
+    guard let requestId = target.requestId else { return false }
     do {
-      try await runtime.submitOption(requestId: requestId, optionId: optionId, text: text)
+      try await ensureRuntimeStarted()
+      // Read the directly applied runtime state; the UI mirror may still be queued after cold start.
+      let profiles = runtime.state?.servers.map { NodServerProfile(id: $0.id, name: $0.name, baseURLString: $0.baseUrlString, deviceName: $0.deviceName, deviceId: $0.deviceId) } ?? servers
+      guard let serverId = NodNotificationPolicy.serverId(for: target, servers: profiles) else {
+        throw NodStoreError.ambiguousNotificationServer
+      }
+      let key = serverId + ":" + requestId
+      guard pendingActions.insert(key).inserted else { return false }
+      defer { pendingActions.remove(key) }
+      try await runtime.submitRequestOption(serverId: serverId, requestId: requestId, optionId: optionId, text: text)
+      await NodNotificationController.shared.removeNotifications(for: NodNotificationTarget(serverId: serverId, deviceId: target.deviceId ?? profiles.first { $0.id == serverId }?.deviceId, requestId: requestId))
       lastError = nil
+      return true
     } catch {
       mapRuntimeError(error)
       await reconcileIfStale(error)
+      return false
     }
+  }
+
+  public func isSubmitting(_ requestId: String) -> Bool {
+    pendingActions.contains { $0.hasSuffix(":" + requestId) }
   }
 
   // MARK: - Error mapping / auth
@@ -620,6 +743,8 @@ public final class NodStore: ObservableObject {
 public enum NodStoreError: Error, LocalizedError {
   case missingNativeAppId
   case invalidServerURL
+  case ambiguousNotificationServer
+  case invalidEnrollmentLink
 
   public var errorDescription: String? {
     switch self {
@@ -627,6 +752,10 @@ public enum NodStoreError: Error, LocalizedError {
       return "This app is missing a bundle identifier for push registration."
     case .invalidServerURL:
       return "The Nod server URL is invalid."
+    case .invalidEnrollmentLink:
+      return "This setup link is invalid. Use a Nod enrollment link containing a server address and an 8-character code."
+    case .ambiguousNotificationServer:
+      return "This notification does not identify an enrolled server. Open the request from its server in Nod to respond safely."
     }
   }
 }

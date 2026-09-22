@@ -16,7 +16,7 @@ final class NodHelperTests: XCTestCase {
   func testServerAddressProfileIdAndDisplayNameAreStable() {
     let url = "https://nod.example.test/team-a"
 
-    XCTAssertEqual(NodServerAddress.profileId(for: url), "https-nod-example-test-team-a")
+    XCTAssertEqual(NodServerAddress.profileId(for: url), "server-b521bc3e42a2657d9057586a8760445eaf8e39437d05fa1278838956a7197da2")
     XCTAssertEqual(NodServerAddress.displayName(for: url), "nod.example.test/team-a")
   }
 

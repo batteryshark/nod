@@ -35,8 +35,8 @@ public final class NodRuntimeClient: ObservableObject {
 
   /// Pending requests surfaced as local-notification candidates since the last
   /// time the host drained them.
-  @Published public private(set) var notificationCandidates: [NodRequest] = []
-  @Published public private(set) var removedNotificationRequestIds: [String] = []
+  @Published public private(set) var notificationCandidates: [NodNotificationCandidate] = []
+  @Published public private(set) var removedNotificationRequestIds: [NodNotificationTarget] = []
 
   private var client: NodClient?
   private let signer: any NodDeviceSigner & Sendable
@@ -54,6 +54,7 @@ public final class NodRuntimeClient: ObservableObject {
     let client = try await NodClient(observer: bridge, signer: signer)
     self.client = client
     await client.start()
+    try await callApplyingState("state")
   }
 
   // MARK: - RPCs (mirror nod-client-core's runtime methods)
@@ -95,6 +96,26 @@ public final class NodRuntimeClient: ObservableObject {
     try await callApplyingState("enroll", params)
   }
 
+  public func queryHistory(serverId: String?, channelId: String?, search: String, before: String?) async throws -> NodHistoryPage {
+    var params: [String: Any] = ["search": search, "limit": 100]
+    if let serverId { params["server_id"] = serverId }
+    if let channelId { params["channel_id"] = channelId }
+    if let before { params["before"] = before }
+    let envelope = try JSONDecoder.nod.decode(HistoryEnvelope.self, from: try await send("query_history", params))
+    guard envelope.ok, let page = envelope.result else { throw NodRuntimeError.rpc(envelope.error ?? "Could not load request history.") }
+    return page
+  }
+
+  public func openRequest(serverId: String, requestId: String) async throws {
+    try await callApplyingState("open_request", ["server_id": serverId, "request_id": requestId])
+  }
+
+  public func submitRequestOption(serverId: String, requestId: String, optionId: String, text: String?) async throws {
+    var params: [String: Any] = ["server_id": serverId, "request_id": requestId, "option_id": optionId]
+    if let text { params["text"] = text }
+    try await call("submit_request_option", params)
+  }
+
   public func submitOption(requestId: String, optionId: String, text: String?) async throws {
     var params: [String: Any] = ["request_id": requestId, "option_id": optionId]
     if let text { params["text"] = text }
@@ -110,6 +131,14 @@ public final class NodRuntimeClient: ObservableObject {
     try await callApplyingState("set_notification_preference", ["notification_sound": sound])
   }
 
+  public func setDeviceNotificationPreferences(_ preferences: NodDeviceNotificationPreferences, serverId: String) async throws {
+    let encoded = try JSONEncoder.nod.encode(preferences)
+    var params = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] ?? [:]
+    params["server_id"] = serverId
+    params["snoozed_until"] = params["snoozed_until"] ?? NSNull()
+    try await callApplyingState("set_device_notification_preferences", params)
+  }
+
   /// Register/refresh the APNs push token across every enrolled server.
   public func registerPushToken(provider: String, nativeAppId: String, token: String) async throws {
     try await callApplyingState(
@@ -120,6 +149,8 @@ public final class NodRuntimeClient: ObservableObject {
   public func clearChannel(_ channelId: String) async throws {
     try await callApplyingState("clear_channel", ["channel_id": channelId])
   }
+
+  public func selectAllChannels() async throws { try await callApplyingState("select_all_channels") }
 
   public func selectChannel(_ channelId: String) async throws {
     try await callApplyingState("select_channel", ["channel_id": channelId])
@@ -141,12 +172,12 @@ public final class NodRuntimeClient: ObservableObject {
   public func disconnectSync() async throws { try await call("disconnect_sync") }
 
   /// Drain the queued notification candidates (the host shows them once).
-  public func takeNotificationCandidates() -> [NodRequest] {
+  public func takeNotificationCandidates() -> [NodNotificationCandidate] {
     defer { notificationCandidates.removeAll() }
     return notificationCandidates
   }
 
-  public func takeRemovedNotificationRequestIds() -> [String] {
+  public func takeRemovedNotificationRequestIds() -> [NodNotificationTarget] {
     defer { removedNotificationRequestIds.removeAll() }
     return removedNotificationRequestIds
   }
@@ -191,10 +222,10 @@ public final class NodRuntimeClient: ObservableObject {
       self.statePath = statePath
     case .state(let state):
       self.state = state
-    case .notificationCandidate(let request):
-      notificationCandidates.append(request)
-    case .notificationRemoved(let requestId):
-      removedNotificationRequestIds.append(requestId)
+    case .notificationCandidate(let serverId, let request):
+      notificationCandidates.append(NodNotificationCandidate(serverId: serverId, request: request))
+    case .notificationRemoved(let serverId, let requestId):
+      removedNotificationRequestIds.append(NodNotificationTarget(serverId: serverId, requestId: requestId))
     case .syncStatus:
       // Reflected in the next `state` event's `is_sync_connected`.
       break
@@ -205,6 +236,12 @@ public final class NodRuntimeClient: ObservableObject {
     case .transientError(let message):
       lastTransientError = message
     }
+  }
+
+  private struct HistoryEnvelope: Decodable {
+    let ok: Bool
+    let error: String?
+    let result: NodHistoryPage?
   }
 
   private struct StatusEnvelope: Decodable {
@@ -238,4 +275,10 @@ private final class ObserverBridge: NodClientObserver, @unchecked Sendable {
       onDecoded(.transientError(message: "runtime event decode failed: \(error)"))
     }
   }
+}
+
+public struct NodHistoryPage: Decodable, Sendable {
+  public let requests: [NodRequest]
+  public let nextCursor: String?
+  enum CodingKeys: String, CodingKey { case requests; case nextCursor = "next_cursor" }
 }

@@ -25,6 +25,11 @@ IOS_ARM="aarch64-apple-ios"
 SIM_ARM="aarch64-apple-ios-sim"
 SIM_X64="x86_64-apple-ios"
 
+# Keep Rust and native dependency objects compatible with the app deployment
+# targets; otherwise current Xcode SDKs can stamp assembly with the host SDK version.
+export MACOSX_DEPLOYMENT_TARGET=14.0
+export IPHONEOS_DEPLOYMENT_TARGET=17.0
+
 cd "${REPO_ROOT}"
 
 echo "==> Building ${CRATE} static libs (release)"

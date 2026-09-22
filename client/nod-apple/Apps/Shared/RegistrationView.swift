@@ -4,9 +4,19 @@ import SwiftUI
 struct RegistrationView: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var store: NodStore
+  @State private var setupLink = ""
 
   var body: some View {
     Form {
+      Section("Setup link") {
+        TextField("Paste a Nod enrollment link (optional)", text: $setupLink)
+          #if os(iOS)
+          .textInputAutocapitalization(.never).autocorrectionDisabled(true)
+          #endif
+        Button("Use Setup Link") {
+          if let url = URL(string: setupLink) { store.importEnrollmentLink(url) }
+        }.disabled(setupLink.isEmpty || store.isRegistering)
+      }
       Section("Server") {
         TextField("Server URL", text: $store.baseURLString)
           #if os(iOS)
@@ -25,19 +35,20 @@ struct RegistrationView: View {
 
       Section("Enrollment Code") {
         EnrollmentCodeInput(code: $store.enrollmentCode)
+        Text("Get an enrollment code from your Nod server’s admin page. The code connects this device to your account.")
+          .font(.caption).foregroundStyle(.secondary)
         Button {
           Task {
-            await store.register()
-            if store.isRegistered {
+            if await store.register() {
               dismiss()
             }
           }
         } label: {
-          Label("Register Device", systemImage: "person.badge.key")
+          if store.isRegistering { ProgressView("Registering…") } else { Label("Register Device", systemImage: "person.badge.key") }
         }
         .buttonStyle(.borderedProminent)
         .disabled(
-          store.enrollmentCode.count < 8 ||
+          store.isRegistering || store.enrollmentCode.count < 8 ||
             store.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
             store.deviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
@@ -45,64 +56,30 @@ struct RegistrationView: View {
     }
     .formStyle(.grouped)
     .navigationTitle("Register Device")
+    .interactiveDismissDisabled(store.isRegistering)
+    .toolbar {
+      if store.isRegistered {
+        ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(store.isRegistering) }
+      }
+    }
   }
 }
 
 struct EnrollmentCodeInput: View {
   @Binding var code: String
-  @FocusState private var focused: Bool
-  private let length = 8
 
   var body: some View {
-    ZStack {
-      HStack(spacing: 8) {
-        ForEach(0..<length, id: \.self) { index in
-          Text(character(at: index))
-            .font(.system(size: 22, weight: .semibold, design: .monospaced))
-            .frame(width: 34, height: 42)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-            .overlay {
-              RoundedRectangle(cornerRadius: 8)
-                .stroke(focused ? Color.accentColor : Color.secondary.opacity(0.35), lineWidth: focused ? 2 : 1)
-            }
-        }
+    TextField("8-character enrollment code", text: $code)
+      .font(.system(.title3, design: .monospaced))
+      .textContentType(.oneTimeCode)
+      #if os(iOS)
+      .textInputAutocapitalization(.characters)
+      .autocorrectionDisabled(true)
+      .keyboardType(.asciiCapable)
+      #endif
+      .onChange(of: code) { _, value in
+        code = String(value.uppercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) }.prefix(8))
       }
-      .contentShape(Rectangle())
-      .onTapGesture {
-        focused = true
-      }
-
-      TextField("", text: $code)
-        .focused($focused)
-        .textContentType(.oneTimeCode)
-        #if os(iOS)
-        .textInputAutocapitalization(.characters)
-        .autocorrectionDisabled(true)
-        .keyboardType(.asciiCapable)
-        #endif
-        .frame(width: 1, height: 1)
-        .opacity(0.01)
-        .onChange(of: code) { _, newValue in
-          code = sanitized(newValue)
-        }
-    }
-    .padding(.vertical, 4)
-    .accessibilityLabel("Enrollment code")
-  }
-
-  private func character(at index: Int) -> String {
-    let characters = Array(code)
-    guard index < characters.count else {
-      return ""
-    }
-    return String(characters[index])
-  }
-
-  private func sanitized(_ value: String) -> String {
-    value.uppercased()
-      .filter { $0.isLetter || $0.isNumber }
-      .prefix(length)
-      .map(String.init)
-      .joined()
+      .accessibilityLabel("Enrollment code")
   }
 }

@@ -3,15 +3,18 @@ import SwiftUI
 
 struct ChannelRequestsView: View {
   @EnvironmentObject private var store: NodStore
-  let channelId: String
+  let channelId: String?
+  @State private var showingHistory = false
+  @State private var searchText = ""
+  @State private var pendingOnly = false
   @State private var pendingRequestsExpanded = true
   @State private var handledRequestsExpanded = false
   @State private var initializedSectionExpansion = false
 
   var body: some View {
     Group {
-      if channelRequests.isEmpty {
-        ContentUnavailableView("No Requests", systemImage: "bell.slash")
+      if pendingRequests.isEmpty && handledRequests.isEmpty {
+        ContentUnavailableView(searchText.isEmpty ? "No Requests" : "No Matching Requests", systemImage: "bell.slash")
       } else {
         List {
           requestSections { request in
@@ -27,12 +30,17 @@ struct ChannelRequestsView: View {
         }
       }
     }
+    .searchable(text: $searchText, prompt: "Search requests")
+    .toolbar {
+      Toggle("Pending only", isOn: $pendingOnly)
+      Button("Search History") { showingHistory = true }
+    }
+    .sheet(isPresented: $showingHistory) { RequestHistorySheet(channelId: store.selectedChannelId) }
     .navigationTitle(channelName)
     .task {
       if store.selectedChannelId != channelId {
         store.selectedChannelId = channelId
       }
-      await store.refresh()
     }
     .onAppear {
       initializeSectionExpansionIfNeeded()
@@ -49,19 +57,19 @@ struct ChannelRequestsView: View {
   }
 
   private var channelRequests: [NodRequest] {
-    NodRequestInbox.newestFirst(store.requests.filter { $0.channelId == channelId })
+    NodRequestInbox.newestFirst(store.requests.filter { channelId == nil || $0.channelId == channelId })
   }
 
   private var pendingRequests: [NodRequest] {
-    channelRequests.filter { $0.status == .pending }
+    channelRequests.filter { $0.status == .pending && matchesSearch($0, query: searchText) }
   }
 
   private var handledRequests: [NodRequest] {
-    channelRequests.filter { $0.status != .pending }
+    pendingOnly ? [] : channelRequests.filter { $0.status != .pending && matchesSearch($0, query: searchText) }
   }
 
   private var channelName: String {
-    store.channels.first(where: { $0.id == channelId })?.name ?? "Requests"
+    store.channels.first(where: { $0.id == channelId })?.name ?? "All requests"
   }
 
   @ViewBuilder
@@ -111,15 +119,17 @@ struct ChannelRequestsView: View {
 
 struct RequestListView: View {
   @EnvironmentObject private var store: NodStore
+  @State private var showingHistory = false
+  @State private var searchText = ""
+  @State private var pendingOnly = false
   @State private var pendingRequestsExpanded = true
   @State private var handledRequestsExpanded = false
   @State private var initializedSectionExpansion = false
-  @State private var autoDismissedRequestIds = Set<String>()
 
   var body: some View {
     Group {
-      if store.requests.isEmpty {
-        ContentUnavailableView("No Requests", systemImage: "bell.slash")
+      if pendingRequests.isEmpty && handledRequests.isEmpty {
+        ContentUnavailableView(searchText.isEmpty ? "No Requests" : "No Matching Requests", systemImage: "bell.slash")
       } else {
         List(selection: $store.selectedRequestId) {
           requestSections { request in
@@ -129,6 +139,12 @@ struct RequestListView: View {
         }
       }
     }
+    .searchable(text: $searchText, prompt: "Search requests")
+    .toolbar {
+      Toggle("Pending only", isOn: $pendingOnly)
+      Button("Search History") { showingHistory = true }
+    }
+    .sheet(isPresented: $showingHistory) { RequestHistorySheet(channelId: store.selectedChannelId) }
     .navigationTitle(selectedChannelName)
     .onAppear {
       initializeSectionExpansionIfNeeded()
@@ -154,7 +170,7 @@ struct RequestListView: View {
   }
 
   private func dismissSelectedIfInformational(_ requestId: String?) {
-    guard let requestId, !autoDismissedRequestIds.contains(requestId) else {
+    guard store.acknowledgeOnOpen, let requestId else {
       return
     }
     guard let request = store.requests.first(where: { $0.id == requestId }),
@@ -163,20 +179,19 @@ struct RequestListView: View {
     else {
       return
     }
-    autoDismissedRequestIds.insert(requestId)
     Task { await store.dismissIfInformational(request: request) }
   }
 
   private var selectedChannelName: String {
-    store.channels.first(where: { $0.id == store.selectedChannelId })?.name ?? "Requests"
+    store.channels.first(where: { $0.id == store.selectedChannelId })?.name ?? "All requests"
   }
 
   private var pendingRequests: [NodRequest] {
-    NodRequestInbox.newestFirst(store.requests.filter { $0.status == .pending })
+    NodRequestInbox.newestFirst(store.requests.filter { $0.status == .pending && matchesSearch($0, query: searchText) })
   }
 
   private var handledRequests: [NodRequest] {
-    NodRequestInbox.newestFirst(store.requests.filter { $0.status != .pending })
+    pendingOnly ? [] : NodRequestInbox.newestFirst(store.requests.filter { $0.status != .pending && matchesSearch($0, query: searchText) })
   }
 
   @ViewBuilder
@@ -332,5 +347,65 @@ struct RequestSectionHeader: View {
     .buttonStyle(.plain)
     .accessibilityLabel("\(title), \(count) notifications")
     .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+  }
+}
+
+private func matchesSearch(_ request: NodRequest, query: String) -> Bool {
+  let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+  return query.isEmpty || [request.title, request.summary, request.bodyMarkdown, request.id].contains { $0.localizedCaseInsensitiveContains(query) }
+}
+
+struct RequestHistorySheet: View {
+  @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var store: NodStore
+  let channelId: String?
+  @State private var serverId: String?
+  @State private var searchText = ""
+  @State private var requests: [NodRequest] = []
+  @State private var nextCursor: String?
+  @State private var isLoading = false
+  @State private var error: String?
+
+  var body: some View {
+    NavigationStack {
+      List {
+        if let error {
+          Text(error).foregroundStyle(.red)
+          Button("Retry") { Task { await load(reset: requests.isEmpty) } }
+        }
+        ForEach(requests) { request in
+          NavigationLink { RequestDetail(request: store.requests.first { $0.id == request.id } ?? request, serverId: serverId) } label: { RequestRow(request: request) }
+        }
+        if isLoading { ProgressView("Loading history…") }
+        else if nextCursor != nil { Button("Load Older Requests") { Task { await load(reset: false) } } }
+        else if requests.isEmpty { Text("No matching requests.").foregroundStyle(.secondary) }
+        else { Text("End of matching history").font(.caption).foregroundStyle(.secondary) }
+      }
+      .navigationTitle("Request History")
+      .searchable(text: $searchText, prompt: "Search server history")
+      .onSubmit(of: .search) { Task { await load(reset: true) } }
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+        ToolbarItem(placement: .confirmationAction) { Button("Search") { Task { await load(reset: true) } }.disabled(isLoading) }
+      }
+      .task { serverId = store.selectedServerId; await load(reset: true) }
+      .onChange(of: store.selectedServerId) { dismiss() }
+    }
+    .frame(minWidth: 320, minHeight: 400)
+  }
+
+  private func load(reset: Bool) async {
+    guard !isLoading, store.selectedServerId == serverId else { return }
+    isLoading = true
+    error = nil
+    defer { isLoading = false }
+    do {
+      let page = try await store.queryHistory(serverId: serverId, channelId: channelId, search: searchText, before: reset ? nil : nextCursor)
+      guard store.selectedServerId == serverId else { return }
+      if reset { requests = [] }
+      let loadedIds = Set(requests.map(\.id))
+      requests.append(contentsOf: page.requests.filter { !loadedIds.contains($0.id) })
+      nextCursor = page.nextCursor
+    } catch { self.error = error.localizedDescription }
   }
 }

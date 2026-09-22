@@ -1,5 +1,6 @@
 import NodKit
 import SwiftUI
+import ImageIO
 
 #if os(iOS) || os(macOS)
 @preconcurrency import LinkPresentation
@@ -53,32 +54,63 @@ private func normalizedWebURL(from value: String) -> URL? {
 
 struct RequestImageView: View {
   let url: URL
+  @AppStorage("nod.loadRemoteMedia") private var loadRemoteMedia = false
+  @State private var requested = false
+  @State private var image: CGImage?
+  @State private var failed = false
 
   var body: some View {
-    AsyncImage(url: url, transaction: Transaction(animation: .default)) { phase in
-      switch phase {
-      case .empty:
-        ProgressView()
-          .frame(maxWidth: .infinity, minHeight: 180)
-          .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-      case .success(let image):
-        image
-          .resizable()
-          .scaledToFit()
-          .frame(maxWidth: .infinity, maxHeight: 420)
-          .background(.quaternary)
+    Group {
+      if let image {
+        Image(decorative: image, scale: 1)
+          .resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: 420)
           .clipShape(RoundedRectangle(cornerRadius: 8))
-      case .failure:
-        Link(destination: url) {
-          Label("Open Image", systemImage: "photo")
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
-        }
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-      @unknown default:
-        EmptyView()
+      } else if failed {
+        Link(destination: url) { Label("Open Image", systemImage: "photo") }
+      } else if loadRemoteMedia || requested {
+        ProgressView("Loading image…").frame(maxWidth: .infinity, minHeight: 80)
+      } else {
+        Button { requested = true } label: { Label("Load image from " + (url.host ?? "remote site"), systemImage: "photo") }
       }
     }
+    .task(id: "\(url.absoluteString):\(loadRemoteMedia || requested)") {
+      guard loadRemoteMedia || requested else { return }
+      image = nil
+      failed = false
+      do {
+        let data = try await boundedImageData(url)
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, width <= 4096, height <= 4096,
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: 1600,
+                kCGImageSourceCreateThumbnailWithTransform: true
+              ] as CFDictionary) else { throw URLError(.cannotDecodeContentData) }
+        image = thumbnail
+      } catch is CancellationError { } catch { failed = true }
+    }
+  }
+
+  nonisolated private func boundedImageData(_ url: URL) async throws -> Data {
+    let config = URLSessionConfiguration.ephemeral
+    config.timeoutIntervalForRequest = 8
+    config.timeoutIntervalForResource = 12
+    let session = URLSession(configuration: config)
+    defer { session.invalidateAndCancel() }
+    let (bytes, response) = try await session.bytes(from: url)
+    let maximumBytes = 8 * 1024 * 1024
+    guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
+          response.expectedContentLength <= maximumBytes,
+          response.mimeType?.hasPrefix("image/") == true else { throw URLError(.badServerResponse) }
+    var data = Data()
+    for try await byte in bytes {
+      guard data.count < maximumBytes else { throw URLError(.dataLengthExceedsMaximum) }
+      data.append(byte)
+    }
+    return data
   }
 }
 
@@ -101,6 +133,7 @@ struct RequestLinkView: View {
 private struct LinkPreviewCard: View {
   @Environment(\.openURL) private var openURL
   @StateObject private var model = LinkPreviewModel()
+  @AppStorage("nod.loadRemoteMedia") private var loadRemoteMedia = false
   let label: String
   let url: URL
 
@@ -140,9 +173,10 @@ private struct LinkPreviewCard: View {
       .frame(maxWidth: .infinity, alignment: .leading)
     }
     .buttonStyle(.plain)
-    .task(id: url) {
-      model.load(url: url)
+    .task(id: "\(url.absoluteString):\(loadRemoteMedia)") {
+      if loadRemoteMedia { model.load(url: url) } else { model.cancel() }
     }
+    .onDisappear { model.cancel() }
   }
 }
 
@@ -152,14 +186,24 @@ private final class LinkPreviewModel: ObservableObject {
   private var requestedURL: URL?
   private var provider: LPMetadataProvider?
 
+  func cancel() {
+    provider?.cancel()
+    provider = nil
+    requestedURL = nil
+    metadata = nil
+  }
+
   func load(url: URL) {
     guard requestedURL != url else {
       return
     }
+    provider?.cancel()
     requestedURL = url
     metadata = nil
 
     let provider = LPMetadataProvider()
+    provider.timeout = 8
+    provider.shouldFetchSubresources = false
     self.provider = provider
     provider.startFetchingMetadata(for: url) { [weak self] metadata, _ in
       let decision = LinkMetadataResult(metadata: metadata)

@@ -17,6 +17,7 @@ struct NodIOSApp: App {
             NodRootView()
                 .environmentObject(store)
             .task(id: scenePhase) {
+                appDelegate.store = store
                 guard scenePhase == .active else {
                     return
                 }
@@ -38,9 +39,6 @@ struct NodIOSApp: App {
                     store.lastError = error.localizedDescription
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .nodRemoteNotification)) { _ in
-                Task { await store.refresh() }
-            }
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
                 case .active:
@@ -55,7 +53,9 @@ struct NodIOSApp: App {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    weak var store: NodStore?
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
@@ -76,8 +76,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
-        NotificationCenter.default.post(name: .nodRemoteNotification, object: userInfo)
-        completionHandler(.newData)
+        Task { @MainActor in
+            guard let store else { completionHandler(.noData); return }
+            await store.refresh()
+            completionHandler(store.lastError == nil ? .newData : .failed)
+        }
     }
 }
 

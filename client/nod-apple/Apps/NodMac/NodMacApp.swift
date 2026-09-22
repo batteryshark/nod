@@ -4,6 +4,7 @@ import SwiftUI
 
 @main
 struct NodMacApp: App {
+    @Environment(\.openWindow) private var openWindow
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = NodStore(
         platform: .macos,
@@ -12,7 +13,7 @@ struct NodMacApp: App {
     )
 
     var body: some Scene {
-        WindowGroup {
+        Window("Nod", id: "inbox") {
             NodRootView()
                 .environmentObject(store)
                 .frame(minWidth: 860, minHeight: 560)
@@ -32,10 +33,8 @@ struct NodMacApp: App {
                 Divider()
             }
             Button("Open Nod") {
+                openWindow(id: "inbox")
                 NSApp.activate(ignoringOtherApps: true)
-                if NSApp.windows.isEmpty {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                }
             }
             Button("Refresh") {
                 Task { await store.refresh() }
@@ -58,6 +57,10 @@ struct NodMacApp: App {
                 .task {
                     await store.refreshNotificationAuthorizationStatus()
                     updateDockBadge()
+                }
+                .onChange(of: store.notificationOpenRequest) {
+                    openWindow(id: "inbox")
+                    NSApp.activate(ignoringOtherApps: true)
                 }
                 .onChange(of: store.totalPendingCount) {
                     updateDockBadge()

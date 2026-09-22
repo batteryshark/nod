@@ -31,6 +31,10 @@ struct NodRootView: View {
         store.connectSync()
       }
     }
+    .onOpenURL { store.importEnrollmentLink($0) }
+    .safeAreaInset(edge: .bottom) {
+      if store.isRegistered { ConnectionStatusView() }
+    }
     .alert("Nod", isPresented: Binding(
       get: { store.alertMessage != nil },
       set: { if !$0 { store.dismissAlertMessage() } }
@@ -48,12 +52,14 @@ struct NodRootView: View {
 }
 
 #if os(iOS)
+private enum InboxRoute: Hashable { case all; case channel(String); case request(String) }
+
 struct NodPhoneInbox: View {
   @EnvironmentObject private var store: NodStore
   @State private var showingRegistration = false
   @State private var showingSubscriptions = false
   @State private var showingDevices = false
-  @State private var path: [String] = []
+  @State private var path: [InboxRoute] = []
   @State private var handledNotificationOpenRequestId: UUID?
 
   var body: some View {
@@ -83,8 +89,12 @@ struct NodPhoneInbox: View {
           }
         }
       }
-      .navigationDestination(for: String.self) { channelId in
-        ChannelRequestsView(channelId: channelId)
+      .navigationDestination(for: InboxRoute.self) { route in
+        switch route {
+        case .all: ChannelRequestsView(channelId: nil)
+        case .channel(let channelId): ChannelRequestsView(channelId: channelId)
+        case .request(let requestId): RequestDetailContainer(requestId: requestId)
+        }
       }
     }
     .onAppear {
@@ -121,7 +131,8 @@ struct NodPhoneInbox: View {
       return
     }
     handledNotificationOpenRequestId = request.id
-    path = [channelId]
+    path = [.channel(channelId)]
+    if let requestId = request.requestId { path.append(.request(requestId)) }
   }
 
   private var serversSection: some View {
@@ -158,11 +169,12 @@ struct NodPhoneInbox: View {
 
   private var channelsSection: some View {
     Section("Channels") {
+      NavigationLink(value: InboxRoute.all) { Label("All requests", systemImage: "tray.full") }
       if store.subscribedChannels.isEmpty {
         ContentUnavailableView("No Subscribed Channels", systemImage: "number")
       } else {
         ForEach(store.subscribedChannels) { channel in
-          NavigationLink(value: channel.id) {
+          NavigationLink(value: InboxRoute.channel(channel.id)) {
             ChannelRow(
               channel: channel,
               pendingCount: store.pendingCountsByChannel[channel.id, default: 0]
@@ -236,6 +248,8 @@ struct NodSidebar: View {
       }
 
       Section("Channels") {
+        Button { store.selectedChannelId = nil } label: { Label("All requests", systemImage: "tray.full") }
+          .buttonStyle(.plain)
         if store.subscribedChannels.isEmpty {
           Text("No subscribed channels")
             .foregroundStyle(.secondary)
@@ -243,7 +257,6 @@ struct NodSidebar: View {
           ForEach(store.subscribedChannels) { channel in
             Button {
               store.selectedChannelId = channel.id
-              Task { await store.refresh() }
             } label: {
               ChannelRow(
                 channel: channel,
@@ -372,6 +385,43 @@ struct ServerStatusIcon: View {
       Image(systemName: "checkmark")
         .foregroundStyle(.tint)
         .accessibilityLabel("Selected server")
+    }
+  }
+}
+
+struct ConnectionStatusView: View {
+  @EnvironmentObject private var store: NodStore
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: store.isSyncConnected ? "checkmark.circle" : "wifi.slash")
+      VStack(alignment: .leading, spacing: 2) {
+        Text(statusLabel).font(.caption.weight(.medium))
+        if let date = store.lastSyncedAt {
+          (Text("Last updated ") + Text(date, style: .relative)).font(.caption2).foregroundStyle(.secondary)
+        }
+      }
+      Spacer()
+      Button { Task { await store.refresh(); store.connectSync() } } label: {
+        if store.isRefreshing { ProgressView().controlSize(.small) }
+        else { Label("Refresh", systemImage: "arrow.clockwise") }
+      }
+      .disabled(store.isRefreshing)
+      .labelStyle(.iconOnly)
+      .help("Refresh requests and retry connection")
+    }
+    .padding(.horizontal).padding(.vertical, 8)
+    .background(.bar)
+    .accessibilityElement(children: .contain)
+  }
+
+  private var statusLabel: String {
+    switch store.syncPhase {
+    case "current": return "Connected"
+    case "connecting": return "Connecting…"
+    case "reconciling": return "Updating requests…"
+    case "revoked": return "Device access revoked"
+    default: return "Offline — requests may be out of date"
     }
   }
 }

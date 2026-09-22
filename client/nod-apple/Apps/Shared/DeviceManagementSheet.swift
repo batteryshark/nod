@@ -68,8 +68,8 @@ struct DeviceManagementSheet: View {
           role: .destructive
         ) {
           Task {
-            await store.revokeDevice(device)
-            if device.isCurrent {
+            let succeeded = await store.revokeDevice(device)
+            if succeeded && device.isCurrent {
               dismiss()
             }
             revokingDevice = nil
@@ -95,6 +95,7 @@ struct DeviceManagementSheet: View {
     NavigationStack {
       Form {
         TextField("Device Name", text: $renameText)
+        if let error = store.lastError { Text(error).foregroundStyle(.red) }
       }
       .navigationTitle("Rename Device")
       .toolbar {
@@ -107,11 +108,10 @@ struct DeviceManagementSheet: View {
           Button("Save") {
             let name = renameText
             Task {
-              await store.renameDevice(device, name: name)
-              renamingDevice = nil
+              if await store.renameDevice(device, name: name) { renamingDevice = nil }
             }
           }
-          .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          .disabled(store.pendingActions.contains("rename:" + device.id) || renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
       }
     }
