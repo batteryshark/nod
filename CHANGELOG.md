@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- macOS recovers from transient gateway errors on safe GET requests, coalesces
+  foreground refreshes, and keeps Dock badges updated without replaying decisions.
+- macOS Pending Only clears filtered-out details; informational requests stay
+  pending while reading and acknowledge only on explicit navigation away when enabled.
+- Apple deployment docs explain direct ad-hoc installation and signing renewal
+  without uninstalling or losing enrollment.
+
 ## v1.0.1 - maintenance release
 
 - APNs relay provider tokens are cached and reused so Apple no longer rejects

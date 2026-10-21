@@ -26,7 +26,9 @@ public final class NodStore: ObservableObject {
   @Published public var pendingCountsByChannel: [String: Int] = [:]
   @Published public var requests: [NodRequest] = []
   @Published public var notificationSound: String
-  @Published public var lastError: String?
+  @Published public var lastError: String? {
+    didSet { recoveryError = nil; mirroredRuntimeError = nil }
+  }
   @Published public var isRegistered: Bool = false
   @Published public var isSyncConnected: Bool = false
   @Published public var syncPhase = "offline"
@@ -131,6 +133,7 @@ public final class NodStore: ObservableObject {
 
   /// The shared Rust runtime that now owns the entire client.
   let runtime: NodRuntimeClient
+  private let notificationControllerEnabled: Bool
   private var cancellables = Set<AnyCancellable>()
   /// All requests visible across channels (the runtime's full snapshot), kept so
   /// `selectedChannelId` changes can re-filter without a round trip.
@@ -140,6 +143,24 @@ public final class NodStore: ObservableObject {
   private var isApplyingRuntimeState = false
   private var hasStarted = false
   private var startupTask: Task<Void, Error>?
+  private var refreshTask: Task<Void, Never>?
+  private var recoveryError: (message: String, serverId: String?, syncedAt: Date?)?
+  private var mirroredRuntimeError: String?
+  #if os(macOS)
+  private var explicitReadAcknowledgments = Set<String>()
+  private var explicitRead: (serverId: String, requestId: String)?
+  @Published public private(set) var macPendingOnly = false
+  @Published public private(set) var macSearchText = ""
+
+  public var macInboxRequests: [NodRequest] {
+    let query = macSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    return requests.filter { request in
+      (!macPendingOnly || request.status == .pending) &&
+        (query.isEmpty || [request.title, request.summary, request.bodyMarkdown, request.id]
+          .contains { $0.localizedCaseInsensitiveContains(query) })
+    }
+  }
+  #endif
   /// Pending request ids already turned into a local notification, so a backlog
   /// isn't replayed as a burst. The runtime de-dups candidates, this guards a
   /// second time across app restarts within a session.
@@ -153,18 +174,20 @@ public final class NodStore: ObservableObject {
     defaultDeviceName: String,
     presentLocalNotifications: Bool,
     appAttest: NodAppAttestationProviding = NodAppAttestationStore(),
-    configureNotificationController: Bool = true
+    configureNotificationController: Bool = true,
+    runtime: NodRuntimeClient? = nil
   ) {
     self.platform = platform
     self.presentLocalNotifications = presentLocalNotifications
     self.appAttest = appAttest
+    self.notificationControllerEnabled = configureNotificationController
 
     let savedDeviceName = defaults.string(forKey: "nod.deviceName") ?? defaultDeviceName
     self.baseURLString = ""
     self.deviceName = savedDeviceName
     self.notificationSound = defaults.string(forKey: "nod.notificationSound") ?? "default"
 
-    self.runtime = NodRuntimeClient(signer: SecureEnclaveDeviceSigner(store: signingKeys))
+    self.runtime = runtime ?? NodRuntimeClient(signer: SecureEnclaveDeviceSigner(store: signingKeys))
 
     if configureNotificationController {
       NodNotificationController.shared.configure(
@@ -188,7 +211,7 @@ public final class NodStore: ObservableObject {
     hasStarted = true
     do {
       try await ensureRuntimeStarted()
-      try? await runtime.refresh()
+      if runtime.state?.isRegistered == true { await refresh() }
       // Open the realtime sync socket if a server is enrolled. Without this the
       // app gets no push of new/resolved requests — no badge, no local
       // notification, and a stale request list (which then 409s on submit).
@@ -254,7 +277,12 @@ public final class NodStore: ObservableObject {
       .receive(on: DispatchQueue.main)
       .compactMap { $0 }
       .sink { [weak self] message in
-        self?.lastError = message
+        guard let self else { return }
+        if message.hasPrefix("runtime event decode failed:") {
+          self.mapRuntimeError(NodRuntimeError.rpc(message))
+        } else {
+          self.recordRecoveryError(message)
+        }
       }
       .store(in: &cancellables)
   }
@@ -304,6 +332,13 @@ public final class NodStore: ObservableObject {
 
     allVisibleRequests = state.requests
     recomputeVisibleRequests()
+    #if os(macOS)
+    if let read = explicitRead,
+      state.selectedServerId != read.serverId || state.selectedRequestId != read.requestId ||
+        !state.requests.contains(where: { $0.id == read.requestId && $0.status == .pending }) {
+      explicitRead = nil // Reconciliation is not user navigation and must never submit.
+    }
+    #endif
     if let serverId = state.selectedServerId {
       let deviceId = state.servers.first { $0.id == serverId }?.deviceId
       let completed = state.requests.filter { $0.status != .pending }.compactMap { request -> NodNotificationTarget? in
@@ -311,16 +346,25 @@ public final class NodStore: ObservableObject {
         guard reconciledNotificationIds.insert(key).inserted else { return nil }
         return NodNotificationTarget(serverId: serverId, deviceId: deviceId, requestId: request.id)
       }
-      if !completed.isEmpty { Task { await NodNotificationController.shared.removeNotifications(for: completed) } }
+      if notificationControllerEnabled, !completed.isEmpty { Task { await NodNotificationController.shared.removeNotifications(for: completed) } }
     }
 
     if let error = state.lastError {
-      lastError = error
+      // Do not overwrite an unrelated action/signing error with background state.
+      if lastError != error && (lastError == nil || recoveryError != nil) {
+        lastError = error
+        mirroredRuntimeError = error
+      }
+    } else {
+      clearRecoveredError(serverId: state.selectedServerId, syncedAt: state.lastSyncedAt)
     }
   }
 
   /// The views expect `requests` to be the selected channel's visible items.
   private func recomputeVisibleRequests() {
+    #if os(macOS)
+    defer { reconcileMacSelection() }
+    #endif
     guard let selectedChannelId else {
       requests = NodRequestInbox.visibleRequests(allVisibleRequests)
       return
@@ -357,6 +401,9 @@ public final class NodStore: ObservableObject {
     guard selectedServerId != serverId else {
       return
     }
+    #if os(macOS)
+    leaveExplicitRead()
+    #endif
     selectedServerId = serverId
     Task {
       do { try await runtime.selectServer(serverId) } catch { mapRuntimeError(error) }
@@ -364,16 +411,21 @@ public final class NodStore: ObservableObject {
   }
 
   public func refresh() async {
-    guard !isRefreshing else { return }
+    if let refreshTask { return await refreshTask.value }
     isRefreshing = true
-    defer { isRefreshing = false }
-    do {
-      try await ensureRuntimeStarted()
-      try await runtime.refresh()
-      lastError = nil
-    } catch {
-      mapRuntimeError(error)
+    let task = Task {
+      do {
+        try await self.ensureRuntimeStarted()
+        try await self.runtime.refresh()
+        self.clearRecoveredError(serverId: self.runtime.state?.selectedServerId, syncedAt: self.runtime.state?.lastSyncedAt)
+      } catch {
+        self.recordRecoveryError(error.localizedDescription)
+      }
     }
+    refreshTask = task
+    await task.value
+    refreshTask = nil
+    isRefreshing = false
   }
 
   /// Account/device metadata lives in the same `ClientState`, so a plain refresh
@@ -392,7 +444,9 @@ public final class NodStore: ObservableObject {
       return
     }
     await refresh()
-    connectSync()
+    if runtime.state?.isSyncConnected != true {
+      connectSync()
+    }
   }
 
   public func connectSync() {
@@ -415,6 +469,70 @@ public final class NodStore: ObservableObject {
     let target = NodNotificationTarget(serverId: serverId, requestId: request.id, channelId: request.channelId)
     return await submitNotificationOption(target: target, optionId: "dismiss", text: nil)
   }
+
+  #if os(macOS)
+  /// Arm only from an explicit user open. Rendering a detail is not reading.
+  public func beginExplicitRead(request: NodRequest, serverId: String? = nil) {
+    let serverId = serverId ?? selectedServerId
+    if explicitRead?.serverId == serverId && explicitRead?.requestId == request.id { return }
+    leaveExplicitRead()
+    guard acknowledgeOnOpen, request.status == .pending, request.options.isEmpty,
+      let serverId else { return }
+    explicitRead = (serverId, request.id)
+  }
+
+  /// Consume the read synchronously so overlapping user paths cannot submit twice.
+  /// No lifecycle/onDisappear caller: hide, refresh, update and teardown do nothing.
+  public func leaveExplicitRead() {
+    guard let read = explicitRead else { return }
+    explicitRead = nil
+    guard acknowledgeOnOpen else { return }
+    let key = read.serverId + ":" + read.requestId
+    guard explicitReadAcknowledgments.insert(key).inserted else { return }
+    Task {
+      // Consult the latest snapshot, not the old detail value. Never retry an
+      // uncertain write; the normal runtime submit path reconciles with GET.
+      guard self.runtime.state?.selectedServerId == read.serverId,
+        let request = self.runtime.state?.requests.first(where: { $0.id == read.requestId }),
+        request.status == .pending, request.options.isEmpty else { return }
+      await self.dismissIfInformational(request: request, serverId: read.serverId)
+    }
+  }
+
+  public func selectRequestExplicitly(_ requestId: String?) {
+    // SwiftUI can clear List selection while rows reconcile: not a user leave.
+    guard let requestId, let request = macInboxRequests.first(where: { $0.id == requestId }) else { return }
+    beginExplicitRead(request: request)
+    selectedRequestId = requestId
+  }
+
+  func leaveExplicitReadUnlessOpening(serverId: String, requestId: String) {
+    if explicitRead?.serverId != serverId || explicitRead?.requestId != requestId {
+      leaveExplicitRead()
+    }
+  }
+
+  public func selectChannelExplicitly(_ channelId: String?) {
+    guard channelId != selectedChannelId else { return }
+    leaveExplicitRead()
+    selectedChannelId = channelId
+  }
+
+  public func setMacInboxFilter(pendingOnly: Bool, searchText: String) {
+    guard pendingOnly != macPendingOnly || searchText != macSearchText else { return }
+    leaveExplicitRead()
+    macPendingOnly = pendingOnly
+    macSearchText = searchText
+    reconcileMacSelection()
+  }
+
+  private func reconcileMacSelection() {
+    if let selectedRequestId, !macInboxRequests.contains(where: { $0.id == selectedRequestId }) {
+      self.selectedRequestId = nil
+      explicitRead = nil
+    }
+  }
+  #endif
 
   /// Refresh when a submit fails because the local request list is stale (the
   /// request was resolved/expired elsewhere) — a 404/409 from the server.
@@ -677,7 +795,9 @@ public final class NodStore: ObservableObject {
       guard pendingActions.insert(key).inserted else { return false }
       defer { pendingActions.remove(key) }
       try await runtime.submitRequestOption(serverId: serverId, requestId: requestId, optionId: optionId, text: text)
-      await NodNotificationController.shared.removeNotifications(for: NodNotificationTarget(serverId: serverId, deviceId: target.deviceId ?? profiles.first { $0.id == serverId }?.deviceId, requestId: requestId))
+      if notificationControllerEnabled {
+        await NodNotificationController.shared.removeNotifications(for: NodNotificationTarget(serverId: serverId, deviceId: target.deviceId ?? profiles.first { $0.id == serverId }?.deviceId, requestId: requestId))
+      }
       lastError = nil
       return true
     } catch {
@@ -692,6 +812,20 @@ public final class NodStore: ObservableObject {
   }
 
   // MARK: - Error mapping / auth
+
+  func recordRecoveryError(_ message: String) {
+    guard lastError == nil || recoveryError != nil || mirroredRuntimeError == message else { return }
+    lastError = message
+    recoveryError = (message, runtime.state?.selectedServerId, runtime.state?.lastSyncedAt)
+  }
+
+  func clearRecoveredError(serverId: String?, syncedAt: Date?) {
+    guard let tracked = recoveryError, lastError == tracked.message,
+      tracked.serverId == serverId, let syncedAt,
+      tracked.syncedAt.map({ syncedAt > $0 }) ?? true
+    else { return }
+    lastError = nil
+  }
 
   func mapRuntimeError(_ error: Error) {
     switch error {

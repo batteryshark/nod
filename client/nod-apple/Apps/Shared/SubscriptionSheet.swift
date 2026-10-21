@@ -48,7 +48,11 @@ struct SubscriptionSheet: View {
         deviceAlertPreferences
 
         Section("Reading") {
+          #if os(macOS)
+          Toggle("Acknowledge informational requests when leaving after reading", isOn: $store.acknowledgeOnOpen)
+          #else
           Toggle("Acknowledge informational requests on open", isOn: $store.acknowledgeOnOpen)
+          #endif
           Text("Acknowledging completes a request. Shared requests are completed for everyone; turn this off to acknowledge manually.")
             .font(.caption).foregroundStyle(.secondary)
         }

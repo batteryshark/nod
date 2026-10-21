@@ -5,6 +5,7 @@ struct RequestDetail: View {
   @EnvironmentObject private var store: NodStore
   let request: NodRequest
   var serverId: String? = nil
+  var explicitRead = false
   @State private var responseDraft: ResponseDraft?
 
   private struct ResponseDraft: Identifiable {
@@ -90,7 +91,9 @@ struct RequestDetail: View {
     }
     .navigationTitle(request.title)
     .task(id: request.id) {
+      #if !os(macOS)
       if store.acknowledgeOnOpen { await store.dismissIfInformational(request: request, serverId: serverId) }
+      #endif
     }
     .sheet(item: $responseDraft) { draft in
       NavigationStack {

@@ -19,7 +19,7 @@ struct ChannelRequestsView: View {
         List {
           requestSections { request in
             NavigationLink {
-              RequestDetailContainer(requestId: request.id)
+              RequestDetailContainer(requestId: request.id, explicitRead: true)
             } label: {
               RequestRow(request: request)
             }
@@ -120,8 +120,21 @@ struct ChannelRequestsView: View {
 struct RequestListView: View {
   @EnvironmentObject private var store: NodStore
   @State private var showingHistory = false
+  #if os(macOS)
+  private var searchText: String { store.macSearchText }
+  private var pendingOnly: Bool { store.macPendingOnly }
+  private var searchBinding: Binding<String> {
+    Binding(get: { searchText }, set: { store.setMacInboxFilter(pendingOnly: pendingOnly, searchText: $0) })
+  }
+  private var pendingBinding: Binding<Bool> {
+    Binding(get: { pendingOnly }, set: { store.setMacInboxFilter(pendingOnly: $0, searchText: searchText) })
+  }
+  #else
   @State private var searchText = ""
   @State private var pendingOnly = false
+  private var searchBinding: Binding<String> { $searchText }
+  private var pendingBinding: Binding<Bool> { $pendingOnly }
+  #endif
   @State private var pendingRequestsExpanded = true
   @State private var handledRequestsExpanded = false
   @State private var initializedSectionExpansion = false
@@ -131,18 +144,34 @@ struct RequestListView: View {
       if pendingRequests.isEmpty && handledRequests.isEmpty {
         ContentUnavailableView(searchText.isEmpty ? "No Requests" : "No Matching Requests", systemImage: "bell.slash")
       } else {
-        List(selection: $store.selectedRequestId) {
+        List(selection: Binding(get: { store.selectedRequestId }, set: { requestId in
+          #if os(macOS)
+          store.selectRequestExplicitly(requestId)
+          #else
+          store.selectedRequestId = requestId
+          #endif
+        })) {
           requestSections { request in
             RequestRow(request: request)
               .tag(Optional(request.id))
+              #if os(macOS)
+              .simultaneousGesture(TapGesture().onEnded {
+                store.selectRequestExplicitly(request.id)
+              })
+              #endif
           }
         }
       }
     }
-    .searchable(text: $searchText, prompt: "Search requests")
+    .searchable(text: searchBinding, prompt: "Search requests")
     .toolbar {
-      Toggle("Pending only", isOn: $pendingOnly)
-      Button("Search History") { showingHistory = true }
+      Toggle("Pending only", isOn: pendingBinding)
+      Button("Search History") {
+        #if os(macOS)
+        store.leaveExplicitRead()
+        #endif
+        showingHistory = true
+      }
     }
     .sheet(isPresented: $showingHistory) { RequestHistorySheet(channelId: store.selectedChannelId) }
     .navigationTitle(selectedChannelName)
@@ -164,22 +193,14 @@ struct RequestListView: View {
       initializedSectionExpansion = false
       initializeSectionExpansionIfNeeded()
     }
-    .onChange(of: store.selectedRequestId) { oldValue, newValue in
-      dismissSelectedIfInformational(newValue)
+    #if !os(macOS)
+    .onChange(of: store.selectedRequestId) { _, requestId in
+      guard store.acknowledgeOnOpen,
+        let request = store.requests.first(where: { $0.id == requestId }),
+        request.status == .pending, request.options.isEmpty else { return }
+      Task { await store.dismissIfInformational(request: request) }
     }
-  }
-
-  private func dismissSelectedIfInformational(_ requestId: String?) {
-    guard store.acknowledgeOnOpen, let requestId else {
-      return
-    }
-    guard let request = store.requests.first(where: { $0.id == requestId }),
-      request.status == .pending,
-      request.options.isEmpty
-    else {
-      return
-    }
-    Task { await store.dismissIfInformational(request: request) }
+    #endif
   }
 
   private var selectedChannelName: String {
@@ -242,10 +263,11 @@ struct RequestListView: View {
 struct RequestDetailContainer: View {
   @EnvironmentObject private var store: NodStore
   let requestId: String?
+  var explicitRead = false
 
   var body: some View {
     if let request = request {
-      RequestDetail(request: request)
+      RequestDetail(request: request, explicitRead: explicitRead)
     } else {
       ContentUnavailableView("Select a Request", systemImage: "rectangle.stack.badge.person.crop")
     }
@@ -255,7 +277,11 @@ struct RequestDetailContainer: View {
     guard let requestId else {
       return nil
     }
+    #if os(macOS)
+    return store.macInboxRequests.first(where: { $0.id == requestId })
+    #else
     return store.requests.first(where: { $0.id == requestId })
+    #endif
   }
 }
 
@@ -365,16 +391,53 @@ struct RequestHistorySheet: View {
   @State private var nextCursor: String?
   @State private var isLoading = false
   @State private var error: String?
+  #if os(macOS)
+  @State private var historyPath: [String] = []
+  private var pathBinding: Binding<[String]> {
+    Binding(get: { historyPath }, set: { path in
+      if path != historyPath {
+        store.leaveExplicitRead()
+        if let id = path.last, let request = requests.first(where: { $0.id == id }) {
+          store.beginExplicitRead(request: request, serverId: serverId)
+          store.selectedRequestId = id
+        }
+      }
+      historyPath = path
+    })
+  }
+  #endif
 
   var body: some View {
+    #if os(macOS)
+    NavigationStack(path: pathBinding) {
+      historyList
+        .navigationDestination(for: String.self) { id in
+          if let request = store.requests.first(where: { $0.id == id }) ?? requests.first(where: { $0.id == id }) {
+            RequestDetail(request: request, serverId: serverId)
+          }
+        }
+    }
+    .frame(minWidth: 320, minHeight: 400)
+    #else
     NavigationStack {
+      historyList
+    }
+    .frame(minWidth: 320, minHeight: 400)
+    #endif
+  }
+
+  private var historyList: some View {
       List {
         if let error {
           Text(error).foregroundStyle(.red)
           Button("Retry") { Task { await load(reset: requests.isEmpty) } }
         }
         ForEach(requests) { request in
-          NavigationLink { RequestDetail(request: store.requests.first { $0.id == request.id } ?? request, serverId: serverId) } label: { RequestRow(request: request) }
+          #if os(macOS)
+          NavigationLink(value: request.id) { RequestRow(request: request) }
+          #else
+          NavigationLink { RequestDetail(request: store.requests.first { $0.id == request.id } ?? request, serverId: serverId, explicitRead: true) } label: { RequestRow(request: request) }
+          #endif
         }
         if isLoading { ProgressView("Loading history…") }
         else if nextCursor != nil { Button("Load Older Requests") { Task { await load(reset: false) } } }
@@ -385,13 +448,18 @@ struct RequestHistorySheet: View {
       .searchable(text: $searchText, prompt: "Search server history")
       .onSubmit(of: .search) { Task { await load(reset: true) } }
       .toolbar {
-        ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Done") {
+            #if os(macOS)
+            store.leaveExplicitRead()
+            #endif
+            dismiss()
+          }
+        }
         ToolbarItem(placement: .confirmationAction) { Button("Search") { Task { await load(reset: true) } }.disabled(isLoading) }
       }
       .task { serverId = store.selectedServerId; await load(reset: true) }
       .onChange(of: store.selectedServerId) { dismiss() }
-    }
-    .frame(minWidth: 320, minHeight: 400)
   }
 
   private func load(reset: Bool) async {

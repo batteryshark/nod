@@ -49,11 +49,19 @@ extension NodStore {
       guard let serverId = NodNotificationPolicy.serverId(for: target, servers: profiles), let requestId = target.requestId else {
         throw NodStoreError.ambiguousNotificationServer
       }
+      #if os(macOS)
+      leaveExplicitReadUnlessOpening(serverId: serverId, requestId: requestId)
+      #endif
       try await runtime.openRequest(serverId: serverId, requestId: requestId)
       // Apply selection before publishing navigation, without waiting for Combine delivery.
       selectedChannelId = runtime.state?.selectedChannelId ?? target.channelId
       selectedRequestId = requestId
       notificationOpenRequest = NodNotificationOpenRequest(requestId: requestId, channelId: selectedChannelId, serverId: serverId)
+      #if os(macOS)
+      if let request = runtime.state?.requests.first(where: { $0.id == requestId }) {
+        beginExplicitRead(request: request, serverId: serverId)
+      }
+      #endif
       connectSync()
     } catch { mapRuntimeError(error) }
   }

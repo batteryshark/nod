@@ -42,6 +42,7 @@ CODE_SIGNING_ALLOWED_VALUE="${CODE_SIGNING_ALLOWED:-YES}"
 build_app() {
   local code_signing_allowed="$1"
   local command=(xcodebuild)
+  if [[ -n "${NOD_MAC_ARCHS:-}" ]]; then command+=("ARCHS=${NOD_MAC_ARCHS}"); fi
   if [[ "${ALLOW_PROVISIONING_UPDATES:-YES}" == "YES" && "${code_signing_allowed}" == "YES" ]]; then
     command+=("-allowProvisioningUpdates")
   fi
@@ -55,6 +56,8 @@ build_app() {
     CONFIGURATION_BUILD_DIR="${CONFIGURATION_BUILD_DIR}" \
     OBJROOT="${BUILD_DIR}/Intermediates.noindex" \
     SYMROOT="${PRODUCTS_DIR}" \
+    "OTHER_SWIFT_FLAGS=\$(inherited) -j${NOD_BUILD_JOBS:-2}" \
+    -jobs "${NOD_BUILD_JOBS:-2}" \
     build
 }
 

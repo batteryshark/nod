@@ -29,6 +29,9 @@ struct Fixture {
     posts: Arc<Mutex<Vec<Value>>>,
     connections: Arc<AtomicUsize>,
     fail_snapshot: Arc<AtomicBool>,
+    gateway_failures: Arc<AtomicUsize>,
+    snapshot_gets: Arc<AtomicUsize>,
+    lost_submit_response: Arc<AtomicBool>,
     preferences: Arc<Mutex<crate::models::DeviceNotificationPreferences>>,
 }
 
@@ -53,11 +56,17 @@ impl TestServer {
             posts: Arc::new(Mutex::new(vec![])),
             connections: Arc::new(AtomicUsize::new(0)),
             fail_snapshot: Arc::new(AtomicBool::new(false)),
+            gateway_failures: Arc::new(AtomicUsize::new(0)),
+            snapshot_gets: Arc::new(AtomicUsize::new(0)),
+            lost_submit_response: Arc::new(AtomicBool::new(false)),
             preferences: Arc::new(Mutex::new(Default::default())),
         };
         let app = Router::new()
             .route("/api/v1/enroll", axum::routing::post(||async {Json(json!({"device_id":"device","user_id":"owner","user_name":"Owner","token":"target-token","channels":[],"devices":[]}))}))
-            .route("/api/v1/users/me", get(|State(state):State<Fixture>| async move {if state.fail_snapshot.load(Ordering::SeqCst) {return (StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":"temporarily unavailable"})));} (StatusCode::OK,Json(json!({"user":{"id":"owner","name":"Owner","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}, "current_device":device_with_preferences(&state).await, "notification_delivery":{"mode":"websocket"}})))}))
+            .route("/api/v1/users/me", get(|State(state):State<Fixture>| async move {
+                state.snapshot_gets.fetch_add(1, Ordering::SeqCst);
+                if state.gateway_failures.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {return (StatusCode::BAD_GATEWAY,Json(json!({"error":"sensitive gateway body must not escape"})));}
+                if state.fail_snapshot.load(Ordering::SeqCst) {return (StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":"temporarily unavailable"})));} (StatusCode::OK,Json(json!({"user":{"id":"owner","name":"Owner","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}, "current_device":device_with_preferences(&state).await, "notification_delivery":{"mode":"websocket"}})))}))
             .route("/api/v1/users/me/devices", get(|| async {Json(json!({"devices":[device()]}))}))
             .route("/api/v1/channels", get(|| async {Json(json!({"channels":[{"id":"other","name":"Other","emoji":"","subscribed":true,"created_at":"2026-01-01T00:00:00Z"}]}))}))
             .route("/api/v1/requests", get(|State(state): State<Fixture>| async move {Json(json!({"requests":state.requests.lock().await.clone(),"next_cursor":null}))}))
@@ -98,7 +107,7 @@ async fn submit(
     State(state): State<Fixture>,
     Path((id, _)): Path<(String, String)>,
     Json(body): Json<Value>,
-) -> Json<Value> {
+) -> axum::response::Response {
     state.posts.lock().await.push(body);
     let mut requests = state.requests.lock().await;
     let request = requests
@@ -107,7 +116,10 @@ async fn submit(
         .unwrap();
     request.status = RequestStatus::Resolved;
     request.updated_at = chrono::Utc::now();
-    Json(json!({"request":request}))
+    if state.lost_submit_response.load(Ordering::SeqCst) {
+        return (StatusCode::BAD_GATEWAY, "sensitive lost response body").into_response();
+    }
+    Json(json!({"request":request})).into_response()
 }
 
 async fn socket(State(state): State<Fixture>, upgrade: WebSocketUpgrade) -> impl IntoResponse {
@@ -410,6 +422,8 @@ async fn reconnect_and_resync_reconcile_without_manual_refresh() {
     let (mut runtime, _directory, _messages) = runtime(&server, false).await;
     runtime.connect_sync().await.unwrap();
     until(&runtime, |state| state.sync_phase == SyncPhase::Current).await;
+    runtime.connect_sync().await.unwrap();
+    assert_eq!(server.fixture.connections.load(Ordering::SeqCst), 1);
     server.fixture.messages.send(Message::Close(None)).unwrap();
     until(&runtime, |state| state.sync_phase == SyncPhase::Offline).await;
     server.fixture.requests.lock().await.push(request("missed"));
@@ -436,6 +450,60 @@ async fn reconnect_and_resync_reconcile_without_manual_refresh() {
     })
     .await;
     runtime.disconnect_sync().await;
+}
+
+#[tokio::test]
+async fn gateway_get_recovers_then_exhausts_without_losing_cards_or_replaying_alerts() {
+    let server = TestServer::start().await;
+    let (mut runtime, _directory, mut messages) = runtime(&server, false).await;
+    server.fixture.gateway_failures.store(1, Ordering::SeqCst);
+    runtime.refresh().await.unwrap();
+    assert_eq!(server.fixture.snapshot_gets.load(Ordering::SeqCst), 2);
+    while messages.try_recv().is_ok() {}
+    server.fixture.gateway_failures.store(10, Ordering::SeqCst);
+    let before = runtime.state().await;
+    let error = runtime.refresh().await.unwrap_err().to_string();
+    assert!(error.contains("GET /api/v1/users/me"));
+    assert!(error.contains("502 Bad Gateway (3 attempt(s))"));
+    assert!(!error.contains("sensitive"));
+    assert_eq!(server.fixture.snapshot_gets.load(Ordering::SeqCst), 5);
+    assert_eq!(runtime.state().await.requests, before.requests);
+    assert_eq!(
+        runtime.state().await.pending_counts_by_channel,
+        before.pending_counts_by_channel
+    );
+    server.fixture.gateway_failures.store(0, Ordering::SeqCst);
+    runtime.refresh().await.unwrap();
+    assert!(!std::iter::from_fn(|| messages.try_recv().ok())
+        .any(|m| matches!(m, NodClientMessage::NotificationCandidate { .. })));
+}
+
+#[tokio::test]
+async fn lost_decision_response_posts_once_and_reconciles_with_get() {
+    let server = TestServer::start().await;
+    let (mut runtime, _directory, _messages) = runtime(&server, false).await;
+    server
+        .fixture
+        .lost_submit_response
+        .store(true, Ordering::SeqCst);
+    let error = runtime
+        .submit_request_option(SubmitRequestOptionParams {
+            server_id: profile_id_for(&server.url),
+            request_id: "initial".into(),
+            option_id: "dismiss".into(),
+            text: None,
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("POST /api/v1/requests/initial/options/dismiss"));
+    assert!(error.contains("1 attempt(s)"));
+    assert!(!error.contains("sensitive"));
+    assert_eq!(server.fixture.posts.lock().await.len(), 1);
+    assert_eq!(
+        runtime.state().await.requests[0].status,
+        RequestStatus::Resolved
+    );
 }
 
 #[tokio::test]

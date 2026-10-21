@@ -248,7 +248,7 @@ struct NodSidebar: View {
       }
 
       Section("Channels") {
-        Button { store.selectedChannelId = nil } label: { Label("All requests", systemImage: "tray.full") }
+        Button { store.selectChannelExplicitly(nil) } label: { Label("All requests", systemImage: "tray.full") }
           .buttonStyle(.plain)
         if store.subscribedChannels.isEmpty {
           Text("No subscribed channels")
@@ -256,7 +256,7 @@ struct NodSidebar: View {
         } else {
           ForEach(store.subscribedChannels) { channel in
             Button {
-              store.selectedChannelId = channel.id
+              store.selectChannelExplicitly(channel.id)
             } label: {
               ChannelRow(
                 channel: channel,

@@ -22,6 +22,15 @@ const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 
 impl NodClientRuntime {
     pub async fn connect_sync(&mut self) -> Result<()> {
+        // The existing loop owns reconnect/backoff, even while offline. A
+        // foreground refresh must not abort a healthy or reconnecting socket.
+        if self
+            .sync_task
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
+        {
+            return Ok(());
+        }
         self.disconnect_sync().await;
         let context = self.snapshot_context().await?;
         self.sync_task = Some(tokio::spawn(run_sync_loop(context)));
@@ -140,8 +149,18 @@ fn is_expected_reconnect_error(error: &Error, has_connected: bool) -> bool {
 
 async fn run_connection(context: &SnapshotContext) -> Result<()> {
     let url = context.api.websocket_url()?;
-    let (mut socket, _) =
-        tokio::time::timeout(CONNECT_TIMEOUT, connect_async(url.as_str())).await??;
+    let (mut socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(url.as_str()))
+        .await
+        .map_err(|_| anyhow!("Nod GET /api/v1/sync connection timed out; reconnecting."))?
+        .map_err(|error| match error {
+            WebSocketError::Http(response) => Error::new(ApiStatusError::http_status(
+                &reqwest::Method::GET,
+                "/api/v1/sync",
+                response.status(),
+                1,
+            )),
+            _ => anyhow!("Nod GET /api/v1/sync connection failed; reconnecting."),
+        })?;
     // Subscribe before taking a snapshot. Events arriving during HTTP remain
     // buffered on the socket; the reducer ignores versions older than the snapshot.
     context.phase(SyncPhase::Reconciling).await;

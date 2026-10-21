@@ -40,13 +40,25 @@ public final class NodRuntimeClient: ObservableObject {
 
   private var client: NodClient?
   private let signer: any NodDeviceSigner & Sendable
+  private var refreshTask: Task<Void, Error>?
+  private var requestOverride: (@Sendable (String) async -> String)?
 
   public init(signer: any NodDeviceSigner & Sendable = SecureEnclaveDeviceSigner()) {
     self.signer = signer
   }
 
+  // Hermetic transport seam for lifecycle tests; never used by the app.
+  init(request: @escaping @Sendable (String) async -> String) {
+    self.signer = SecureEnclaveDeviceSigner()
+    self.requestOverride = request
+  }
+
   /// Build the runtime, attach the observer, and emit the initial state.
   public func start() async throws {
+    if requestOverride != nil {
+      try await callApplyingState("state")
+      return
+    }
     guard client == nil else { return }
     let bridge = ObserverBridge { [weak self] message in
       Task { @MainActor in self?.apply(message) }
@@ -59,7 +71,13 @@ public final class NodRuntimeClient: ObservableObject {
 
   // MARK: - RPCs (mirror nod-client-core's runtime methods)
 
-  public func refresh() async throws { try await callApplyingState("refresh") }
+  public func refresh() async throws {
+    if let refreshTask { return try await refreshTask.value }
+    let task = Task { try await self.callApplyingState("refresh") }
+    refreshTask = task
+    defer { refreshTask = nil }
+    try await task.value
+  }
 
   public func selectServer(_ serverId: String) async throws {
     try await callApplyingState("select_server", ["server_id": serverId])
@@ -185,9 +203,12 @@ public final class NodRuntimeClient: ObservableObject {
   // MARK: - Internals
 
   private func send(_ method: String, _ params: [String: Any]) async throws -> Data {
-    guard let client else { throw NodRuntimeError.notStarted }
     let body: [String: Any] = ["id": UUID().uuidString, "method": method, "params": params]
     let requestData = try JSONSerialization.data(withJSONObject: body)
+    if let requestOverride {
+      return Data(await requestOverride(String(decoding: requestData, as: UTF8.self)).utf8)
+    }
+    guard let client else { throw NodRuntimeError.notStarted }
     let responseJSON = await client.request(requestJson: String(decoding: requestData, as: UTF8.self))
     return Data(responseJSON.utf8)
   }

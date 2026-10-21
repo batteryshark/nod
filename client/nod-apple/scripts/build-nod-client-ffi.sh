@@ -33,10 +33,45 @@ export IPHONEOS_DEPLOYMENT_TARGET=17.0
 cd "${REPO_ROOT}"
 
 echo "==> Building ${CRATE} static libs (release)"
-for target in "${MAC_ARM}" "${MAC_X64}" "${IOS_ARM}" "${SIM_ARM}" "${SIM_X64}"; do
-  rustup target add "${target}" >/dev/null
+TARGETS=("${MAC_ARM}" "${MAC_X64}" "${IOS_ARM}" "${SIM_ARM}" "${SIM_X64}")
+if [[ "${NOD_FFI_MACOS_ONLY:-0}" == "1" ]]; then
+  # Behavior-only Rust changes: retain existing bindings/headers and iOS slices.
+  # No target installation/downloads in this incremental mode.
+  TARGETS=("${MAC_ARM}" "${MAC_X64}")
+  if [[ "${NOD_MAC_ARCHS:-}" == "arm64" ]]; then TARGETS=("${MAC_ARM}"); fi
+fi
+for target in "${TARGETS[@]}"; do
+  if [[ "${NOD_FFI_MACOS_ONLY:-0}" == "1" ]]; then
+    rustup target list --installed | grep -qx "${target}" || { echo "Missing installed target: ${target}" >&2; exit 1; }
+  else
+    rustup target add "${target}" >/dev/null
+  fi
   cargo build -p "${CRATE}" --release --target "${target}"
 done
+
+if [[ "${NOD_FFI_MACOS_ONLY:-0}" == "1" ]]; then
+  MAC_LIB="${APPLE_DIR}/Frameworks/${MODULE}.xcframework/macos-arm64_x86_64/${LIB}"
+  [[ -f "${MAC_LIB}" ]] || { echo "Existing macOS xcframework slice required" >&2; exit 1; }
+  if [[ "${NOD_MAC_ARCHS:-}" == "arm64" ]]; then
+    cp "target/${MAC_ARM}/release/${LIB}" "${MAC_LIB}"
+  else
+    lipo -create "target/${MAC_ARM}/release/${LIB}" "target/${MAC_X64}/release/${LIB}" -output "${MAC_LIB}"
+  fi
+  # Metadata must describe the actual refreshed archive, never stale x86 code.
+  python3 - "${APPLE_DIR}/Frameworks/${MODULE}.xcframework/Info.plist" "${NOD_MAC_ARCHS:-universal}" <<'PY'
+import plistlib, sys
+path, archs = sys.argv[1:]
+with open(path, 'rb') as f:
+    info = plistlib.load(f)
+for library in info['AvailableLibraries']:
+    if library['SupportedPlatform'] == 'macos':
+        library['SupportedArchitectures'] = ['arm64'] if archs == 'arm64' else ['arm64', 'x86_64']
+with open(path, 'wb') as f:
+    plistlib.dump(info, f)
+PY
+  echo "==> Refreshed macOS slice only (FFI interface unchanged)"
+  exit 0
+fi
 
 echo "==> Generating Swift bindings"
 cargo build -p "${CRATE}" --release

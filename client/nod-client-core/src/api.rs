@@ -279,36 +279,94 @@ impl NodApi {
         Body: Serialize + ?Sized,
         Response: DeserializeOwned,
     {
-        let url = self.url(spec.path).map_err(ApiStatusError::other)?;
-        let mut request = self.client.request(spec.method, url);
+        let url = self.url(spec.path).map_err(|_| {
+            ApiStatusError::failure(&spec.method, spec.path, 1, "invalid server address")
+        })?;
+        let mut request = self.client.request(spec.method.clone(), url);
         if let Some(body) = spec.body {
             request = request.json(body);
         }
         if spec.auth == RequestAuth::DeviceToken {
-            let token = self
-                .token
-                .as_deref()
-                .ok_or_else(|| ApiStatusError::other(anyhow!("device token is missing")))?;
+            let token = self.token.as_deref().ok_or_else(|| {
+                ApiStatusError::failure(&spec.method, spec.path, 1, "device token is missing")
+            })?;
             request = request.bearer_auth(token);
         }
-        let response = request
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(ApiStatusError::other)?;
-        let status = response.status();
-        let bytes = response.bytes().await.map_err(ApiStatusError::other)?;
-        if !status.is_success() {
-            return Err(ApiStatusError {
-                status,
-                body: String::from_utf8_lossy(&bytes).to_string(),
-            });
-        }
+        let request = request.header("Accept", "application/json");
+        let mut attempts = 0;
+        let response = loop {
+            attempts += 1;
+            // Only GETs are replayable. In particular, a lost decision response
+            // must still be reconciled by GET, never by another POST.
+            let response = request
+                .try_clone()
+                .ok_or_else(|| {
+                    ApiStatusError::failure(
+                        &spec.method,
+                        spec.path,
+                        attempts,
+                        "request could not be encoded",
+                    )
+                })?
+                .send()
+                .await
+                .map_err(|error| {
+                    ApiStatusError::failure(
+                        &spec.method,
+                        spec.path,
+                        attempts,
+                        if error.is_timeout() {
+                            "request timed out"
+                        } else {
+                            "transport failed"
+                        },
+                    )
+                })?;
+            let status = response.status();
+            if spec.method == Method::GET
+                && attempts < 3
+                && matches!(
+                    status,
+                    StatusCode::BAD_GATEWAY
+                        | StatusCode::SERVICE_UNAVAILABLE
+                        | StatusCode::GATEWAY_TIMEOUT
+                )
+            {
+                // 502/503/504 indicate temporary gateway/service availability;
+                // do not retry auth, conflict, decoding, or arbitrary 500 errors.
+                drop(response);
+                tokio::time::sleep(Duration::from_millis(if attempts == 1 { 250 } else { 750 }))
+                    .await;
+                continue;
+            }
+            if !status.is_success() {
+                return Err(ApiStatusError::http_status(
+                    &spec.method,
+                    spec.path,
+                    status,
+                    attempts,
+                ));
+            }
+            break response;
+        };
+        let bytes = response.bytes().await.map_err(|_| {
+            ApiStatusError::failure(&spec.method, spec.path, attempts, "response interrupted")
+        })?;
         if bytes.is_empty() {
-            return serde_json::from_value(serde_json::Value::Object(Default::default()))
-                .map_err(ApiStatusError::other);
+            return serde_json::from_value(serde_json::Value::Object(Default::default())).map_err(
+                |_| {
+                    ApiStatusError::failure(
+                        &spec.method,
+                        spec.path,
+                        attempts,
+                        "invalid empty response",
+                    )
+                },
+            );
         }
-        serde_json::from_slice(&bytes).map_err(ApiStatusError::other)
+        serde_json::from_slice(&bytes).map_err(|_| {
+            ApiStatusError::failure(&spec.method, spec.path, attempts, "invalid JSON response")
+        })
     }
 
     fn url(&self, path: &str) -> Result<Url> {
@@ -352,17 +410,35 @@ pub struct SubmitOptionRequest<'a> {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("Nod request failed with {status}: {body}")]
+#[error("Nod {method} {path} failed with {status} ({attempts} attempt(s)): {detail}")]
 pub struct ApiStatusError {
     pub status: StatusCode,
-    pub body: String,
+    method: Method,
+    path: String,
+    attempts: u8,
+    detail: &'static str,
 }
 
 impl ApiStatusError {
-    fn other(error: impl std::fmt::Display) -> Self {
+    pub(crate) fn http_status(
+        method: &Method,
+        path: &str,
+        status: StatusCode,
+        attempts: u8,
+    ) -> Self {
         Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            body: error.to_string(),
+            status,
+            method: method.clone(),
+            path: path.split('?').next().unwrap_or("/").to_string(),
+            attempts,
+            detail: "server returned an unsuccessful response",
+        }
+    }
+
+    fn failure(method: &Method, path: &str, attempts: u8, detail: &'static str) -> Self {
+        Self {
+            detail,
+            ..Self::http_status(method, path, StatusCode::INTERNAL_SERVER_ERROR, attempts)
         }
     }
 }
@@ -480,6 +556,20 @@ fn requests_path(channel_id: Option<&str>, limit: Option<usize>) -> String {
 mod tests {
     use super::*;
     use crate::models::{NotificationDeliveryMode, SyncEnvelope};
+
+    #[test]
+    fn error_context_never_contains_query_or_response_content() {
+        let error = ApiStatusError::http_status(
+            &Method::GET,
+            "/api/v1/sync?token=secret",
+            StatusCode::BAD_GATEWAY,
+            3,
+        )
+        .to_string();
+        assert!(error.contains("GET /api/v1/sync failed with 502"));
+        assert!(!error.contains("secret"));
+        assert!(!error.contains('?'));
+    }
 
     #[test]
     fn normalizes_local_and_remote_urls() {

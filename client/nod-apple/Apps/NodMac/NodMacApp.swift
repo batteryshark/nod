@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import NodKit
 import SwiftUI
 
@@ -6,11 +7,19 @@ import SwiftUI
 struct NodMacApp: App {
     @Environment(\.openWindow) private var openWindow
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var store = NodStore(
-        platform: .macos,
-        defaultDeviceName: Host.current().localizedName ?? "Mac",
-        presentLocalNotifications: true
-    )
+    @StateObject private var store: NodStore
+
+    init() {
+        let store = NodStore(
+            platform: .macos,
+            defaultDeviceName: Host.current().localizedName ?? "Mac",
+            presentLocalNotifications: true
+        )
+        _store = StateObject(wrappedValue: store)
+        // MenuBarExtra labels (and hidden windows) need not run view tasks.
+        // Bind once at app construction, before any foreground transition.
+        appDelegate.observeStore(store)
+    }
 
     var body: some Scene {
         Window("Nod", id: "inbox") {
@@ -56,14 +65,10 @@ struct NodMacApp: App {
                 .accessibilityLabel(menuBarTitle)
                 .task {
                     await store.refreshNotificationAuthorizationStatus()
-                    updateDockBadge()
                 }
                 .onChange(of: store.notificationOpenRequest) {
                     openWindow(id: "inbox")
                     NSApp.activate(ignoringOtherApps: true)
-                }
-                .onChange(of: store.totalPendingCount) {
-                    updateDockBadge()
                 }
         }
     }
@@ -86,10 +91,6 @@ struct NodMacApp: App {
             return "Nod"
         }
         return "Nod \(store.totalPendingCount)"
-    }
-
-    private func updateDockBadge() {
-        NSApp.dockTile.badgeLabel = store.totalPendingCount > 0 ? "\(store.totalPendingCount)" : nil
     }
 
     private func openNotificationSettings() {
@@ -163,6 +164,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// keeps the sync socket serviced in the background while still letting the
     /// Mac sleep normally on battery.
     private var syncActivityAssertion: NSObjectProtocol?
+    private var badgeSubscription: AnyCancellable?
+    private var foregroundSubscription: AnyCancellable?
+
+    @MainActor
+    func observeStore(_ store: NodStore) {
+        guard badgeSubscription == nil else { return }
+        // @Published delivers the current counts immediately, then every
+        // snapshot/live change. Keep observing even when no view redraws.
+        badgeSubscription = store.$pendingCountsByChannel
+            .map { $0.values.reduce(0, +) }
+            .sink { count in
+                NSApplication.shared.dockTile.badgeLabel = count > 0 ? "\(count)" : nil
+                NSLog("Nod pending badge updated: %ld", count)
+            }
+        foregroundSubscription = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak store] _ in
+                Task { @MainActor in
+                    guard let store else { return }
+                    let previous = store.lastSyncedAt
+                    await store.resumeFromForeground()
+                    NSLog("Nod foreground refresh finished: refreshed=%@ phase=%@ pending=%ld",
+                          store.lastSyncedAt != previous ? "yes" : "no", store.syncPhase, store.totalPendingCount)
+                }
+            }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)

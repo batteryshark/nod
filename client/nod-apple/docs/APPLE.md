@@ -181,6 +181,22 @@ is active and connected. This is a foreground fallback only; background and
 lock-screen delivery still require APNs. Direct APNs and notification relay
 routes are transparent to Apple clients and both appear as `mode = "push"`.
 
+## Direct Ad-Hoc Installation and Renewal
+
+For direct deployment without TestFlight, archive `NodIOS` in Release and export
+locally for ad-hoc distribution using Xcode's automatic signing with the existing
+paid Apple Developer team (`method: release-testing`). Preserve the installed
+app's bundle identifier, keychain access groups, and production APNs and App
+Attest entitlements so the update remains compatible with its existing enrollment.
+
+Direct signing is not permanent and does not use TestFlight's 90-day build limit.
+Inspect the actual exported provisioning profile and signing certificate for
+their expiration dates; renew the required signing assets and export a newly
+signed build before either expires. Install the exported app in place with
+supported Xcode tooling (`xcrun devicectl device install app --device <device-id>
+<path-to-Nod.app>`), without uninstalling, to preserve local data, keychain items,
+and enrollment.
+
 ## Notification Categories
 
 The clients register:
