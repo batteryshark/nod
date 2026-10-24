@@ -4,9 +4,11 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, timeout, Duration};
+
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 use crate::{auth, error::ApiError, state::AppState, sync};
 
@@ -18,6 +20,7 @@ pub(super) struct SyncQuery {
 pub(super) async fn sync_socket(
     State(state): State<AppState>,
     Query(query): Query<SyncQuery>,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     let hash = auth::hash_secret(&query.token);
@@ -25,7 +28,15 @@ pub(super) async fn sync_socket(
         .await?
         .ok_or(ApiError::Unauthorized)?;
     Ok(ws
-        .on_upgrade(move |socket| handle_socket(socket, state, device.id, device.user_id))
+        .on_upgrade(move |socket| {
+            handle_socket(
+                socket,
+                state,
+                device.id,
+                device.user_id,
+                super::requests::value_capable(&headers),
+            )
+        })
         .into_response())
 }
 
@@ -34,18 +45,23 @@ pub(super) async fn handle_socket(
     state: AppState,
     device_id: String,
     user_id: String,
+    capable: bool,
 ) {
     let mut rx = state.sync.subscribe();
     let mut authorization_check = interval(Duration::from_secs(15));
+    // Authorization is checked before hello below. Avoid an immediate extra
+    // snapshot request: the first safety-net resync is due after 15 seconds.
+    authorization_check.tick().await;
     let (mut sender, mut receiver) = socket.split();
     let Ok(device) = crate::db::get_device(&state.pool, &device_id).await else {
         return;
     };
+    if !device_is_active(&state, &device_id).await {
+        return;
+    }
     let hello = sync_hello(&device_id, &state.delivery_for_device(&device));
-    if let Ok(text) = serde_json::to_string(&hello) {
-        if sender.send(Message::Text(text.into())).await.is_err() {
-            return;
-        }
+    if !send_envelope(&mut sender, &hello).await {
+        return;
     }
 
     loop {
@@ -56,7 +72,6 @@ pub(super) async fn handle_socket(
                         // The database is authoritative even if a revocation
                         // broadcast was missed or this client ignores it.
                         if !device_is_active(&state, &device_id).await {
-                            let _ = sender.send(Message::Close(None)).await;
                             break;
                         }
                         if let Some(targets) = envelope.target_user_ids.as_ref() {
@@ -71,22 +86,25 @@ pub(super) async fn handle_socket(
                                 Err(error) => { tracing::warn!(%error, "closing socket after delivery eligibility check failed"); break; }
                             }
                         }
-                        let envelope = sync_envelope_for_user(envelope, &user_id);
-                        match serde_json::to_string(&envelope) {
-                            Ok(text) => {
-                                if sender.send(Message::Text(text.into())).await.is_err() {
-                                    break;
-                                }
+                        let mut envelope = sync_envelope_for_user(envelope, &user_id);
+                        if !capable {
+                            if let Some(request) = envelope.payload.get_mut("request") {
+                                // Fail closed if an internal malformed request cannot be projected.
+                                let Ok(wire) = serde_json::from_value::<nod_proto::Request>(request.clone()) else { break; };
+                                *request = serde_json::to_value(wire.legacy_value_projection()).expect("wire serialization");
                             }
-                            Err(err) => tracing::error!(error = %err, "failed to serialize sync message"),
+                        }
+                        if !send_envelope(&mut sender, &envelope).await {
+                            break;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        let envelope = sync::device_update("resync_required", json!({ "skipped": skipped }));
-                        if let Ok(text) = serde_json::to_string(&envelope) {
-                            if sender.send(Message::Text(text.into())).await.is_err() {
-                                break;
-                            }
+                        if !device_is_active(&state, &device_id).await {
+                            break;
+                        }
+                        let envelope = lagged_resync(skipped);
+                        if !send_envelope(&mut sender, &envelope).await {
+                            break;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -94,7 +112,12 @@ pub(super) async fn handle_socket(
             }
             _ = authorization_check.tick() => {
                 if !device_is_active(&state, &device_id).await {
-                    let _ = sender.send(Message::Close(None)).await;
+                    break;
+                }
+                // A missing post-commit broadcast is not reported as Lagged.
+                // Ask existing clients for an authoritative snapshot even on a quiet socket.
+                let envelope = sync::device_update("resync_required", json!({}));
+                if !send_envelope(&mut sender, &envelope).await {
                     break;
                 }
             }
@@ -108,6 +131,35 @@ pub(super) async fn handle_socket(
                     }
                 }
             }
+        }
+    }
+    let _ = send_message(&mut sender, Message::Close(None)).await;
+}
+
+async fn send_message<S>(sender: &mut S, message: Message) -> bool
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    matches!(
+        timeout(WRITE_TIMEOUT, sender.send(message)).await,
+        Ok(Ok(()))
+    )
+}
+
+fn lagged_resync(skipped: u64) -> crate::models::SyncEnvelope {
+    sync::device_update("resync_required", json!({ "skipped": skipped }))
+}
+
+async fn send_envelope<S, T>(sender: &mut S, envelope: &T) -> bool
+where
+    S: futures_util::Sink<Message> + Unpin,
+    T: Serialize,
+{
+    match serde_json::to_string(envelope) {
+        Ok(text) => send_message(sender, Message::Text(text.into())).await,
+        Err(error) => {
+            tracing::error!(%error, "closing socket after sync serialization failed");
+            false
         }
     }
 }
@@ -208,8 +260,78 @@ fn filter_request_for_user(request: &mut Value, user_id: &str) {
 #[cfg(test)]
 mod tests {
     use crate::models::{NotificationDelivery, NotificationDeliveryMode};
+    use axum::extract::ws::Message;
+    use futures_util::sink;
+    use serde_json::json;
 
     use super::sync_hello;
+
+    #[tokio::test]
+    async fn lagged_receiver_requests_recognized_content_free_recovery() {
+        let tx = crate::sync::sender();
+        let mut rx = tx.subscribe();
+        for _ in 0..513 {
+            tx.send(crate::sync::device_update(
+                "private",
+                json!({"secret": "other user"}),
+            ))
+            .unwrap();
+        }
+        let Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) = rx.recv().await else {
+            panic!("expected lag past the 512-message buffer");
+        };
+        let recovery = super::lagged_resync(skipped);
+        assert_eq!(recovery.kind, "resync_required");
+        assert_eq!(recovery.payload, json!({"skipped": 1}));
+        assert!(recovery.target_user_ids.is_none());
+    }
+
+    #[tokio::test]
+    async fn stalled_writes_are_bounded_including_close() {
+        // A deterministic non-draining sink avoids relying on OS TCP buffers.
+        let mut stalled = Box::pin(sink::unfold((), |(), _: Message| {
+            std::future::pending::<Result<(), std::io::Error>>()
+        }));
+        let start = tokio::time::Instant::now();
+        assert!(!super::send_message(&mut stalled, Message::Close(None)).await);
+        assert!(start.elapsed() < super::WRITE_TIMEOUT + std::time::Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn serialization_error_is_fatal() {
+        struct Broken;
+        impl serde::Serialize for Broken {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("injected"))
+            }
+        }
+        let mut sender = sink::drain();
+        assert!(!super::send_envelope(&mut sender, &Broken).await);
+    }
+
+    #[test]
+    fn targeted_per_user_projection_does_not_leak_other_decisions() {
+        let envelope = crate::sync::device_update(
+            "request_updated",
+            json!({"request": {
+                "recipients": ["alice", "bob"], "request_digest": "private",
+                "decision_resolution": "per_user", "status": "resolved",
+                "decision": {"text": "bob secret"},
+                "decisions": [{"user_id": "bob", "decision": {"text": "bob secret"}}]
+            }}),
+        );
+        let mut envelope = envelope;
+        envelope.target_user_ids = Some(vec!["alice".into(), "bob".into()]);
+        let projected = super::sync_envelope_for_user(envelope, "alice");
+        assert!(projected.target_user_ids.is_none());
+        let request = &projected.payload["request"];
+        assert_eq!(request["recipients"], json!(["alice"]));
+        assert_eq!(request["decisions"], json!([]));
+        assert_eq!(request["status"], "pending");
+        assert!(request["decision"].is_null());
+        assert!(request["request_digest"].is_null());
+        assert!(!serde_json::to_string(&projected).unwrap().contains("bob"));
+    }
 
     #[test]
     fn websocket_hello_includes_notification_delivery() {

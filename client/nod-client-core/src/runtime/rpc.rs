@@ -74,6 +74,9 @@ impl NodClientRuntime {
                 Ok(json!(self.forget_server(&params.server_id).await?))
             }
             "refresh" => Ok(json!(self.refresh().await?)),
+            "get_request" => {
+                Ok(json!({"request": self.get_request(serde_json::from_value(params)?).await?}))
+            }
             "open_request" => Ok(json!(
                 self.open_request(serde_json::from_value(params)?).await?
             )),
@@ -169,6 +172,10 @@ pub struct SelectServerParams {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SubmitOptionParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_value: Option<nod_proto::AnswerValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_request_digest: Option<String>,
     pub request_id: String,
     pub option_id: String,
     #[serde(default)]
@@ -197,6 +204,10 @@ pub struct QueryHistoryParams {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SubmitRequestOptionParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_value: Option<nod_proto::AnswerValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_request_digest: Option<String>,
     pub server_id: String,
     pub request_id: String,
     pub option_id: String,

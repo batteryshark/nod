@@ -14,10 +14,12 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkTaggedAnswers, TAGGED_ANSWERS } from "./tagged-answer-drift.mjs";
 
 const dto = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "dto");
 const generated = readFileSync(join(dto, "generated.ts"), "utf8");
 const models = readFileSync(join(dto, "models.ts"), "utf8");
+checkTaggedAnswers(readFileSync(join(dto, "../../../../nod-proto/src/answer.rs"), "utf8"), models);
 
 // Rust name -> models.ts name. Renames must keep the same field set.
 const RENAMES = {
@@ -106,6 +108,8 @@ const expectedModelTypes = new Set(
     .filter((name) => !(name in OMITTED_TYPES))
     .map((name) => RENAMES[name] ?? name),
 );
+// These two unions passed the direct closed-grammar comparison above, not an exemption.
+for (const name of TAGGED_ANSWERS) expectedModelTypes.add(name);
 for (const name of [...modelInterfaces.keys(), ...modelEnums.keys()]) {
   if (!expectedModelTypes.has(name)) {
     problems.push(`type ${name}: exists in models.ts but has no Rust counterpart`);

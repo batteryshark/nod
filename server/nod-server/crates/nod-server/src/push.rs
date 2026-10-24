@@ -11,6 +11,8 @@ use crate::{
 
 pub const APPLE_APNS_PROVIDER_ID: &str = "apple_apns";
 
+// async_trait adds must_use to an already must-use Future; retain the generated API.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait PushProvider: Send + Sync {
     fn id(&self) -> &str;
@@ -116,6 +118,9 @@ pub enum PushCategory {
 
 impl PushCategory {
     pub fn for_request(request: &DecisionRequest) -> Self {
+        if request.answer_field.is_some() {
+            return Self::Default;
+        }
         let standard = [
             ("approve", "Approve", crate::models::OptionKind::Approve),
             ("reject", "Reject", crate::models::OptionKind::Reject),

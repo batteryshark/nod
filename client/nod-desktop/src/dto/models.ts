@@ -8,6 +8,24 @@
 // `generated.ts` you can diff against these to catch drift. (We don't import the
 // generated types directly: typeshare turns every `#[serde(default)]` field into
 // an optional, which the backend never actually omits.)
+// Closed tagged wire contract from nod-proto/src/answer.rs; strings stay exact.
+export type AnswerValue =
+  | { kind: "choice"; choice_id: string }
+  | { kind: "number"; decimal: string }
+  | { kind: "date"; date: string }
+  | { kind: "date_time"; instant: string };
+
+export interface AnswerChoice {
+  id: string;
+  label: string;
+}
+
+export type AnswerField =
+  | { kind: "choice"; label: string; choices: AnswerChoice[]; default: AnswerValue }
+  | { kind: "number"; label: string; default: AnswerValue }
+  | { kind: "date"; label: string; default: AnswerValue }
+  | { kind: "date_time"; label: string; default: AnswerValue };
+
 export type DevicePlatform =
   | "ios"
   | "macos"
@@ -110,6 +128,7 @@ export interface RequestOption {
 // The signature record the server stores and republishes on a decision:
 // the client-submitted signature plus the server's verification verdict.
 export interface DecisionSignatureRecord {
+  payload_version?: string | null;
   key_id: string;
   algorithm: string;
   nonce: string;
@@ -122,6 +141,7 @@ export interface DecisionSignatureRecord {
 }
 
 export interface Decision {
+  answer_value?: AnswerValue | null;
   request_id: string;
   option_id: string;
   option_kind: OptionKind;
@@ -142,6 +162,7 @@ export interface UserDecision {
 // already the Fetch API's global type — importing the wire name shadows it
 // and invites silent type confusion in browser code.
 export interface NodRequest {
+  answer_field?: AnswerField | null;
   id: string;
   request_id: string;
   channel_id: string;

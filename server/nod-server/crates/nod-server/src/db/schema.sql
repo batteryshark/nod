@@ -1,5 +1,31 @@
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS integration_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS request_origins (
+    request_id TEXT PRIMARY KEY REFERENCES requests(id) ON DELETE CASCADE,
+    session TEXT NOT NULL, directory TEXT NOT NULL, reference TEXT
+);
+-- Deliberately no request FK: retention must not erase recovery evidence or obligations.
+CREATE TABLE IF NOT EXISTS lifecycle_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE, request_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision>0), kind TEXT NOT NULL, occurred_at TEXT NOT NULL,
+    subject TEXT NOT NULL, envelope_json TEXT NOT NULL, private_detail_json TEXT NOT NULL,
+    published_at TEXT, stream_seq INTEGER, attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL, lease_token TEXT, lease_until TEXT, last_error TEXT,
+    UNIQUE(request_id,revision)
+);
+CREATE INDEX IF NOT EXISTS lifecycle_due ON lifecycle_events(published_at,next_attempt_at,seq);
+CREATE TABLE IF NOT EXISTS callback_deliveries (
+    delivery_id TEXT PRIMARY KEY, event_id TEXT NOT NULL UNIQUE REFERENCES lifecycle_events(event_id),
+    request_id TEXT NOT NULL, request_revision INTEGER NOT NULL,
+    url TEXT NOT NULL, payload_json TEXT NOT NULL, state TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL,
+    lease_token TEXT, lease_until TEXT, delivered_at TEXT, last_status INTEGER,
+    last_error TEXT, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS callback_due ON callback_deliveries(state,next_attempt_at);
+
 CREATE TABLE IF NOT EXISTS channels (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -121,6 +147,7 @@ CREATE TABLE IF NOT EXISTS requests (
     decision_resolution TEXT NOT NULL DEFAULT 'shared',
     recipient_salt TEXT NOT NULL DEFAULT '',
     explicit_recipients INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 0,
     created_by_issuer_token_id TEXT REFERENCES issuer_tokens(id)
 );
 
@@ -185,6 +212,8 @@ CREATE TABLE IF NOT EXISTS push_deliveries (
     device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     status TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
+    lease_until INTEGER,
+    claim_generation INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL,
     error TEXT,
     PRIMARY KEY(request_id,device_id)

@@ -172,6 +172,15 @@ impl NodClientRuntime {
             .await
     }
 
+    /// Authenticated targeted read, without reducer, navigation or write effects.
+    pub async fn get_request(&self, params: OpenRequestParams) -> Result<Request> {
+        let profile = self.server_profile(&params.server_id).await?;
+        self.api_for_profile(&profile)
+            .await?
+            .get_request(&params.request_id)
+            .await
+    }
+
     pub async fn open_request(&mut self, params: OpenRequestParams) -> Result<ClientState> {
         let profile = self.server_profile(&params.server_id).await?;
         let request = self
@@ -195,6 +204,8 @@ impl NodClientRuntime {
     pub async fn submit_option(&mut self, params: SubmitOptionParams) -> Result<Request> {
         let profile = self.selected_server_profile().await?;
         self.submit_request_option(SubmitRequestOptionParams {
+            answer_value: params.answer_value,
+            expected_request_digest: params.expected_request_digest,
             server_id: profile.id,
             request_id: params.request_id,
             option_id: params.option_id,
@@ -218,6 +229,8 @@ impl NodClientRuntime {
             ));
         }
         let option = SubmitOptionParams {
+            answer_value: params.answer_value,
+            expected_request_digest: params.expected_request_digest,
             request_id: params.request_id,
             option_id: params.option_id,
             text: params
@@ -231,6 +244,7 @@ impl NodClientRuntime {
             .await?;
         let result = api
             .submit_option(SubmitOptionRequest {
+                answer_value: option.answer_value.as_ref(),
                 request_id: &option.request_id,
                 option_id: &option.option_id,
                 text: option.text.as_deref(),

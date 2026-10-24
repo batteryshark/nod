@@ -1,5 +1,7 @@
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
-mod options;
+pub(crate) mod activation;
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+pub(crate) mod options;
 mod platform;
 #[cfg(any(target_os = "windows", test))]
 mod windows_toast;
@@ -119,6 +121,7 @@ mod tests {
 
     fn request(options: Vec<RequestOption>) -> Request {
         Request {
+            answer_field: None,
             id: "request-1".to_string(),
             request_id: "request-1".to_string(),
             channel_id: "default".to_string(),
@@ -172,6 +175,113 @@ mod tests {
                 option_id: "dismiss".to_string()
             }
         );
+    }
+
+    fn value_request(legacy: bool) -> Request {
+        let mut value = request(Vec::new());
+        if legacy {
+            value.options = vec![option("__nod_value_open", OptionKind::Custom, false)];
+        } else {
+            value.answer_field = Some(nod_proto::AnswerField::Number {
+                label: "Count".into(),
+                default: nod_proto::AnswerValue::Number {
+                    decimal: "4".into(),
+                },
+            });
+        }
+        value
+    }
+
+    #[test]
+    fn value_and_legacy_notifications_are_open_only() {
+        for legacy in [false, true] {
+            let request = value_request(legacy);
+            let options = desktop_notification_options("server-1", &request);
+            assert_eq!(options.len(), 1);
+            assert!(matches!(&options[0].activation,
+                NotificationActivation::Open { request_id: Some(id), .. } if id == "request-1"));
+            let xml = windows_toast_xml(&request, "default");
+            assert!(!xml.contains("action:dismiss"));
+            assert!(!xml.contains("action:__nod_value_open"));
+            assert!(xml.contains("Open Nod"));
+        }
+    }
+
+    struct FakeActivationRuntime {
+        current: Option<Request>,
+        reads: usize,
+        opens: usize,
+        posts: usize,
+    }
+
+    impl activation::ActivationRuntime for FakeActivationRuntime {
+        async fn read(&mut self, _: nod_client_core::OpenRequestParams) -> anyhow::Result<Request> {
+            self.reads += 1;
+            self.current
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("offline"))
+        }
+        async fn open(&mut self, params: nod_client_core::OpenRequestParams) -> anyhow::Result<()> {
+            assert_eq!(params.request_id, "request-1");
+            self.opens += 1;
+            Ok(())
+        }
+        async fn submit(
+            &mut self,
+            params: nod_client_core::SubmitRequestOptionParams,
+        ) -> anyhow::Result<()> {
+            assert_eq!(params.option_id, "approve");
+            assert!(params.answer_value.is_none());
+            self.posts += 1;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_actions_fresh_read_then_open_values_or_fail_closed_without_post() {
+        for current in [Some(value_request(false)), Some(value_request(true)), None] {
+            let available = current.is_some();
+            let mut fake = FakeActivationRuntime {
+                current,
+                reads: 0,
+                opens: 0,
+                posts: 0,
+            };
+            let result = activation::activate(
+                &mut fake,
+                NotificationActivation::Submit {
+                    server_id: "server-1".into(),
+                    request_id: "request-1".into(),
+                    option_id: "approve".into(),
+                },
+            )
+            .await;
+            assert_eq!(result.is_ok(), available);
+            assert_eq!(fake.reads, 1);
+            assert_eq!(fake.opens, usize::from(available));
+            assert_eq!(fake.posts, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn ordinary_notification_still_submits_once_after_fresh_read() {
+        let mut fake = FakeActivationRuntime {
+            current: Some(request(vec![option("approve", OptionKind::Approve, false)])),
+            reads: 0,
+            opens: 0,
+            posts: 0,
+        };
+        activation::activate(
+            &mut fake,
+            NotificationActivation::Submit {
+                server_id: "server-1".into(),
+                request_id: "request-1".into(),
+                option_id: "approve".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!((fake.reads, fake.opens, fake.posts), (1, 0, 1));
     }
 
     #[test]

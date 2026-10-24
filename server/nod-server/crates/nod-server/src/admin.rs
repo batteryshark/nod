@@ -15,6 +15,10 @@ const ADMIN_HTML: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/admin.html"
 ));
+const ADMIN_EMOJI: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/admin-emoji-data.json"
+));
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct AdminSessionRequest {
@@ -58,6 +62,19 @@ pub(crate) async fn admin_page() -> Result<Response, ApiError> {
 // Hash the trusted template's inline script so release and live-development
 // assets share the same policy without permitting injected inline scripts.
 fn admin_html_response(html: String) -> Response {
+    // Data is bundled with the executable; no runtime CDN or extra CSP origin.
+    let html = html.replace("\"__NOD_EMOJI_DATA__\"", ADMIN_EMOJI.trim());
+    let notices = concat!(
+        include_str!("../../../assets/admin-emoji-NOTICE.txt"),
+        "\n\n",
+        include_str!("../../../assets/admin-emoji-LICENSE.txt"),
+        "\n\n",
+        include_str!("../../../assets/admin-emoji-UNICODE-LICENSE.txt")
+    );
+    let html = html.replace(
+        "__NOD_EMOJI_NOTICES__",
+        &notices.replace('&', "&amp;").replace('<', "&lt;"),
+    );
     let hashes = html
         .split("<script>")
         .skip(1)

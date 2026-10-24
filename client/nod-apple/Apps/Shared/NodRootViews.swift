@@ -10,17 +10,20 @@ struct NodRootView: View {
 
   var body: some View {
     Group {
-      if store.isRegistered {
-        #if os(iOS)
-          NodPhoneInbox()
-        #else
-          NodDesktopInbox()
-        #endif
-      } else {
-        NavigationStack {
-          RegistrationView()
-        }
+      #if os(macOS)
+      // Reserve the footer's intrinsic height outside the split view: a root
+      // safe-area inset can otherwise cover the detail's final answer option.
+      VStack(spacing: 0) {
+        inboxContent
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        if store.isRegistered { ConnectionStatusView() }
       }
+      #else
+      inboxContent
+        .safeAreaInset(edge: .bottom) {
+          if store.isRegistered { ConnectionStatusView() }
+        }
+      #endif
     }
     .task {
       #if os(macOS)
@@ -28,12 +31,13 @@ struct NodRootView: View {
       #endif
       if store.isRegistered {
         await store.refresh()
+        store.prepareAnswerStorage()
         store.connectSync()
       }
     }
     .onOpenURL { store.importEnrollmentLink($0) }
-    .safeAreaInset(edge: .bottom) {
-      if store.isRegistered { ConnectionStatusView() }
+    .onChange(of: store.isRegistered) { _, registered in
+      if registered { store.prepareAnswerStorage() }
     }
     .alert("Nod", isPresented: Binding(
       get: { store.alertMessage != nil },
@@ -49,6 +53,22 @@ struct NodRootView: View {
       Text(store.alertMessage ?? "")
     }
   }
+
+  private var inboxContent: some View {
+    Group {
+      if store.isRegistered {
+        #if os(iOS)
+          NodPhoneInbox()
+        #else
+          NodDesktopInbox()
+        #endif
+      } else {
+        NavigationStack {
+          RegistrationView()
+        }
+      }
+    }
+  }
 }
 
 #if os(iOS)
@@ -61,41 +81,55 @@ struct NodPhoneInbox: View {
   @State private var showingDevices = false
   @State private var path: [InboxRoute] = []
   @State private var handledNotificationOpenRequestId: UUID?
+  @State private var selectedTab = 0
 
   var body: some View {
-    NavigationStack(path: $path) {
-      List {
-        serversSection
-        channelsSection
-        appBuildSection
+    TabView(selection: $selectedTab) {
+      NavigationStack(path: $path) {
+        ChannelRequestsView(channelId: nil)
+          .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+              Menu(store.selectedServer?.name ?? "Server") {
+                ForEach(store.servers) { server in
+                  Button(server.name) { path = []; store.selectServer(server.id) }
+                }
+              }
+            }
+          }
+          .navigationDestination(for: InboxRoute.self) { route in
+            switch route {
+            case .all: ChannelRequestsView(channelId: nil)
+            case .channel(let channelId): ChannelRequestsView(channelId: channelId)
+            case .request(let requestId): RequestDetailContainer(requestId: requestId, explicitRead: true)
+            }
+          }
       }
-      .navigationTitle("Nod")
-      .toolbar {
-        ToolbarItemGroup(placement: .topBarTrailing) {
-          Button {
-            showingDevices = true
-          } label: {
-            Label("Devices", systemImage: "person.crop.circle")
+      .tabItem { Label("Inbox", systemImage: "tray") }.tag(0)
+      NavigationStack {
+        List { channelsSection }
+          .navigationTitle("Channels")
+          .navigationDestination(for: InboxRoute.self) { route in
+            switch route {
+            case .all: ChannelRequestsView(channelId: nil)
+            case .channel(let id): ChannelRequestsView(channelId: id)
+            case .request(let id): RequestDetailContainer(requestId: id, explicitRead: true)
+            }
           }
-          Button {
-            showingSubscriptions = true
-          } label: {
-            Label("Subscriptions", systemImage: "slider.horizontal.3")
+      }
+      .tabItem { Label("Channels", systemImage: "number") }.tag(1)
+      NavigationStack {
+        List {
+          serversSection
+          Section {
+            Button("Devices") { showingDevices = true }
+            Button("Subscriptions") { showingSubscriptions = true }
+            Button("Add Server") { showingRegistration = true }
           }
-          Button {
-            showingRegistration = true
-          } label: {
-            Label("Add Server", systemImage: "plus")
-          }
+          appBuildSection
         }
+        .navigationTitle("Settings")
       }
-      .navigationDestination(for: InboxRoute.self) { route in
-        switch route {
-        case .all: ChannelRequestsView(channelId: nil)
-        case .channel(let channelId): ChannelRequestsView(channelId: channelId)
-        case .request(let requestId): RequestDetailContainer(requestId: requestId)
-        }
-      }
+      .tabItem { Label("Settings", systemImage: "gearshape") }.tag(2)
     }
     .onAppear {
       applyNotificationOpenRequest(store.notificationOpenRequest)
@@ -131,7 +165,8 @@ struct NodPhoneInbox: View {
       return
     }
     handledNotificationOpenRequestId = request.id
-    path = [.channel(channelId)]
+    selectedTab = 0
+    path = []
     if let requestId = request.requestId { path.append(.request(requestId)) }
   }
 
@@ -139,6 +174,7 @@ struct NodPhoneInbox: View {
     Section("Servers") {
       ForEach(store.servers) { server in
         Button {
+          path = []
           store.selectServer(server.id)
         } label: {
           HStack {
@@ -208,8 +244,10 @@ struct NodDesktopInbox: View {
         showingSubscriptions: $showingSubscriptions,
         showingDevices: $showingDevices
       )
+      .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
     } content: {
       RequestListView()
+        .navigationSplitViewColumnWidth(min: 230, ideal: 320, max: 400)
     } detail: {
       RequestDetailContainer(requestId: store.selectedRequestId)
     }
@@ -294,7 +332,7 @@ struct NodSidebar: View {
     .toolbar {
       ToolbarItemGroup {
         Button {
-          Task { await store.refresh() }
+          Task { await store.refresh(); store.connectSync() }
         } label: {
           Label("Refresh", systemImage: "arrow.clockwise")
         }
@@ -397,11 +435,12 @@ struct ConnectionStatusView: View {
       Image(systemName: store.isSyncConnected ? "checkmark.circle" : "wifi.slash")
       VStack(alignment: .leading, spacing: 2) {
         Text(statusLabel).font(.caption.weight(.medium))
-        if let date = store.lastSyncedAt {
+        if !store.isSyncConnected, let date = store.lastSyncedAt {
           (Text("Last updated ") + Text(date, style: .relative)).font(.caption2).foregroundStyle(.secondary)
         }
       }
       Spacer()
+      #if os(iOS)
       Button { Task { await store.refresh(); store.connectSync() } } label: {
         if store.isRefreshing { ProgressView().controlSize(.small) }
         else { Label("Refresh", systemImage: "arrow.clockwise") }
@@ -409,6 +448,7 @@ struct ConnectionStatusView: View {
       .disabled(store.isRefreshing)
       .labelStyle(.iconOnly)
       .help("Refresh requests and retry connection")
+      #endif
     }
     .padding(.horizontal).padding(.vertical, 8)
     .background(.bar)

@@ -21,7 +21,7 @@ Optional environment:
   APP_STORE_CONNECT_API_PRIVATE_KEY  Raw .p8 contents, used if no key path is set
   NOD_APPLE_TEAM_ID                 Defaults to Y734633UDM
   NOD_IOS_BUNDLE_ID                 Defaults to com.batteryshark.Boop
-  NOD_MARKETING_VERSION             Defaults to 1.0
+  NOD_MARKETING_VERSION             Defaults to 1.1.0
   NOD_BUILD_NUMBER                  Defaults to UTC yyyymmddHHMM
   NOD_TESTFLIGHT_INTERNAL_ONLY      Defaults to true
   NOD_ARCHIVE_PATH                  Defaults under /private/tmp/nod-testflight
@@ -94,7 +94,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 
 TEAM_ID="${NOD_APPLE_TEAM_ID:-Y734633UDM}"
 BUNDLE_ID="${NOD_IOS_BUNDLE_ID:-com.batteryshark.Boop}"
-MARKETING_VERSION="${NOD_MARKETING_VERSION:-1.0}"
+MARKETING_VERSION="${NOD_MARKETING_VERSION:-1.1.0}"
 BUILD_NUMBER="${NOD_BUILD_NUMBER:-$(date -u +%Y%m%d%H%M)}"
 WORK_DIR="${NOD_TESTFLIGHT_WORK_DIR:-/private/tmp/nod-testflight}"
 DERIVED_DATA_PATH="${NOD_DERIVED_DATA_PATH:-$WORK_DIR/DerivedData}"

@@ -36,6 +36,8 @@ pub const UNCOMPRESSED_P256_PUBLIC_KEY_PREFIX: u8 = 4;
 /// Errors from canonicalization or P-256 signing/verification.
 #[derive(Debug, thiserror::Error)]
 pub enum SigningError {
+    #[error("invalid value signing input: {0}")]
+    InvalidValue(&'static str),
     #[error("request serialization failed: {0}")]
     Json(#[from] serde_json::Error),
     #[error("invalid signing private key")]
@@ -387,6 +389,7 @@ mod tests {
 
     fn canonical_request() -> Request {
         Request {
+            answer_field: None,
             id: "request-1".to_string(),
             request_id: "request-1".to_string(),
             channel_id: "deployments".to_string(),

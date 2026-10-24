@@ -15,6 +15,12 @@ use crate::{request::OptionKind, DECISION_SIGNING_ALGORITHM};
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionSignature {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::answer::deserialize_present"
+    )]
+    pub payload_version: Option<String>,
     pub key_id: String,
     #[serde(default = "default_signature_algorithm")]
     pub algorithm: String,
@@ -30,6 +36,8 @@ pub struct DecisionSignature {
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionSignatureRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_version: Option<String>,
     pub key_id: String,
     pub algorithm: String,
     pub nonce: String,
@@ -49,6 +57,8 @@ pub struct DecisionSignatureRecord {
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Decision {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_value: Option<crate::AnswerValue>,
     pub request_id: String,
     pub option_id: String,
     pub option_kind: OptionKind,
@@ -78,6 +88,12 @@ pub struct UserDecision {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubmitDecisionRequest {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::answer::deserialize_present"
+    )]
+    pub answer_value: Option<crate::AnswerValue>,
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]

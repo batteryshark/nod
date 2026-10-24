@@ -6,10 +6,7 @@ struct ChannelRequestsView: View {
   let channelId: String?
   @State private var showingHistory = false
   @State private var searchText = ""
-  @State private var pendingOnly = false
-  @State private var pendingRequestsExpanded = true
-  @State private var handledRequestsExpanded = false
-  @State private var initializedSectionExpansion = false
+  @State private var pendingOnly = true
 
   var body: some View {
     Group {
@@ -32,26 +29,19 @@ struct ChannelRequestsView: View {
     }
     .searchable(text: $searchText, prompt: "Search requests")
     .toolbar {
-      Toggle("Pending only", isOn: $pendingOnly)
-      Button("Search History") { showingHistory = true }
+      Button("Search history…") { store.answerReceipt = nil; showingHistory = true }
     }
-    .sheet(isPresented: $showingHistory) { RequestHistorySheet(channelId: store.selectedChannelId) }
+    .safeAreaInset(edge: .top) {
+      Picker("Requests", selection: $pendingOnly) {
+        Text("Pending").tag(true)
+        Text("Handled").tag(false)
+      }.pickerStyle(.segmented).padding()
+    }
+    .sheet(isPresented: $showingHistory) { RequestHistorySheet(channelId: channelId) }
     .navigationTitle(channelName)
     .task {
       if store.selectedChannelId != channelId {
         store.selectedChannelId = channelId
-      }
-    }
-    .onAppear {
-      initializeSectionExpansionIfNeeded()
-    }
-    .onChange(of: channelRequests.isEmpty) {
-      initializeSectionExpansionIfNeeded()
-    }
-    .onChange(of: pendingRequests.isEmpty) { _, hasNoPendingRequests in
-      initializeSectionExpansionIfNeeded()
-      if hasNoPendingRequests {
-        handledRequestsExpanded = true
       }
     }
   }
@@ -61,15 +51,15 @@ struct ChannelRequestsView: View {
   }
 
   private var pendingRequests: [NodRequest] {
-    channelRequests.filter { $0.status == .pending && matchesSearch($0, query: searchText) }
+    pendingOnly ? channelRequests.filter { store.needsAnswer($0) && matchesSearch($0, query: searchText) } : []
   }
 
   private var handledRequests: [NodRequest] {
-    pendingOnly ? [] : channelRequests.filter { $0.status != .pending && matchesSearch($0, query: searchText) }
+    pendingOnly ? [] : channelRequests.filter { !store.needsAnswer($0) && matchesSearch($0, query: searchText) }
   }
 
   private var channelName: String {
-    store.channels.first(where: { $0.id == channelId })?.name ?? "All requests"
+    store.channels.first(where: { $0.id == channelId })?.name ?? "Inbox"
   }
 
   @ViewBuilder
@@ -77,44 +67,13 @@ struct ChannelRequestsView: View {
     @ViewBuilder rowContent: @escaping (NodRequest) -> RowContent
   ) -> some View {
     if !pendingRequests.isEmpty {
-      Section {
-        if pendingRequestsExpanded {
-          ForEach(pendingRequests) { request in
-            rowContent(request)
-          }
-        }
-      } header: {
-        RequestSectionHeader(
-          title: "Pending",
-          count: pendingRequests.count,
-          isExpanded: $pendingRequestsExpanded
-        )
-      }
+      Section("Pending · \(pendingRequests.count)") { ForEach(pendingRequests) { rowContent($0) } }
     }
     if !handledRequests.isEmpty {
-      Section {
-        if handledRequestsExpanded {
-          ForEach(handledRequests) { request in
-            rowContent(request)
-          }
-        }
-      } header: {
-        RequestSectionHeader(
-          title: "Handled",
-          count: handledRequests.count,
-          isExpanded: $handledRequestsExpanded
-        )
-      }
+      Section("Handled · \(handledRequests.count)") { ForEach(handledRequests) { rowContent($0) } }
     }
   }
 
-  private func initializeSectionExpansionIfNeeded() {
-    guard !initializedSectionExpansion, !channelRequests.isEmpty else {
-      return
-    }
-    handledRequestsExpanded = pendingRequests.isEmpty
-    initializedSectionExpansion = true
-  }
 }
 
 struct RequestListView: View {
@@ -124,7 +83,11 @@ struct RequestListView: View {
   private var searchText: String { store.macSearchText }
   private var pendingOnly: Bool { store.macPendingOnly }
   private var searchBinding: Binding<String> {
-    Binding(get: { searchText }, set: { store.setMacInboxFilter(pendingOnly: pendingOnly, searchText: $0) })
+    Binding(get: { searchText }, set: {
+      let handled = store.macHandledOnly
+      store.setMacInboxFilter(pendingOnly: pendingOnly, searchText: $0)
+      if handled { store.setMacInboxMode(handled: true) }
+    })
   }
   private var pendingBinding: Binding<Bool> {
     Binding(get: { pendingOnly }, set: { store.setMacInboxFilter(pendingOnly: $0, searchText: searchText) })
@@ -135,9 +98,6 @@ struct RequestListView: View {
   private var searchBinding: Binding<String> { $searchText }
   private var pendingBinding: Binding<Bool> { $pendingOnly }
   #endif
-  @State private var pendingRequestsExpanded = true
-  @State private var handledRequestsExpanded = false
-  @State private var initializedSectionExpansion = false
 
   var body: some View {
     Group {
@@ -165,8 +125,16 @@ struct RequestListView: View {
     }
     .searchable(text: searchBinding, prompt: "Search requests")
     .toolbar {
+      #if os(macOS)
+      Picker("Requests", selection: Binding(get: { store.macHandledOnly }, set: { store.setMacInboxMode(handled: $0) })) {
+        Text("Pending").tag(false)
+        Text("Handled").tag(true)
+      }.pickerStyle(.segmented)
+      #else
       Toggle("Pending only", isOn: pendingBinding)
+      #endif
       Button("Search History") {
+        store.answerReceipt = nil
         #if os(macOS)
         store.leaveExplicitRead()
         #endif
@@ -176,31 +144,10 @@ struct RequestListView: View {
     .sheet(isPresented: $showingHistory) { RequestHistorySheet(channelId: store.selectedChannelId) }
     .navigationTitle(selectedChannelName)
     .onAppear {
-      initializeSectionExpansionIfNeeded()
+      #if os(macOS)
+      store.initializeMacInboxUI()
+      #endif
     }
-    .onChange(of: store.requests.isEmpty) {
-      initializeSectionExpansionIfNeeded()
-    }
-    .onChange(of: pendingRequests.isEmpty) { _, hasNoPendingRequests in
-      initializeSectionExpansionIfNeeded()
-      if hasNoPendingRequests {
-        handledRequestsExpanded = true
-      }
-    }
-    .onChange(of: store.selectedChannelId) {
-      pendingRequestsExpanded = true
-      handledRequestsExpanded = false
-      initializedSectionExpansion = false
-      initializeSectionExpansionIfNeeded()
-    }
-    #if !os(macOS)
-    .onChange(of: store.selectedRequestId) { _, requestId in
-      guard store.acknowledgeOnOpen,
-        let request = store.requests.first(where: { $0.id == requestId }),
-        request.status == .pending, request.options.isEmpty else { return }
-      Task { await store.dismissIfInformational(request: request) }
-    }
-    #endif
   }
 
   private var selectedChannelName: String {
@@ -208,11 +155,19 @@ struct RequestListView: View {
   }
 
   private var pendingRequests: [NodRequest] {
-    NodRequestInbox.newestFirst(store.requests.filter { $0.status == .pending && matchesSearch($0, query: searchText) })
+    NodRequestInbox.newestFirst(inboxRequests.filter { store.needsAnswer($0) && matchesSearch($0, query: searchText) })
   }
 
   private var handledRequests: [NodRequest] {
-    pendingOnly ? [] : NodRequestInbox.newestFirst(store.requests.filter { $0.status != .pending && matchesSearch($0, query: searchText) })
+    pendingOnly ? [] : NodRequestInbox.newestFirst(inboxRequests.filter { !store.needsAnswer($0) && matchesSearch($0, query: searchText) })
+  }
+
+  private var inboxRequests: [NodRequest] {
+    #if os(macOS)
+    store.macInboxRequests
+    #else
+    store.requests
+    #endif
   }
 
   @ViewBuilder
@@ -220,61 +175,62 @@ struct RequestListView: View {
     @ViewBuilder rowContent: @escaping (NodRequest) -> RowContent
   ) -> some View {
     if !pendingRequests.isEmpty {
-      Section {
-        if pendingRequestsExpanded {
-          ForEach(pendingRequests) { request in
-            rowContent(request)
-          }
-        }
-      } header: {
-        RequestSectionHeader(
-          title: "Pending",
-          count: pendingRequests.count,
-          isExpanded: $pendingRequestsExpanded
-        )
-      }
+      Section("Pending · \(pendingRequests.count)") { ForEach(pendingRequests) { rowContent($0) } }
     }
     if !handledRequests.isEmpty {
-      Section {
-        if handledRequestsExpanded {
-          ForEach(handledRequests) { request in
-            rowContent(request)
-          }
-        }
-      } header: {
-        RequestSectionHeader(
-          title: "Handled",
-          count: handledRequests.count,
-          isExpanded: $handledRequestsExpanded
-        )
-      }
+      Section("Handled · \(handledRequests.count)") { ForEach(handledRequests) { rowContent($0) } }
     }
   }
 
-  private func initializeSectionExpansionIfNeeded() {
-    guard !initializedSectionExpansion, !store.requests.isEmpty else {
-      return
-    }
-    handledRequestsExpanded = pendingRequests.isEmpty
-    initializedSectionExpansion = true
-  }
 }
 
 struct RequestDetailContainer: View {
   @EnvironmentObject private var store: NodStore
   let requestId: String?
   var explicitRead = false
+  @State private var nextRequestId: String?
 
   var body: some View {
-    if let request = request {
-      RequestDetail(request: request, explicitRead: explicitRead)
+    if let receipt = store.answerReceipt, receipt.serverId == store.selectedServerId,
+      requestId == nil || receipt.request.id == (nextRequestId ?? requestId) {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 16) {
+          Text(store.selectedServer?.name ?? "Nod").font(.caption).foregroundStyle(.secondary)
+          Text(receipt.request.title).font(.title2.bold())
+          Text(receipt.request.decisionResolution == .shared ? "Shared decision" : "Your answer")
+          if let decision = receipt.decision { RequestDecisionView(decision: decision, field: receipt.request.answerField) }
+          else { StatusBadge(request: receipt.request) }
+          if receipt.request.decisionResolution == .perUser && receipt.request.status == .pending {
+            Text("Waiting for other recipients")
+          }
+          nextButton
+        }.padding().frame(maxWidth: .infinity, alignment: .leading)
+      }
+    } else if requestId == nil,
+      let attempt = store.answerAttempts.values.first(where: { $0.serverId == store.selectedServerId }) {
+      if let context = store.answerContext, context.id == attempt.key {
+        RequestDetail(request: context.request, serverId: context.serverId)
+      } else {
+        VStack(spacing: 16) {
+          Text(attempt.requestTitle ?? attempt.requestId).font(.headline)
+          Text("Could not confirm \(attempt.optionLabel)")
+          if let value = attempt.answerValue { Text(value.string) }
+          Button("Check status") { Task { await store.checkAnswerStatus(requestId: attempt.requestId, serverId: attempt.serverId) } }
+            .disabled(attempt.isSubmitting)
+        }.padding()
+      }
+    } else if let request = request {
+      RequestDetail(request: request, explicitRead: explicitRead || nextRequestId != nil)
+        .toolbar {
+          if store.answerAttempt(requestId: request.id) == nil { nextButton }
+        }
     } else {
       ContentUnavailableView("Select a Request", systemImage: "rectangle.stack.badge.person.crop")
     }
   }
 
   private var request: NodRequest? {
-    guard let requestId else {
+    guard let requestId = nextRequestId ?? requestId else {
       return nil
     }
     #if os(macOS)
@@ -282,6 +238,29 @@ struct RequestDetailContainer: View {
     #else
     return store.requests.first(where: { $0.id == requestId })
     #endif
+  }
+
+  private var nextPending: [NodRequest] {
+    #if os(macOS)
+    store.macNextPending(excluding: nextRequestId ?? requestId)
+    #else
+    NodRequestInbox.newestFirst(store.requests.filter {
+      $0.status == .pending && $0.id != (nextRequestId ?? requestId) && store.recordedAnswer(in: $0) == nil
+    })
+    #endif
+  }
+
+  private var nextButton: some View {
+    Button("Next pending · \(nextPending.count)") {
+      #if os(macOS)
+      store.selectNextMacPending(excluding: nextRequestId ?? requestId)
+      #else
+      store.answerReceipt = nil
+      nextRequestId = nextPending.first?.id
+      #endif
+    }
+    .disabled(nextPending.isEmpty)
+    .keyboardShortcut("j", modifiers: [.command, .shift])
   }
 }
 
@@ -320,6 +299,7 @@ struct ChannelRow: View {
 }
 
 struct RequestRow: View {
+  @EnvironmentObject private var store: NodStore
   let request: NodRequest
 
   var body: some View {
@@ -329,9 +309,13 @@ struct RequestRow: View {
           .font(.headline)
           .lineLimit(2)
           .frame(maxWidth: .infinity, alignment: .leading)
-        StatusBadge(request: request)
-          .fixedSize()
-          .layoutPriority(1)
+        if request.decisionResolution == .perUser && store.recordedAnswer(in: request) != nil {
+          Text("Your answer recorded").font(.caption).foregroundStyle(.secondary)
+        } else {
+          StatusBadge(request: request)
+            .fixedSize()
+            .layoutPriority(1)
+        }
       }
       Text(request.summary)
         .font(.subheadline)

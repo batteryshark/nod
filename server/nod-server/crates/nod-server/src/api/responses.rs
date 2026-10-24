@@ -101,6 +101,16 @@ pub(super) struct RequestsResponse {
 }
 
 impl RequestsResponse {
+    pub(super) fn contract(mut self, capable: bool) -> Self {
+        if !capable {
+            self.requests = self
+                .requests
+                .into_iter()
+                .map(nod_proto::Request::legacy_value_projection)
+                .collect();
+        }
+        self
+    }
     pub(super) fn from_page(requests: Vec<DecisionRequest>, next_cursor: Option<String>) -> Self {
         Self {
             requests: requests.iter().map(DecisionRequest::to_wire).collect(),
@@ -115,6 +125,12 @@ pub(super) struct RequestResponse {
 }
 
 impl RequestResponse {
+    pub(super) fn contract(mut self, capable: bool) -> Self {
+        if !capable {
+            self.request = self.request.legacy_value_projection();
+        }
+        self
+    }
     pub(super) fn from_request(request: &DecisionRequest) -> Self {
         Self {
             request: request.to_wire(),

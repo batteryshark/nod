@@ -15,6 +15,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) publisher_health: crate::services::lifecycle_publish::PublisherHealth,
     pub(crate) config: Arc<Config>,
     pub(crate) pool: SqlitePool,
     pub(crate) audit: AuditLogger,
@@ -23,7 +24,6 @@ pub struct AppState {
     pub(crate) notification_delivery: NotificationDelivery,
     pub(crate) push_route: Option<PushRoute>,
     pub(crate) http: Client,
-    pub(crate) callback_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -33,6 +33,7 @@ impl AppState {
         let built_push = build_push_registry(&config.notifications)?;
         let notification_delivery = notification_delivery_for_route(built_push.route);
         let state = Self {
+            publisher_health: Default::default(),
             config: Arc::new(config),
             pool,
             audit,
@@ -44,10 +45,11 @@ impl AppState {
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(10))
                 .build()?,
-            callback_slots: Arc::new(tokio::sync::Semaphore::new(16)),
         };
         state.spawn_maintenance();
         crate::services::push_delivery::spawn_worker(state.clone());
+        crate::services::lifecycle_publish::spawn_worker(state.clone());
+        crate::services::callback_delivery::spawn_worker(state.clone());
         Ok(state)
     }
 

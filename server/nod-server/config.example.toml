@@ -5,6 +5,27 @@ database_url = "sqlite://.nod/nod.sqlite"
 data_dir = ".nod"
 retention_days = 90
 
+# Omit for trusted-issuer unrestricted HTTP(S); [] disables callbacks.
+# Revalidated each attempt; restart after changes. Not DNS/SSRF isolation.
+# callback_allowed_origins = ["https://automation.example.com"]
+
+# Optional, default-off lifecycle publisher. No stream administration.
+# Set URL plus exactly one authentication file. Mount read-only, mode 0600.
+# No raw broker secrets in TOML/env/URL userinfo. Env overrides:
+# NOD_NATS_URL, NOD_NATS_CREDENTIALS_FILE, NOD_NATS_TOKEN_FILE,
+# NOD_NATS_EXPECTED_STREAM.
+# [integrations.nats]
+# url = "tls://broker.example.com:4222"
+# expected_stream = "TOWER"
+# credentials_file = "/secrets/nod.creds"
+# OR replace credentials_file with a raw token file (no JWT rebuild):
+# token_file = "/secrets/nod.token"
+# Alternatively, exclusive username/password-file authentication:
+# user = "nod"
+# password_file = "/secrets/nod.password"
+# inbox_prefix = "_INBOX_nod"
+# Token: nonempty, no whitespace/controls except optional final LF/CRLF.
+
 [notifications.apns_relay]
 url = ""
 native_app_id = ""

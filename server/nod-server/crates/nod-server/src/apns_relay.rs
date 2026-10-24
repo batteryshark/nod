@@ -319,6 +319,7 @@ mod tests {
     fn apns_request() -> DecisionRequest {
         let now = Utc::now();
         DecisionRequest {
+            answer_field: None,
             id: "request-1".to_string(),
             channel_id: "default".to_string(),
             recipients: vec!["owner".to_string()],

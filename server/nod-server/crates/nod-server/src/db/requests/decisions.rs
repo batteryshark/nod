@@ -31,6 +31,53 @@ pub async fn record_decision(
     let submitted_decision = submission.decision;
     let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
     let request = get_request_on(&mut transaction, request_id).await?;
+    if let Some(field) = &request.answer_field {
+        if option_id == "__nod_value_open"
+            || actor_device.is_none()
+            || actor_user_id != actor_device.map(|d| d.user_id.as_str())
+        {
+            return Err(ApiError::BadRequest(
+                "value decisions require an authenticated keyed device and real outcome".into(),
+            ));
+        }
+        field
+            .validate()
+            .map_err(|e| ApiError::BadRequest(e.into()))?;
+        field
+            .validate_value(
+                submitted_decision
+                    .answer_value
+                    .as_ref()
+                    .ok_or_else(|| ApiError::BadRequest("explicit answer_value required".into()))?,
+            )
+            .map_err(|e| ApiError::BadRequest(e.into()))?;
+        if submitted_decision
+            .text
+            .as_deref()
+            .is_some_and(|v| v.trim().len() > 16384)
+        {
+            return Err(ApiError::BadRequest("notes exceed 16384 bytes".into()));
+        }
+        if submitted_decision
+            .signature
+            .as_ref()
+            .and_then(|s| s.payload_version.as_deref())
+            != Some(nod_proto::value_signing::VALUE_DECISION_PAYLOAD_VERSION)
+        {
+            return Err(ApiError::BadRequest(
+                "nod-decision-v2 signature required".into(),
+            ));
+        }
+    } else if submitted_decision.answer_value.is_some()
+        || submitted_decision
+            .signature
+            .as_ref()
+            .is_some_and(|s| s.payload_version.is_some())
+    {
+        return Err(ApiError::BadRequest(
+            "ordinary request does not accept value payload".into(),
+        ));
+    }
     if let Some(device) = actor_device {
         let active: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM devices WHERE id = ? AND revoked_at IS NULL)",
@@ -85,9 +132,11 @@ pub async fn record_decision(
         actor_device,
         text.as_deref(),
         submitted_decision.signature.as_ref(),
+        submitted_decision.answer_value.as_ref(),
     )
     .await?;
     let decision = Decision {
+        answer_value: submitted_decision.answer_value,
         request_id: request_id.to_string(),
         option_id: option.id.clone(),
         option_kind: option.kind.clone(),
@@ -160,6 +209,13 @@ pub async fn record_decision(
         }
 
         let resolved = get_request_on(&mut transaction, request_id).await?;
+        crate::db::lifecycle::append_lifecycle_on(
+            &mut transaction,
+            &resolved,
+            "nod.answer.recorded",
+            Some(&decision),
+        )
+        .await?;
         transaction.commit().await?;
         return Ok(resolved);
     }
@@ -190,6 +246,13 @@ pub async fn record_decision(
     }
 
     let resolved = get_request_on(&mut transaction, request_id).await?;
+    crate::db::lifecycle::append_lifecycle_on(
+        &mut transaction,
+        &resolved,
+        "nod.answer.recorded",
+        Some(&decision),
+    )
+    .await?;
     transaction.commit().await?;
     Ok(resolved)
 }
@@ -201,6 +264,7 @@ async fn verified_decision_signature(
     actor_device: Option<&Device>,
     text: Option<&str>,
     provided: Option<&crate::models::SubmitDecisionSignature>,
+    answer_value: Option<&nod_proto::AnswerValue>,
 ) -> Result<Option<DecisionSignatureRecord>, ApiError> {
     let Some(actor_device) = actor_device else {
         if provided.is_some() {
@@ -224,8 +288,14 @@ async fn verified_decision_signature(
         return Ok(None);
     };
 
-    let (request_digest, signing_payload) =
-        signing::verify_decision_signature(request, option, actor_device, text, provided)?;
+    let (request_digest, signing_payload) = signing::verify_value_decision_signature(
+        request,
+        option,
+        actor_device,
+        text,
+        provided,
+        answer_value,
+    )?;
     // Record the nonce after verification so invalid attempts cannot burn a valid nonce.
     insert_decision_nonce(
         connection,
@@ -235,6 +305,7 @@ async fn verified_decision_signature(
     )
     .await?;
     Ok(Some(DecisionSignatureRecord {
+        payload_version: provided.payload_version.clone(),
         key_id: provided.key_id.clone(),
         algorithm: provided.algorithm.clone(),
         nonce: provided.nonce.clone(),
@@ -307,6 +378,19 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(ApiError::Conflict(_))));
+        sqlx::raw_sql("CREATE TRIGGER fail_expiry BEFORE INSERT ON lifecycle_events WHEN NEW.kind='nod.request.expired' BEGIN SELECT RAISE(ABORT,'injected'); END;")
+            .execute(&pool).await.unwrap();
+        assert!(crate::db::expire_due_requests(&pool).await.is_err());
+        let status: String = sqlx::query_scalar("SELECT status FROM requests WHERE id=?")
+            .bind(&created.request_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "pending");
+        sqlx::query("DROP TRIGGER fail_expiry")
+            .execute(&pool)
+            .await
+            .unwrap();
         let expired = crate::db::expire_due_requests(&pool).await.unwrap();
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].id, created.request_id);

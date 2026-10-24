@@ -22,6 +22,9 @@ pub struct NodApi {
 }
 
 impl NodApi {
+    pub fn new(base_url: &str, token: Option<String>) -> Result<Self> {
+        Self::with_client(base_url, token, Self::http_client()?)
+    }
     pub(crate) fn http_client() -> Result<Client> {
         Ok(Client::builder().timeout(API_REQUEST_TIMEOUT).build()?)
     }
@@ -169,6 +172,8 @@ impl NodApi {
         #[derive(Serialize)]
         struct Body<'a> {
             #[serde(skip_serializing_if = "Option::is_none")]
+            answer_value: Option<&'a nod_proto::AnswerValue>,
+            #[serde(skip_serializing_if = "Option::is_none")]
             text: Option<&'a str>,
             #[serde(skip_serializing_if = "Option::is_none")]
             signature: Option<&'a DecisionSignature>,
@@ -182,6 +187,7 @@ impl NodApi {
                 Method::POST,
                 &path,
                 &Body {
+                    answer_value: request.answer_value,
                     text: request.text,
                     signature: request.signature,
                 },
@@ -282,7 +288,10 @@ impl NodApi {
         let url = self.url(spec.path).map_err(|_| {
             ApiStatusError::failure(&spec.method, spec.path, 1, "invalid server address")
         })?;
-        let mut request = self.client.request(spec.method.clone(), url);
+        let mut request = self
+            .client
+            .request(spec.method.clone(), url)
+            .header("Nod-Request-Contract", "single-value-v1");
         if let Some(body) = spec.body {
             request = request.json(body);
         }
@@ -403,6 +412,7 @@ pub struct EnrollDeviceRequest<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SubmitOptionRequest<'a> {
+    pub answer_value: Option<&'a nod_proto::AnswerValue>,
     pub request_id: &'a str,
     pub option_id: &'a str,
     pub text: Option<&'a str>,

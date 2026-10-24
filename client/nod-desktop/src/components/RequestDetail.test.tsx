@@ -69,6 +69,39 @@ function pendingRequest(options: RequestOption[]): NodRequest {
 }
 
 describe("RequestDetail notes", () => {
+  it.each(["schema", "placeholder", "v3", "empty"])("keeps %s value cards visible without any decision action", (mode) => {
+    const request = pendingRequest(mode === "empty" ? [] : [approve, reject]);
+    if (mode === "schema" || mode === "empty") request.answer_field = { kind: "number", label: "Count", default: { kind: "number", decimal: "4" } };
+    if (mode === "placeholder") request.options = [{ ...approve, id: "__nod_value_open", label: "Open in app", kind: "custom" }];
+    if (mode === "v3") request.signing = { version: "nod-request-v3", request_digest: "digest", recipients_commitment: "c" };
+    const onOption = vi.fn();
+    const onOpenUrl = vi.fn();
+    render(<RequestDetail request={request} onOption={onOption} onOpenUrl={onOpenUrl} />);
+    expect(screen.getByText(/updated iOS or macOS Nod app/)).toBeVisible();
+    expect(screen.getByText("pending")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Approve|Reject|Dismiss|Open in app/ })).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(onOption).not.toHaveBeenCalled();
+    expect(onOpenUrl).not.toHaveBeenCalled();
+  });
+
+  it("renders only the actual receipt value and notes as escaped text, never the default", () => {
+    const request = pendingRequest([]);
+    request.status = "resolved";
+    request.answer_field = { kind: "choice", label: "Size", choices: [{ id: "default", label: "Default" }], default: { kind: "choice", choice_id: "default" } };
+    request.decision = { request_id: request.id, option_id: "approve", option_kind: "approve", option_label: "Approved", resolved_at: request.updated_at, text: "<script>notes</script>", answer_value: { kind: "choice", choice_id: "<img src=x onerror=alert(1)>" } };
+    const props = { onOption: vi.fn(), onOpenUrl: vi.fn() };
+    const view = render(<RequestDetail request={request} {...props} />);
+    expect(screen.getByText(/Selected value:/)).toHaveTextContent("<img src=x onerror=alert(1)>");
+    expect(screen.getByText("<script>notes</script>")).toBeVisible();
+    expect(view.container.querySelector("script, img")).toBeNull();
+    expect(screen.queryByText("default")).toBeNull();
+    delete request.decision.answer_value;
+    view.rerender(<RequestDetail request={{ ...request }} {...props} />);
+    expect(screen.queryByText(/Selected value:/)).toBeNull();
+    expect(screen.getByText("No verified signature receipt")).toBeVisible();
+  });
+
   it("sends the shared notes with whichever option is clicked", async () => {
     const onOption = vi.fn().mockResolvedValue(true);
     render(

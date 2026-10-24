@@ -156,7 +156,7 @@ public final class NodNotificationController: NSObject, UNUserNotificationCenter
 
     nonisolated static func actions(for request: NodRequest) -> [UNNotificationAction] {
         let open = UNNotificationAction(identifier: "open", title: "Open Nod", options: [.foreground])
-        guard !request.notification.redact, !request.options.isEmpty, request.options.count <= 3 else { return [open] }
+        guard !request.isValueRequest, !request.notification.redact, !request.options.isEmpty, request.options.count <= 3 else { return [open] }
         let actions: [UNNotificationAction] = request.options.map { option in
             var flags: UNNotificationActionOptions = [.authenticationRequired]
             if option.destructive { flags.insert(.destructive) }

@@ -24,7 +24,7 @@ This service lives under `server/nod-server` in the Nod monorepo. The native App
 Designed to run behind a private tunnel (Tailscale Serve, etc.) — never expose it directly to the public internet.
 
 Issuer read and wait endpoints are authoritative for automation results. A
-request `callback_url` receives an unsigned, best-effort POST after a recorded
+request `callback_url` receives an unsigned, durably queued POST after an accepted
 decision and should only be used as a wake-up hint; callback receivers must not
 act on the webhook body without reading or waiting for the decision through
 Nod's authenticated API.
@@ -70,10 +70,10 @@ and `NOD_APNS_RELAY_CA_CERT_PATH_FILE`.
 ## Docker
 
 Build and run the production image directly when you want a small personal
-instance without Compose. From `server/nod-server/`:
+instance without Compose. From the repository root:
 
 ```bash
-docker build -t nod-server:local .
+docker build -f server/nod-server/Dockerfile -t nod-server:local .
 docker volume create nod-data
 export NOD_ADMIN_TOKEN="$(openssl rand -base64 48)"
 printf 'NOD_ADMIN_TOKEN=%s\n' "$NOD_ADMIN_TOKEN"
@@ -83,6 +83,13 @@ docker run -d --name nod --restart unless-stopped \
   -v nod-data:/data \
   nod-server:local
 ```
+
+For upgrades, build from a clean committed context and retain an immutable old
+image plus a matching stopped full-volume/config backup. Preserve your actual
+Compose overrides, binding, mounts and APNs identity; do not replace them with
+these fresh-install defaults. The wrapper initializes secret/default files even
+for `config` or `ps`; it is not a read-only inspection tool. See the
+[upgrade procedure](../../docs/deploy.md#reliable-edge-upgrade-and-rollback).
 
 The image stores SQLite data and audit logs under `/data`, runs as an
 unprivileged user, and includes a `/health` Docker healthcheck.
@@ -285,12 +292,26 @@ at a time, and retry transient failures up to three total attempts. Admin
 Activity shows delivery status and audit health. Audit files rotate at 16 MiB
 and archives remain until an operator removes them.
 
-Callbacks run after commit, with a ten-second timeout, no redirects, bounded
-failure bodies, and at most sixteen concurrent callbacks. Configure
+Callbacks are atomically queued on accepted answers only, preserving the exact
+legacy cumulative payload. Leased workers run after commit, with a ten-second
+outer timeout including bounded response reading, no redirects, and at most
+sixteen concurrent callbacks. All failures retry without an attempt-ceiling
+discard; strict per-request revision order can hold later jobs behind a failure.
+Durably deduplicate `Nod-Delivery-Id` at the receiver; event/revision headers aid
+reconciliation but do not make remote side effects exactly-once. Configure
 `callback_allowed_origins` in TOML or `NOD_CALLBACK_ALLOWED_ORIGINS` to restrict
 exact HTTP(S) origins; `[]` disables callbacks and omission retains the existing
-trusted-issuer policy. Callbacks remain best effort; reconcile through the
-read/wait API.
+trusted-issuer policy. Each attempt revalidates current process policy (restart
+to change config); blocked work is retained for periodic revalidation. This is
+not DNS/SSRF isolation. Reconcile through the authenticated read/wait or event
+detail API.
+
+Optional NATS lifecycle publication is default-off and independent of startup,
+HTTP, callbacks and push. It uses a retained SQLite journal, stable message IDs
+and expected-stream PubAck, with at-least-once transport rather than indefinite
+broker dedupe. Nod does not administer streams or accept broker approvals.
+Only the server needs broker credentials. See
+[configuration and operating duties](../../docs/deploy.md#optional-lifecycle-publication).
 
 See the [API contract](docs/API.md) for request idempotency, private signatures,
 history, per-device alert controls, and Activity fields. The

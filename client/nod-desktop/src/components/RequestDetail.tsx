@@ -2,7 +2,7 @@ import { Check, Copy, ExternalLink, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { RequestImage } from "./RequestImage";
 import Markdown from "react-markdown";
-import { decisionActions, optionRequiresText, safeWebUrl } from "../domain";
+import { decisionActions, isValueUnsupported, receiptValue, VALUE_UNSUPPORTED_INSTRUCTION, optionRequiresText, safeWebUrl } from "../domain";
 import type { NodRequest, RequestOption } from "../types";
 
 interface RequestDetailProps {
@@ -51,7 +51,7 @@ export function RequestDetail({
       : [];
 
   async function submit(option: RequestOption): Promise<void> {
-    if (!request || inFlight.current) return;
+    if (!request || isValueUnsupported(request) || inFlight.current) return;
     inFlight.current = true;
     setBusy(key);
     setFeedback("");
@@ -178,6 +178,7 @@ export function RequestDetail({
       </div>
       {request.status === "pending" ? (
         <div className="options">
+          {isValueUnsupported(request) ? <p role="note">{VALUE_UNSUPPORTED_INSTRUCTION}</p> : null}
           <div className="optionButtons">
             {actions.map(({ option }) => {
               const reject =
@@ -226,6 +227,7 @@ export function RequestDetail({
       {decisions.map((decision, index) => (
         <section className="receipt" key={`${index}:${decision.resolved_at}`}>
           <h3>{decision.option_label}</h3>
+          {decision.answer_value ? <p>Selected value: {receiptValue(decision.answer_value)}</p> : null}
           <p>{decision.text}</p>
           <small>
             {new Date(decision.resolved_at).toLocaleString()} ·{" "}

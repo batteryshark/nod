@@ -159,6 +159,12 @@ impl From<&str> for DecisionResolution {
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::answer::deserialize_present"
+    )]
+    pub answer_field: Option<crate::AnswerField>,
     pub id: String,
     pub request_id: String,
     pub channel_id: String,
@@ -221,6 +227,12 @@ pub struct RequestSigningContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateDecisionRequest {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::answer::deserialize_present"
+    )]
+    pub answer_field: Option<crate::AnswerField>,
     #[serde(default = "default_channel")]
     pub channel_id: String,
     #[serde(default)]
@@ -264,4 +276,35 @@ fn default_decision_resolution() -> DecisionResolution {
 
 fn default_channel() -> String {
     "default".to_string()
+}
+
+impl Request {
+    /// Delivery-only unsupported-client projection, never a stored outcome.
+    pub fn legacy_value_projection(mut self) -> Self {
+        if self.answer_field.is_none() {
+            return self;
+        }
+        self.answer_field = None;
+        self.summary = "Open in an updated Nod app to answer this request.".into();
+        self.body_markdown = self.summary.clone();
+        self.fields.clear();
+        self.links.clear();
+        self.image_url = None;
+        self.notification = RequestNotification::default();
+        self.decision = None;
+        self.decisions.clear();
+        self.callback_url = None;
+        self.request_digest = None;
+        self.options = vec![RequestOption {
+            id: "__nod_value_open".into(),
+            label: "Open in app".into(),
+            kind: OptionKind::Custom,
+            style: "default".into(),
+            requires_text: false,
+            text_placeholder: None,
+            destructive: false,
+            foreground: true,
+        }];
+        self
+    }
 }

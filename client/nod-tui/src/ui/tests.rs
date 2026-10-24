@@ -11,6 +11,33 @@ fn renders_registered_main_screen() {
 }
 
 #[test]
+fn value_picker_default_and_changed_choice_are_visible() {
+    let mut state = client_state();
+    let card = &mut state.requests[0];
+    card.answer_field = Some(nod_proto::AnswerField::Choice {
+        label: "Batch".into(),
+        choices: vec![
+            nod_proto::AnswerChoice {
+                id: "small".into(),
+                label: "Small".into(),
+            },
+            nod_proto::AnswerChoice {
+                id: "large".into(),
+                label: "Large".into(),
+            },
+        ],
+        default: nod_proto::AnswerValue::Choice {
+            choice_id: "small".into(),
+        },
+    });
+    let mut app = AppState::new(state);
+    let initial = render_app(&app);
+    assert!(initial.contains("Batch") && initial.contains("● Small"));
+    app.handle_key(key(KeyCode::Char('v')));
+    assert!(render_app(&app).contains("● Large"));
+}
+
+#[test]
 fn renders_enrollment_screen() {
     let mut state = client_state();
     state.is_registered = false;

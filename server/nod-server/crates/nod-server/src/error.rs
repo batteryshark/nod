@@ -3,6 +3,8 @@ use serde::Serialize;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
+    #[error("Open in an updated Nod app to answer this request.")]
+    ClientUpdateRequired,
     #[error("bad request: {0}")]
     BadRequest(String),
     #[error("unauthorized")]
@@ -31,6 +33,7 @@ impl ApiError {
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::ClientUpdateRequired => StatusCode::CONFLICT,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -45,6 +48,7 @@ impl IntoResponse for ApiError {
             Self::Forbidden => "forbidden",
             Self::NotFound => "not_found",
             Self::Conflict(_) => "conflict",
+            Self::ClientUpdateRequired => "client_update_required",
             Self::Internal(_) => "internal",
         };
 

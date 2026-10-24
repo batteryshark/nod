@@ -85,6 +85,7 @@ mod tests {
     fn request_sync_payload_embeds_the_wire_request() {
         let now = Utc::now();
         let request = DecisionRequest {
+            answer_field: None,
             id: "request-1".to_string(),
             channel_id: "default".to_string(),
             recipients: vec!["owner".to_string()],

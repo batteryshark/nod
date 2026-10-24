@@ -4,7 +4,7 @@ use crate::{
     api::NodApi,
     models::{DecisionSignature, Request, ServerProfile},
     signing::{
-        build_decision_signature, DecisionSigningRequest, DeviceSigner, ForeignDeviceSigner,
+        build_value_decision_signature, DecisionSigningRequest, DeviceSigner, ForeignDeviceSigner,
     },
 };
 
@@ -54,7 +54,7 @@ impl NodClientRuntime {
             .device_id
             .as_deref()
             .ok_or_else(|| anyhow!("server profile is missing device identity"))?;
-        build_decision_signature(
+        build_value_decision_signature(
             signer.as_ref(),
             DecisionSigningRequest {
                 request,
@@ -63,6 +63,8 @@ impl NodClientRuntime {
                 user_id,
                 device_id,
             },
+            option.answer_value.as_ref(),
+            option.expected_request_digest.as_deref(),
         )
         .map(Some)
     }

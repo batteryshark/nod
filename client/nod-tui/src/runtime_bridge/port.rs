@@ -14,6 +14,8 @@ use nod_client_core::{
 /// channel handed to `NodClientRuntime::new`.) Production binds this to
 /// `NodClientRuntime` via `adapter.rs`; tests bind the in-memory
 /// `FakeRuntime` from `test_support`.
+// async_trait adds must_use to an already must-use Future; retain the generated API.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub(crate) trait RuntimePort {
     async fn enroll(&mut self, params: EnrollParams) -> Result<ClientState>;

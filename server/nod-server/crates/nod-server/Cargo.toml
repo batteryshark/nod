@@ -20,6 +20,7 @@ appattest = { version = "0.1", features = ["testing"] }
 # openssl crate appattest depends on.
 openssl = { version = "0.10", default-features = false }
 async-trait = "0.1"
+async-nats = "0.38"
 axum = { version = "0.8", features = ["macros", "ws"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
@@ -43,6 +44,7 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2.5"
+unicode-segmentation = "1.13.3"
 uuid = { version = "1.11", features = ["serde", "v4", "v7"] }
 
 [dev-dependencies]

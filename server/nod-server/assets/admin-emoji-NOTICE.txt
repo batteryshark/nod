@@ -1,0 +1,9 @@
+The admin emoji picker bundles emojibase-data 17.0.0 English compact data.
+Source: https://www.npmjs.com/package/emojibase-data/v/17.0.0
+Upstream: https://github.com/milesj/emojibase
+See admin-emoji-LICENSE.txt for the preserved license.
+Unicode data terms are preserved in admin-emoji-UNICODE-LICENSE.txt
+(https://www.unicode.org/license.txt, retrieved 2026-10-23).
+Unicode/CLDR data supplies emoji labels, groups, tags and skin variants.
+No image assets or third-party scripts are used. Rendering uses browser fonts.
+admin-vendor-emoji.mjs is a deliberate build-time regeneration utility only.

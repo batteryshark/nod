@@ -25,6 +25,8 @@ fn server_from_toml(raw: &str) -> anyhow::Result<Config> {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServerConfigFile {
+    #[serde(default)]
+    integrations: super::IntegrationsConfig,
     bind: Option<String>,
     database_url: Option<String>,
     data_dir: Option<std::path::PathBuf>,
@@ -39,6 +41,7 @@ struct ServerConfigFile {
 impl ServerConfigFile {
     fn into_config(self) -> anyhow::Result<Config> {
         let mut config = Config::without_secrets();
+        config.integrations = self.integrations;
         if let Some(bind) = self.bind {
             config.bind = bind;
         }
@@ -167,6 +170,58 @@ impl ApnsRelayConfigFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn auth_token_file_toml_is_supported_without_plaintext_token() {
+        let config = server_from_toml(
+            r#"
+            [integrations.nats]
+            url = "nats://localhost:4222"
+            token_file = "/private/dummy-token-file"
+        "#,
+        )
+        .unwrap();
+        assert!(config.integrations.nats.valid());
+        assert_eq!(config.integrations.nats.expected_stream, "TOWER");
+        assert!(config.integrations.nats.credentials_file.is_none());
+        assert!(server_from_toml(
+            r#"
+            [integrations.nats]
+            token = "dummy-not-allowed"
+        "#
+        )
+        .is_err());
+        let both = server_from_toml(
+            r#"
+            [integrations.nats]
+            url = "nats://localhost:4222"
+            token_file = "/private/dummy-token-file"
+            credentials_file = "/private/dummy-creds-file"
+        "#,
+        )
+        .unwrap();
+        assert!(!both.integrations.nats.valid()); // Worker unhealthy, not config-load fatal.
+    }
+
+    #[test]
+    fn nats_config_uses_only_credential_file_reference() {
+        let config = server_from_toml(
+            r#"
+            [integrations.nats]
+            url = "nats://localhost:4222"
+            credentials_file = "/secrets/nod.creds"
+            expected_stream = "TOWER"
+        "#,
+        )
+        .unwrap();
+        assert!(config.integrations.nats.valid());
+        assert!(server_from_toml(
+            r#"
+            [integrations.nats]
+            token = "not-supported"
+        "#
+        )
+        .is_err());
+    }
 
     #[test]
     fn server_config_file_accepts_only_non_secret_settings() {

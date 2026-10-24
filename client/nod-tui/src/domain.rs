@@ -94,7 +94,7 @@ fn with_text_variant(kind: &OptionKind) -> Option<OptionKind> {
 }
 
 pub fn submittable_options(request: &Request) -> Vec<RequestOption> {
-    if request.options.is_empty() {
+    if request.options.is_empty() && request.answer_field.is_none() {
         vec![RequestOption {
             id: "dismiss".into(),
             label: "Dismiss".into(),
@@ -138,7 +138,8 @@ impl<'a> OptionChoice<'a> {
 }
 
 fn default_dismiss_option<'a>(request: &'a Request, kind: &OptionKind) -> Option<OptionChoice<'a>> {
-    if *kind != OptionKind::Dismiss || !request.options.is_empty() {
+    if request.answer_field.is_some() || *kind != OptionKind::Dismiss || !request.options.is_empty()
+    {
         return None;
     }
 

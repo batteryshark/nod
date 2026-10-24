@@ -60,10 +60,43 @@ issuer/admin views retain it. Callers must not simply sign a
 supplied digest without checking the displayed content. Apple supplies a
 Secure Enclave signer callback; software P-256 keys are used by desktop/TUI.
 
-Callbacks are unsigned wake-up hints. A committed decision is returned without
-waiting for the callback, and bounded background callback work is best effort.
-Consumers authenticate and re-read the decision; a callback is neither a
-verification result nor a guaranteed delivery channel.
+Callbacks are unsigned wake-up hints. Each accepted answer atomically queues a
+frozen legacy cumulative payload alongside its immutable individual lifecycle
+event. Bounded leased workers retry failures; receivers need durable delivery-ID
+deduplication because remote acceptance can precede a local crash. Consumers
+authenticate and re-read evidence; a callback is not proof of approval. See
+[delivery policies](deploy.md#callback-audit-and-delivery-policies).
+
+## Durable integration edge
+
+Create, accepted individual answer, cancel, and expiry each commit one logical
+lifecycle record and request revision in the same SQLite transaction. Rejected
+mutations and deduped creates add none; legacy rows start at revision zero with
+no fabricated history. Per-user answer events preserve each individual's
+immutable decision, even while aggregate status is pending. Final aggregate
+resolution does not add a second answer event. Device signing, nonce checks,
+eligibility, and recipient-private projections remain unchanged.
+
+An optional server-side publisher sends frozen minimal CloudEvents to NATS with
+stable message IDs and expected-stream PubAck verification. Transport is
+at-least-once; a ten-minute broker dedupe window is not indefinite exactly-once
+execution. Consumers must retain durable `(source, event ID)` dedupe and handle
+out-of-order individual answers, not suppress unseen answers by latest revision.
+No stream administration, approval command, or client broker credentials are
+part of Nod. Bus failure does not block HTTP/API startup or accepted mutations.
+
+The broad bus contains IDs, timing, revision, resolution and aggregate status,
+not answer content or origin paths. Authorized channel readers use protected
+HTTP replay/detail for immutable private evidence, including origin and the
+individual signed decision. This journal survives request pruning independently
+of broker retention; it is not full-card history. Backups and disk/backlog
+monitoring must include it. JSONL remains separate diagnostic audit; queue state
+is current operational evidence, not a complete per-attempt audit history.
+See the [integration API](../server/nod-server/docs/API.md#integration-events-and-origin).
+
+Deleting Tower's old per-request poller requires its owner's equivalent durable
+consumer/replay and pending-origin handover, with duplicate paths reconciled.
+This document does not claim that cutover is complete.
 
 ## Client state and reconnects
 
@@ -82,6 +115,11 @@ preserves newer mutations made while a snapshot is in flight. Reconnect and
 receive `connecting`, `reconciling`, `current`, `offline`, or `revoked`, plus the
 last successful snapshot time. Pings and a liveness deadline detect silent
 connections, and retries use capped backoff with jitter.
+The server also sends the existing `resync_required` every fifteen seconds,
+alongside targeted immediate updates, and bounds socket writes to five seconds;
+failed writes close the connection for reconnect. This converges authorized
+current state after a successful refresh, not every offline alert or full
+handled-history replay.
 
 Snapshots compare pending IDs to remove obsolete native notifications. Explicit
 revocation clears cached content and removes known pending notification IDs.

@@ -274,6 +274,7 @@ public enum NodRequestStatus: String, Codable, Sendable {
 }
 
 public struct NodDecision: Codable, Hashable, Sendable {
+  public let answerValue: NodAnswerValue?
   public let requestId: String
   public let optionId: String
   public let optionKind: NodOptionKind
@@ -293,6 +294,7 @@ public struct NodDecision: Codable, Hashable, Sendable {
     actorUserId: String? = nil,
     actorDeviceId: String? = nil,
     signature: NodDecisionSignatureRecord? = nil,
+    answerValue: NodAnswerValue? = nil,
     resolvedAt: Date
   ) {
     self.requestId = requestId
@@ -303,11 +305,13 @@ public struct NodDecision: Codable, Hashable, Sendable {
     self.actorUserId = actorUserId
     self.actorDeviceId = actorDeviceId
     self.signature = signature
+    self.answerValue = answerValue
     self.resolvedAt = resolvedAt
   }
 
   enum CodingKeys: String, CodingKey {
     case text, signature
+    case answerValue = "answer_value"
     case requestId = "request_id"
     case optionId = "option_id"
     case optionKind = "option_kind"
@@ -319,6 +323,7 @@ public struct NodDecision: Codable, Hashable, Sendable {
 }
 
 public struct NodDecisionSignatureRecord: Codable, Hashable, Sendable {
+  public let payloadVersion: String?
   public let keyId: String
   public let algorithm: String
   public let nonce: String
@@ -331,6 +336,7 @@ public struct NodDecisionSignatureRecord: Codable, Hashable, Sendable {
 
   enum CodingKeys: String, CodingKey {
     case algorithm, nonce, signature, verified
+    case payloadVersion = "payload_version"
     case keyId = "key_id"
     case signedAt = "signed_at"
     case requestDigest = "request_digest"
@@ -390,6 +396,8 @@ public struct NodRequestSigning: Codable, Hashable, Sendable {
 }
 
 public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
+  public let answerField: NodAnswerField?
+  public var isValueRequest: Bool { answerField != nil || signing?.version == "nod-request-v3" || options.contains { $0.id == "__nod_value_open" } }
   public let id: String
   public let requestId: String
   public let channelId: String
@@ -439,7 +447,8 @@ public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
     callbackUrl: String?,
     options: [NodRequestOption],
     requestDigest: String?,
-    signing: NodRequestSigning? = nil
+    signing: NodRequestSigning? = nil,
+    answerField: NodAnswerField? = nil
   ) {
     self.id = id
     self.requestId = requestId
@@ -465,6 +474,7 @@ public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
     self.options = options
     self.requestDigest = requestDigest
     self.signing = signing
+    self.answerField = answerField
   }
 
   enum CodingKeys: String, CodingKey {
@@ -482,6 +492,7 @@ public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
     case resolvedAt = "resolved_at"
     case callbackUrl = "callback_url"
     case requestDigest = "request_digest"
+    case answerField = "answer_field"
   }
 
   public init(from decoder: Decoder) throws {
@@ -513,6 +524,7 @@ public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
     options = try container.decode([NodRequestOption].self, forKey: .options)
     requestDigest = try container.decodeIfPresent(String.self, forKey: .requestDigest)
     signing = try container.decodeIfPresent(NodRequestSigning.self, forKey: .signing)
+    answerField = container.contains(.answerField) ? try container.decode(NodAnswerField.self, forKey: .answerField) : nil
   }
 }
 
@@ -579,4 +591,3 @@ public struct NodAppAttestationRequest: Sendable {
     self.account = account
   }
 }
-

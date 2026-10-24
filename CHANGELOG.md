@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## v1.1.0
+
+- Committed lifecycle outbox with optional NATS publishing, durable callback
+  retries, leased push recovery, and live-update resynchronization.
+- Desktop-first Inset admin, searchable revoked-token log and bundled emoji
+  picker; fixes for select-subscribed, logout cleanup and partial membership saves.
+- Inset Inbox for iOS and macOS, with scrollable access to every answer option.
+- One optional defaulted choice, number, date or UTC-minute answer value plus
+  notes, bound into a versioned signed decision; ordinary signing bytes preserved.
+- TUI choice editing and safe updated-app guidance for unsupported value cards.
 
 - macOS recovers from transient gateway errors on safe GET requests, coalesces
   foreground refreshes, and keeps Dock badges updated without replaying decisions.
@@ -8,6 +17,8 @@
   pending while reading and acknowledge only on explicit navigation away when enabled.
 - Apple deployment docs explain direct ad-hoc installation and signing renewal
   without uninstalling or losing enrollment.
+
+Full notes: [docs/release-notes/v1.1.0.md](docs/release-notes/v1.1.0.md)
 
 ## v1.0.1 - maintenance release
 

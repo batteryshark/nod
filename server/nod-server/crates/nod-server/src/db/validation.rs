@@ -7,6 +7,30 @@ use crate::{
 };
 
 pub(super) fn validate_request(req: &CreateDecisionRequest) -> Result<(), ApiError> {
+    if let Some(field) = &req.answer_field {
+        field
+            .validate()
+            .map_err(|e| ApiError::BadRequest(e.into()))?;
+        if req
+            .options
+            .iter()
+            .any(|o| o.id == "__nod_value_open" || o.kind == crate::models::OptionKind::Open)
+            || !req.options.iter().any(|o| {
+                !o.destructive
+                    && !o.requires_text
+                    && !matches!(
+                        o.kind,
+                        crate::models::OptionKind::ApproveWithText
+                            | crate::models::OptionKind::RejectWithText
+                            | crate::models::OptionKind::Open
+                    )
+            })
+        {
+            return Err(ApiError::BadRequest(
+                "value requests require an ordinary one-tap outcome and no Open outcome".into(),
+            ));
+        }
+    }
     if req.title.trim().is_empty() {
         return Err(ApiError::BadRequest(
             "request title is required".to_string(),
@@ -109,7 +133,7 @@ pub(super) fn implicit_dismiss_option(
     option_id: &str,
 ) -> Option<RequestOption> {
     // Optionless notifications still need a completion action so clients can clear them from pending lists.
-    if option_id != "dismiss" || !request.options.is_empty() {
+    if request.answer_field.is_some() || option_id != "dismiss" || !request.options.is_empty() {
         return None;
     }
     Some(RequestOption {

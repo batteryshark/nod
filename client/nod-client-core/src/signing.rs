@@ -85,21 +85,65 @@ pub fn build_decision_signature(
     signer: &dyn DeviceSigner,
     request: DecisionSigningRequest<'_>,
 ) -> Result<DecisionSignature> {
+    build_value_decision_signature(signer, request, None, None)
+}
+
+pub fn build_value_decision_signature(
+    signer: &dyn DeviceSigner,
+    request: DecisionSigningRequest<'_>,
+    answer: Option<&nod_proto::AnswerValue>,
+    expected_digest: Option<&str>,
+) -> Result<DecisionSignature> {
+    if let Some(field) = &request.request.answer_field {
+        field.validate().map_err(|e| anyhow!(e))?;
+        field
+            .validate_value(answer.ok_or_else(|| anyhow!("explicit answer_value required"))?)
+            .map_err(|e| anyhow!(e))?;
+        if expected_digest.is_none()
+            || request
+                .request
+                .signing
+                .as_ref()
+                .map(|c| c.request_digest.as_str())
+                != expected_digest
+        {
+            return Err(anyhow!(
+                "Request changed. Review it again before answering."
+            ));
+        }
+    } else if answer.is_some() {
+        return Err(anyhow!("ordinary request does not accept answer_value"));
+    }
     // Defense in depth: only sign a request whose digest we can reproduce
     // from the content we received (and rendered to the user), rather than
     // trusting the digest the server asserted.
     let (request_digest, recomputed) =
         if let Some(context) = &request.request.signing {
-            if context.version != nod_proto::PRIVATE_REQUEST_DIGEST_VERSION {
-                return Err(anyhow!(
-                    "unsupported request signing version: {}",
-                    context.version
-                ));
+            if let Some(field) = request.request.answer_field.as_ref().filter(|_| {
+                context.version == nod_proto::value_signing::VALUE_REQUEST_DIGEST_VERSION
+            }) {
+                (
+                    context.request_digest.as_str(),
+                    nod_proto::value_signing::request_digest_v3(
+                        request.request,
+                        &context.recipients_commitment,
+                        field,
+                    )?,
+                )
+            } else {
+                if context.version != nod_proto::PRIVATE_REQUEST_DIGEST_VERSION
+                    || request.request.answer_field.is_some()
+                {
+                    return Err(anyhow!(
+                        "unsupported request signing version: {}",
+                        context.version
+                    ));
+                }
+                (
+                    context.request_digest.as_str(),
+                    nod_proto::request_digest_v2(request.request, &context.recipients_commitment)?,
+                )
             }
-            (
-                context.request_digest.as_str(),
-                nod_proto::request_digest_v2(request.request, &context.recipients_commitment)?,
-            )
         } else {
             (
                 request.request.request_digest.as_deref().ok_or_else(|| {
@@ -119,7 +163,7 @@ pub fn build_decision_signature(
     let signed_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let text = request.text.and_then(trimmed_text);
     let key_id = signer.key_id();
-    let payload = nod_proto::decision_signing_payload(nod_proto::DecisionSigningInput {
+    let input = nod_proto::DecisionSigningInput {
         request_id: &request.request.id,
         request_digest,
         option_id: option.id,
@@ -130,9 +174,16 @@ pub fn build_decision_signature(
         nonce: &nonce,
         signed_at: &signed_at,
         text,
-    });
+    };
+    let payload = if let Some(answer) = answer {
+        nod_proto::value_signing::decision_signing_payload_v2(input, answer)?
+    } else {
+        nod_proto::decision_signing_payload(input)
+    };
     let signature = signer.sign(payload.as_bytes())?;
     Ok(DecisionSignature {
+        payload_version: answer
+            .map(|_| nod_proto::value_signing::VALUE_DECISION_PAYLOAD_VERSION.to_string()),
         key_id,
         algorithm: signer.algorithm(),
         nonce,
@@ -226,7 +277,10 @@ fn option_for<'a>(request: &'a Request, option_id: &'a str) -> Result<OptionRef<
 
     // The UI can synthesize a dismiss button for optionless requests. The server
     // still verifies that submission against the same canonical payload shape.
-    if option_id == IMPLICIT_DISMISS_OPTION_ID && request.options.is_empty() {
+    if request.answer_field.is_none()
+        && option_id == IMPLICIT_DISMISS_OPTION_ID
+        && request.options.is_empty()
+    {
         return Ok(OptionRef {
             id: IMPLICIT_DISMISS_OPTION_ID,
             kind: &OptionKind::Dismiss,
@@ -256,6 +310,7 @@ mod tests {
 
     fn request() -> Request {
         let mut request = Request {
+            answer_field: None,
             id: "request-1".to_string(),
             request_id: "request-1".to_string(),
             channel_id: "default".to_string(),
@@ -309,6 +364,99 @@ mod tests {
     #[test]
     fn blank_decision_text_is_signed_as_empty() {
         assert_eq!(trimmed_text("  \n\t  "), None);
+    }
+
+    #[test]
+    fn value_guards_run_before_signer_and_legacy_entry_refuses_v3() {
+        struct NeverSign;
+        impl DeviceSigner for NeverSign {
+            fn key_id(&self) -> String {
+                "test".into()
+            }
+            fn public_key(&self) -> Result<String> {
+                panic!("must not ask signer")
+            }
+            fn sign(&self, _: &[u8]) -> Result<String> {
+                panic!("must not sign invalid card")
+            }
+        }
+        let mut card = request();
+        card.answer_field = Some(nod_proto::AnswerField::Number {
+            label: "Count".into(),
+            default: nod_proto::AnswerValue::Number {
+                decimal: "4".into(),
+            },
+        });
+        let digest = nod_proto::value_signing::request_digest_v3(
+            &card,
+            &"a".repeat(64),
+            card.answer_field.as_ref().unwrap(),
+        )
+        .unwrap();
+        card.signing = Some(nod_proto::RequestSigningContext {
+            version: "nod-request-v3".into(),
+            recipients_commitment: "a".repeat(64),
+            request_digest: digest.clone(),
+        });
+        let input = DecisionSigningRequest {
+            request: &card,
+            option_id: "approve",
+            text: None,
+            user_id: "user",
+            device_id: "device",
+        };
+        assert!(build_decision_signature(&NeverSign, input).is_err());
+        assert!(build_value_decision_signature(
+            &NeverSign,
+            input,
+            Some(&nod_proto::AnswerValue::Number {
+                decimal: "1.50".into()
+            }),
+            Some(&digest)
+        )
+        .is_err());
+        assert!(build_value_decision_signature(
+            &NeverSign,
+            input,
+            Some(&nod_proto::AnswerValue::Number {
+                decimal: "4".into()
+            }),
+            Some("changed")
+        )
+        .is_err());
+        card.answer_field = Some(nod_proto::AnswerField::Number {
+            label: "Count".into(),
+            default: nod_proto::AnswerValue::Number {
+                decimal: "5".into(),
+            },
+        });
+        assert!(build_value_decision_signature(
+            &NeverSign,
+            DecisionSigningRequest {
+                request: &card,
+                option_id: "approve",
+                text: None,
+                user_id: "user",
+                device_id: "device"
+            },
+            Some(&nod_proto::AnswerValue::Number {
+                decimal: "4".into()
+            }),
+            Some(&digest)
+        )
+        .is_err());
+        card.answer_field = None; // Legacy delivery placeholder still carries v3 context.
+        assert!(build_decision_signature(
+            &NeverSign,
+            DecisionSigningRequest {
+                request: &card,
+                option_id: "approve",
+                text: None,
+                user_id: "user",
+                device_id: "device"
+            }
+        )
+        .is_err());
     }
 
     #[test]

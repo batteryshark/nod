@@ -7,15 +7,22 @@ struct RequestDetail: View {
   var serverId: String? = nil
   var explicitRead = false
   @State private var responseDraft: ResponseDraft?
+  @State private var showingOptions = false
+  @State private var acknowledgedOpenKey: String?
+  @State private var destructiveOption: ResponseDraft?
 
   private struct ResponseDraft: Identifiable {
     let request: NodRequest
     let option: NodRequestOption
     let serverId: String?
+    let answerValue: NodAnswerValue?
     var id: String { [serverId ?? "", request.id, option.id].joined(separator: ":") }
+    var notesKey: String { NodAnswerComposition.notesKey(serverId: serverId ?? "", requestId: request.id, optionId: option.id, isValueRequest: request.isValueRequest) }
   }
 
   var body: some View {
+    GeometryReader { geometry in
+    VStack(spacing: 0) {
     ScrollView {
       VStack(alignment: .leading, spacing: 18) {
         HStack(alignment: .firstTextBaseline) {
@@ -38,9 +45,41 @@ struct RequestDetail: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
+        Text(request.options.isEmpty && !request.isValueRequest ? "Information" : (request.decisionResolution == .shared ? "Shared decision" : "Your answer"))
+          .font(.caption).foregroundStyle(.secondary)
+        if let field = request.answerField, store.needsAnswer(request) {
+          RequestValueControl(field: field, value: valueBinding)
+            .id(valueScope)
+            .disabled(store.answerAttempt(requestId: request.id, serverId: serverId) != nil || store.isSubmitting(request.id))
+          if !field.isValid(valueBinding.wrappedValue) {
+            Text("Enter a valid \(field.label.lowercased()).").foregroundStyle(.red)
+          }
+          TextField("Notes (optional)", text: valueNotes, axis: .vertical)
+            .lineLimit(2...4)
+            .accessibilityIdentifier("answer-value-notes")
+            .disabled(store.answerAttempt(requestId: request.id, serverId: serverId) != nil || store.isSubmitting(request.id))
+          if store.answerValueDrafts[valueScope] != nil || !valueNotes.wrappedValue.isEmpty {
+            Text(store.answerDraftsSaved ? "Draft saved on this device" : "Draft kept while Nod is open").font(.caption).foregroundStyle(.secondary)
+          }
+          if let error = store.answerStorageError { Text(error).foregroundStyle(.red) }
+          if valueNotes.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).utf8.count > 16384 {
+            Text("Notes must be 16384 UTF-8 bytes or fewer.").foregroundStyle(.red)
+          }
+        } else if request.isValueRequest && request.answerField == nil {
+          Text("Open in an updated Nod app to answer this request.")
+        }
         if let expiresAt = request.expiresAt, request.status == .pending {
           Label { Text("Expires ") + Text(expiresAt, style: .relative) } icon: { Image(systemName: "clock") }
             .font(.callout)
+        }
+        if !request.isValueRequest && request.status == .pending && store.answerAttempt(requestId: request.id, serverId: serverId) == nil {
+          ForEach(request.options.filter { option in
+            let key = [serverId ?? store.selectedServerId ?? "", request.id, option.id].joined(separator: ":")
+            return !store.responseDrafts[key, default: ""].isEmpty
+          }) { option in
+            Button("Resume \(option.label)") { perform(option) }
+              .frame(minHeight: 44)
+          }
         }
         if request.bodyMarkdown.isEmpty, !request.summary.isEmpty { Text(request.summary).textSelection(.enabled) }
         if let imageURL = topImageURL {
@@ -75,37 +114,101 @@ struct RequestDetail: View {
           }
         }
 
-        if let decision = request.decision {
-          RequestDecisionView(decision: decision)
-        } else if request.status == .pending && !request.options.isEmpty {
-          RequestOptionArea(options: request.options, isSubmitting: store.isSubmitting(request.id)) { option in
-            perform(option)
+        if let decision = store.recordedAnswer(in: request) {
+          RequestDecisionView(decision: decision, field: request.answerField)
+          if request.decisionResolution == .perUser && request.status == .pending {
+            Text("Waiting for other recipients").font(.callout)
           }
-        } else if request.status == .pending && request.options.isEmpty {
+        }
+        #if os(iOS)
+        if !request.isValueRequest && !store.acknowledgeOnOpen && request.status == .pending && request.options.isEmpty {
           Button("Acknowledge") { Task { await store.dismissIfInformational(request: request, serverId: serverId) } }
             .disabled(store.isSubmitting(request.id))
         }
+        #endif
       }
       .padding()
       .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .navigationTitle(request.title)
-    .task(id: request.id) {
-      #if !os(macOS)
-      if store.acknowledgeOnOpen { await store.dismissIfInformational(request: request, serverId: serverId) }
+    .accessibilityIdentifier("request-body")
+    if let attempt = store.answerAttempt(requestId: request.id, serverId: serverId) {
+      VStack(alignment: .leading) {
+        Text(attempt.isSubmitting ? "Sending \(attempt.optionLabel)…" : "Could not confirm \(attempt.optionLabel)")
+        if let value = attempt.answerValue {
+          Text(request.answerField?.choices?.first(where: { $0.id == value.string })?.label ?? value.string)
+        }
+        Button("Check status") {
+          Task { await store.checkAnswerStatus(requestId: request.id, serverId: attempt.serverId) }
+        }
+        .disabled(attempt.isSubmitting)
+      }
+      .padding().frame(maxWidth: .infinity, alignment: .leading).background(.bar)
+    } else if request.status == .pending && store.recordedAnswer(in: request) == nil && !request.options.isEmpty {
+      RequestDecisionTray(options: request.options, isSubmitting: !canAnswer, perform: perform) {
+        showingOptions = true
+      }
+      .frame(maxHeight: geometry.size.height * 0.35)
+      .fixedSize(horizontal: false, vertical: true)
+    }
+    }
+    .sheet(isPresented: Binding(get: { showingOptions || responseDraft != nil || destructiveOption != nil }, set: {
+      if !$0 { showingOptions = false; responseDraft = nil; destructiveOption = nil }
+    })) {
+      ZStack {
+        RequestAnswerSheet(options: request.options, isSubmitting: !canAnswer, perform: perform, isComposing: responseDraft != nil || destructiveOption != nil)
+          .opacity(responseDraft == nil && destructiveOption == nil ? 1 : 0)
+          .allowsHitTesting(responseDraft == nil && destructiveOption == nil)
+          .accessibilityHidden(responseDraft != nil || destructiveOption != nil)
+        if let draft = responseDraft { composer(draft) }
+        if let selection = destructiveOption {
+          RequestDestructiveAnswerConfirmation(requestTitle: selection.request.title, option: selection.option, valueLabel: selection.answerValue.map { value in selection.request.answerField?.choices?.first(where: { $0.id == value.string })?.label ?? value.string }) {
+            destructiveOption = nil
+          } confirm: {
+            destructiveOption = nil
+            performConfirmed(selection)
+          }
+        }
+      }
+      #if os(macOS)
+      .frame(width: max(280, min(520, geometry.size.width)), height: geometry.size.height * 0.85)
+      #else
+      .presentationDetents([.large])
       #endif
     }
-    .sheet(item: $responseDraft) { draft in
+    }
+    .navigationTitle(request.title)
+    .task(id: request.id) {
+      store.prepareAnswerStorage()
+      #if !os(macOS)
+      let openKey = (serverId ?? store.selectedServerId ?? "") + ":" + request.id
+      if explicitRead && store.acknowledgeOnOpen && acknowledgedOpenKey != openKey {
+        acknowledgedOpenKey = openKey
+        await store.dismissIfInformational(request: request, serverId: serverId)
+      }
+      #endif
+    }
+    .onChange(of: store.selectedServerId) { showingOptions = false; responseDraft = nil; destructiveOption = nil }
+  }
+
+  private func composer(_ draft: ResponseDraft) -> some View {
       NavigationStack {
         Form {
           Section(draft.request.title) {
+            if let value = draft.answerValue {
+              Text(draft.request.answerField?.choices?.first(where: { $0.id == value.string })?.label ?? value.string)
+            }
             TextField(draft.option.textPlaceholder ?? "Notes", text: Binding(
-              get: { store.responseDrafts[draft.id, default: ""] },
-              set: { store.responseDrafts[draft.id] = $0 }
+              get: { store.responseDrafts[draft.notesKey, default: ""] },
+              set: { store.responseDrafts[draft.notesKey] = $0 }
             ), axis: .vertical)
               .lineLimit(4...8)
               .disabled(store.isSubmitting(draft.request.id))
-            Text("Notes are optional.").font(.caption).foregroundStyle(.secondary)
+              .accessibilityIdentifier("answer-text")
+            Text("Required").font(.caption).foregroundStyle(.secondary)
+            if !store.responseDrafts[draft.notesKey, default: ""].isEmpty {
+              Text(store.answerDraftsSaved ? "Draft saved on this device" : "Draft kept while Nod is open").font(.caption).foregroundStyle(.secondary)
+            }
+            if let error = store.answerStorageError { Text(error).foregroundStyle(.red) }
           }
           if let error = store.lastError { Text(error).foregroundStyle(.red) }
         }
@@ -116,31 +219,57 @@ struct RequestDetail: View {
               .disabled(store.isSubmitting(draft.request.id))
           }
           ToolbarItem(placement: .confirmationAction) {
-            Button(store.isSubmitting(draft.request.id) ? "Sending…" : "Submit") {
-              let text = store.responseDrafts[draft.id, default: ""]
+            Button(store.isSubmitting(draft.request.id) ? "Sending…" : "Send answer") {
+              let text = store.responseDrafts[draft.notesKey, default: ""]
               Task {
-                if await store.submit(request: draft.request, option: draft.option, text: text, serverId: draft.serverId) {
-                  store.responseDrafts.removeValue(forKey: draft.id)
-                  if responseDraft?.id == draft.id { responseDraft = nil }
-                }
+                _ = await store.answerFromUI(request: draft.request, option: draft.option, text: text, serverId: draft.serverId, answerValue: draft.answerValue)
+                if responseDraft?.id == draft.id { responseDraft = nil; showingOptions = false }
               }
             }
-            .disabled(store.isSubmitting(draft.request.id))
+            .disabled(!canAnswer || !NodAnswerComposition.canSend(text: store.responseDrafts[draft.notesKey, default: ""], isSubmitting: store.isSubmitting(draft.request.id)) || (request.isValueRequest && store.responseDrafts[draft.notesKey, default: ""].trimmingCharacters(in: .whitespacesAndNewlines).utf8.count > 16384))
+            .accessibilityIdentifier("send-answer")
           }
         }
         .interactiveDismissDisabled(store.isSubmitting(draft.request.id))
       }
       .frame(minWidth: 300, minHeight: 240)
-    }
   }
 
   private func perform(_ option: NodRequestOption) {
-    let serverId = serverId ?? store.selectedServerId
+    let selection = ResponseDraft(request: request, option: option, serverId: serverId ?? store.selectedServerId, answerValue: request.answerField == nil ? nil : valueBinding.wrappedValue)
+    // A rejection is not deletion. Only an issuer-marked destructive custom
+    // operation adds a scoped confirmation; ordinary approval/rejection stays direct.
+    if option.destructive && option.kind == .custom {
+      destructiveOption = selection
+    } else { performConfirmed(selection) }
+  }
+
+  private func performConfirmed(_ selection: ResponseDraft) {
+    let request = selection.request
+    let option = selection.option
     if option.requiresText {
-      responseDraft = ResponseDraft(request: request, option: option, serverId: serverId)
+      responseDraft = selection
     } else {
-      Task { await store.submit(request: request, option: option, serverId: serverId) }
+      showingOptions = false
+      let notes = request.answerField == nil ? nil : valueNotes.wrappedValue
+      Task { await store.answerFromUI(request: request, option: option, text: notes, serverId: selection.serverId, answerValue: selection.answerValue) }
     }
+  }
+
+  private var valueScope: String { [serverId ?? store.selectedServerId ?? "", request.id, request.signing?.requestDigest ?? ""].joined(separator: ":") }
+  private var valueBinding: Binding<NodAnswerValue> {
+    Binding(get: { store.answerValueDrafts[valueScope] ?? request.answerField?.defaultValue ?? .number("0") },
+      set: { store.answerValueDrafts[valueScope] = $0 })
+  }
+  private var valueNotes: Binding<String> {
+    let key = NodAnswerComposition.notesKey(serverId: serverId ?? store.selectedServerId ?? "", requestId: request.id, optionId: "", isValueRequest: true)
+    return Binding(get: { store.responseDrafts[key, default: ""] }, set: { store.responseDrafts[key] = $0 })
+  }
+  private var canAnswer: Bool {
+    guard store.needsAnswer(request), !store.isSubmitting(request.id), store.answerAttempt(requestId: request.id, serverId: serverId) == nil else { return false }
+    guard request.isValueRequest else { return true }
+    guard let field = request.answerField, request.signing?.requestDigest != nil else { return false }
+    return field.isValid(valueBinding.wrappedValue) && valueNotes.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).utf8.count <= 16384
   }
 
   private var topImageURL: URL? {
@@ -155,14 +284,20 @@ struct RequestDetail: View {
   }
 }
 
-private struct RequestDecisionView: View {
+struct RequestDecisionView: View {
   let decision: NodDecision
+  var field: NodAnswerField? = nil
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       Text("Handled")
         .font(.headline)
       Text(displayLabel)
+      if let value = decision.answerValue {
+        if let field { Text(field.label).font(.caption).foregroundStyle(.secondary) }
+        Text(field?.choices?.first(where: { $0.id == value.string })?.label ?? value.string)
+          .textSelection(.enabled)
+      }
       Text(decision.resolvedAt, format: .dateTime)
         .font(.caption).foregroundStyle(.secondary)
       if let actor = decision.actorUserId {
@@ -200,27 +335,6 @@ private struct RequestDecisionView: View {
       return "Opened"
     case .custom:
       return "Resolved"
-    }
-  }
-}
-
-private struct RequestOptionArea: View {
-  let options: [NodRequestOption]
-  let isSubmitting: Bool
-  let perform: (NodRequestOption) -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      ForEach(options) { option in
-        Button(role: option.destructive ? .destructive : nil) { perform(option) } label: {
-          Text(option.label)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity, minHeight: 32)
-        }
-        .buttonStyle(.borderedProminent)
-        .disabled(isSubmitting)
-      }
-      if isSubmitting { ProgressView("Sending response…") }
     }
   }
 }

@@ -187,7 +187,111 @@ recipients. Successful cleanup revokes/deletes the temporary resources but
 retains tombstones and audit evidence; failed runs may need manual cleanup.
 For migration rehearsal, use a consistent copy of the database with APNs
 omitted and `NOD_CALLBACK_ALLOWED_ORIGINS` set to an empty value, and expose
-that instance only to the verifier.
+that instance only to the verifier. Disable NATS and isolate APNs/callback/NATS
+network egress as well: copied queues must not reach real destinations.
+
+## Reliable-edge upgrade and rollback
+
+These are operator steps, not a claim of completed rollout or restore:
+
+1. Freeze a reviewed commit and export its clean committed repository tree as
+   the Docker build context. Build with the root context and
+   `-f server/nod-server/Dockerfile`, using an immutable candidate tag. Keep the
+   existing image ID under an immutable rollback tag; do not prune it.
+2. Preserve the actual Compose file/override set, port binding, volume and
+   secret mounts, service permissions, retention and APNs identity. Use direct
+   Compose with those explicit files for inspection/start/stop, rather than
+   silently substituting repository defaults. `scripts/nod-compose` mutates
+   defaults and secret files before parsing arguments, even `config` or `ps`.
+   Avoid displaying resolved secret-bearing configuration.
+3. Rehearse migration and restore with a consistent copy, private verifier-only
+   binding and APNs/callback/NATS egress disabled. Configuration alone is not
+   sufficient isolation for copied pending side effects.
+4. Coordinate a write-maintenance window with sender owners. Stop Nod and its
+   restart manager, confirm stopped, then protect a complete consistent volume
+   backup (including SQLite WAL/SHM and audit archives), configuration and secret
+   files with their permissions. Record snapshot time, image ID and commit.
+5. Start the candidate with the preserved deployment configuration and additive
+   integration settings only if desired. Check HTTP, authenticated Activity,
+   backlog and existing enrolled-client refresh separately. Audit health is not
+   delivery readiness; a connected publisher is not proof of an empty backlog.
+6. On rollback, hold writes, stop the upgrade and preserve its data separately.
+   Restore a matching pre-upgrade DB/config/secret snapshot into a new volume
+   and run the retained matching binary/image. Never point an old image at the
+   upgraded DB or overlay a DB/WAL pair. Reconcile intervening decisions,
+   revocations, callbacks and broker effects: restoring SQLite cannot undo
+   external effects. Coordinate consumer/poller rollback with its owner.
+
+Retire Tower's per-request polling only after its owner proves equivalent
+durable consumption/replay, per-user decision handling, origin registration for
+pending requests and duplicate-safe admission. Reconcile handover races and
+avoid two continuation paths; deletion is not asserted here. Preserve existing
+Mac/iOS installation, signing, enrollment and APNs identity; client installation
+remains the operator/principal's decision, not a server-upgrade side effect.
+
+## Optional lifecycle publication
+
+NATS is optional and default-off. Nod continues startup and HTTP/API work when
+the bus is down, disabled or misconfigured; committed lifecycle records stay in
+SQLite. Provision an existing owner-managed stream and server credential; Nod
+does not create or modify streams. Prefer dedicated publish-only permissions
+for `ev.nod.>` plus the reply permissions needed for PubAck. Do not distribute
+broker credentials to clients or use the bus to approve requests.
+
+Configure the URL and exactly one authentication file. For a NATS JWT/seed
+`.creds` file:
+
+```toml
+[integrations.nats]
+url = "tls://broker.example.com:4222"
+expected_stream = "TOWER"
+credentials_file = "/secrets/nod.creds"
+```
+
+For an existing token-authenticated broker, replace `credentials_file` with
+`token_file = "/secrets/nod.token"` in the same table; no JWT rebuild is required.
+The token file holds one nonempty raw token, without whitespace/control
+characters except an optional final LF or CRLF. Do not set both files.
+For a least-privilege user, choose `user = "nod"` plus
+`password_file = "/secrets/nod.password"` instead of either auth file above,
+and `inbox_prefix = "_INBOX_nod"`. Allow only publish `ev.nod.>` and
+subscribe `_INBOX_nod.>`; no JetStream management permissions are needed.
+The publisher sends the expected-stream header and verifies the PubAck;
+the stream must already exist. Password files contain one nonempty line,
+with optional trailing LF/CRLF and no embedded whitespace or controls.
+Files are read only when connecting. Mixed or incomplete authentication
+configuration remains unhealthy without blocking startup or API requests.
+Overrides are `NOD_TOWER_NATS_USER`, `NOD_TOWER_PASSWORD_FILE`,
+`NOD_TOWER_INBOX_PREFIX`, and `NOD_TOWER_NATS_URL` (takes precedence over
+`NOD_NATS_URL`). Unconfigured publishing remains disabled.
+
+Environment overrides are `NOD_NATS_URL`, `NOD_NATS_CREDENTIALS_FILE`,
+`NOD_NATS_TOKEN_FILE`, and
+`NOD_NATS_EXPECTED_STREAM`; the expected stream defaults to `TOWER`. Mount
+credential files read-only and owner-only (`0600`, readable by the service).
+Never place raw broker secrets in TOML, environment values, URL userinfo, query
+or fragment. Configuration diagnostics redact the URL/path and transport errors.
+`credentials_file` parses JWT/seed credentials, while `token_file` reads a raw
+token. File-read/authentication diagnostics use static redacted codes.
+
+Each accepted mutation commits one logical lifecycle record, independent of
+publication. The publisher sends frozen bytes with stable `Nats-Msg-Id`, checks
+the expected stream in PubAck, and retries uncertain outcomes. Transport is
+at-least-once. A broker's ten-minute dedupe window is an optimization, not an
+indefinite exactly-once promise: consumers must durably deduplicate source/event
+IDs and reconcile through protected journal replay after broker eviction.
+
+The local lifecycle journal (including private decision/origin evidence) and
+callback queues survive request pruning independently of broker retention;
+there is no automatic journal expiry. Back them up with SQLite and protect them
+as private evidence. Budget disk space and monitor disk usage, pending/retrying
+counts, oldest backlog age, policy-blocked callbacks and push failures. A full
+disk can reject a mutation atomically rather than accept it without its journal
+obligations. Admin Activity's `integrations` reports publisher state, lifecycle
+total/pending/retrying/max-attempts/oldest-pending and callback
+queued/retrying/blocked/sending/delivered/max-attempts/oldest-pending metrics.
+JSONL health remains independent diagnostic audit; durable queue state is not a
+promise of full per-attempt history or physical disk-loss survival.
 
 ## Advanced: push notifications for iPhone/iPad
 
@@ -286,13 +390,21 @@ These settings and behaviors describe the current source build. Upgrade the
 server and standalone APNs relay together for the added device routing metadata
 and structured delivery errors.
 
-Callbacks run after a decision is committed and do not delay its response.
-Each has a ten-second timeout; redirects are disabled and a failure's response
-body is capped at 4 KiB. At most sixteen callbacks run concurrently. A full
-callback pool records a failure in the audit log. Callbacks are best effort,
-with no durable retry queue; issuers needing reliable completion should use the
-request decision/read or wait endpoints to reconcile outcomes after a timeout
-or server restart.
+Accepted answers atomically queue callbacks with the decision; create, cancel,
+and expiry do not queue callbacks. Each job freezes the exact legacy cumulative
+payload at that revision (including intermediate per-user `pending` snapshots).
+Delivery runs after commit without delaying the answer response. At most sixteen
+jobs run concurrently; a full pool leaves work queued. A ten-second outer bound
+includes response reading (up to 4 KiB consumed); redirects are disabled.
+All failures retry with persisted attempts and capped backoff, without an
+attempt-ceiling discard. Thirty-second leases are periodically reclaimed after
+expiry. Earlier undelivered revisions block later callbacks for that request.
+
+Receivers should durably deduplicate `Nod-Delivery-Id`; `Nod-Event-Id` and
+`Nod-Request-Revision` identify the accepted event and snapshot revision. A crash
+after remote acceptance can repeat the same delivery. This is not remote
+exactly-once execution. Callbacks remain unsigned hints: authenticate and read
+the decision or protected event evidence before acting.
 
 Restrict callbacks to destinations you control with a top-level TOML setting:
 
@@ -306,8 +418,10 @@ paths other than `/`, query strings, or fragments. Callback URLs may have paths
 and queries but cannot contain userinfo. An empty list (or an empty environment
 value) disables callbacks. Omitting this setting preserves the existing
 trusted-issuer policy, allowing any HTTP(S) destination reachable by Nod.
-The allowlist does not isolate network egress or pin DNS resolution; use an
-egress firewall when that boundary is required.
+The current process policy is revalidated before every attempt; configuration
+changes take effect after restart. Blocked jobs remain stored and revalidate
+after 300 seconds. The allowlist does not isolate network egress or pin DNS
+resolution; use an egress firewall when that boundary is required.
 
 Push jobs are stored atomically with request creation and recovered after a
 restart. The server sends at most four concurrently and makes at most three
@@ -319,6 +433,12 @@ token report WebSocket delivery. Push acceptance does not prove the user saw a
 notification. The admin Activity page distinguishes queued, sending, accepted,
 failed, and skipped jobs. After a crash, a send may be retried even if Apple
 already accepted it; a stable APNs collapse ID reduces duplicate alerts.
+Claims use a generation and a 90-second lease; attempts are reserved atomically
+before sending. Each task is bounded to 60 seconds, each provider call to 15.
+Every second, recovery handles expired or legacy unleased sending jobs without
+stealing healthy leases: exhausted attempts become failed, others requeue.
+Stale owners cannot update progress or clear tokens.
+Collapse IDs do not guarantee exactly one physical notification.
 
 The audit log rotates at 16 MiB into uniquely named archives. Rotation keeps
 all archives; operators own archive retention, protected backup, and disk-space

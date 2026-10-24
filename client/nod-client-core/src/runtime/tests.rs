@@ -48,6 +48,8 @@ impl Drop for TestServer {
 }
 
 impl TestServer {
+    // fetch_update supports Docker's Rust 1.94; try_update requires newer Rust.
+    #[allow(deprecated)]
     async fn start() -> Self {
         let (messages, _) = broadcast::channel(16);
         let fixture = Fixture {
@@ -96,6 +98,12 @@ async fn get_request(
         return Err(StatusCode::UNAUTHORIZED);
     }
     let requests = state.requests.lock().await;
+    assert_eq!(
+        headers
+            .get("Nod-Request-Contract")
+            .and_then(|v| v.to_str().ok()),
+        Some("single-value-v1")
+    );
     let request = requests
         .iter()
         .find(|request| request.id == id)
@@ -156,6 +164,7 @@ fn device() -> Value {
 fn request(id: &str) -> Request {
     let now = chrono::Utc::now();
     let mut request = Request {
+        answer_field: None,
         id: id.into(),
         request_id: id.into(),
         channel_id: "other".into(),
@@ -250,6 +259,26 @@ async fn until(runtime: &NodClientRuntime, predicate: impl Fn(&ClientState) -> b
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn targeted_get_rpc_is_read_only_and_does_not_switch_selection() {
+    let server = TestServer::start().await;
+    let (mut runtime, _directory, _messages) = runtime(&server, true).await;
+    let before = serde_json::to_value(runtime.state().await).unwrap();
+    let result = runtime
+        .handle_method(
+            "get_request",
+            json!({
+                "server_id": profile_id_for(&server.url), "request_id": "initial"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["request"]["id"], "initial");
+    assert_eq!(serde_json::to_value(runtime.state().await).unwrap(), before);
+    assert!(server.fixture.posts.lock().await.is_empty());
+    assert_eq!(server.fixture.snapshot_gets.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -368,6 +397,8 @@ async fn notification_submission_fetches_and_signs_on_its_own_server_without_swi
     let selected_before = runtime.state().await.selected_server_id;
     let result = runtime
         .submit_request_option(SubmitRequestOptionParams {
+            answer_value: None,
+            expected_request_digest: None,
             server_id: profile_id_for(&server.url),
             request_id: "initial".into(),
             option_id: "dismiss".into(),
@@ -488,6 +519,8 @@ async fn lost_decision_response_posts_once_and_reconciles_with_get() {
         .store(true, Ordering::SeqCst);
     let error = runtime
         .submit_request_option(SubmitRequestOptionParams {
+            answer_value: None,
+            expected_request_digest: None,
             server_id: profile_id_for(&server.url),
             request_id: "initial".into(),
             option_id: "dismiss".into(),
@@ -500,6 +533,70 @@ async fn lost_decision_response_posts_once_and_reconciles_with_get() {
     assert!(error.contains("1 attempt(s)"));
     assert!(!error.contains("sensitive"));
     assert_eq!(server.fixture.posts.lock().await.len(), 1);
+    assert_eq!(
+        runtime.state().await.requests[0].status,
+        RequestStatus::Resolved
+    );
+}
+
+#[tokio::test]
+async fn lost_value_response_keeps_one_post_and_reconciles_read_only() {
+    let server = TestServer::start().await;
+    let digest;
+    {
+        let mut cards = server.fixture.requests.lock().await;
+        let card = &mut cards[0];
+        card.answer_field = Some(nod_proto::AnswerField::Number {
+            label: "Count".into(),
+            default: nod_proto::AnswerValue::Number {
+                decimal: "4".into(),
+            },
+        });
+        card.options.push(crate::models::RequestOption {
+            id: "apply".into(),
+            label: "Apply".into(),
+            kind: crate::models::OptionKind::Approve,
+            style: "default".into(),
+            requires_text: false,
+            text_placeholder: None,
+            destructive: false,
+            foreground: false,
+        });
+        digest = nod_proto::value_signing::request_digest_v3(
+            card,
+            &"a".repeat(64),
+            card.answer_field.as_ref().unwrap(),
+        )
+        .unwrap();
+        card.signing = Some(nod_proto::RequestSigningContext {
+            version: "nod-request-v3".into(),
+            recipients_commitment: "a".repeat(64),
+            request_digest: digest.clone(),
+        });
+        card.request_digest = None;
+    }
+    let (mut runtime, _directory, _messages) = runtime(&server, false).await;
+    server
+        .fixture
+        .lost_submit_response
+        .store(true, Ordering::SeqCst);
+    let result = runtime
+        .submit_request_option(SubmitRequestOptionParams {
+            server_id: profile_id_for(&server.url),
+            request_id: "initial".into(),
+            option_id: "apply".into(),
+            text: Some("notes".into()),
+            answer_value: Some(nod_proto::AnswerValue::Number {
+                decimal: "5".into(),
+            }),
+            expected_request_digest: Some(digest),
+        })
+        .await;
+    assert!(result.is_err());
+    let posts = server.fixture.posts.lock().await;
+    assert_eq!(posts.len(), 1);
+    assert_eq!(posts[0]["answer_value"]["decimal"], "5");
+    assert_eq!(posts[0]["signature"]["payload_version"], "nod-decision-v2");
     assert_eq!(
         runtime.state().await.requests[0].status,
         RequestStatus::Resolved

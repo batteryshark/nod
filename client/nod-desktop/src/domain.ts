@@ -5,6 +5,7 @@ import type {
   RequestOption,
   RequestStatus,
   Channel,
+  AnswerValue,
 } from "./types";
 
 const statusRank: Record<RequestStatus, number> = {
@@ -96,9 +97,28 @@ export function selectedChannel(state: ClientState): Channel | undefined {
 }
 
 export function submittableOptions(request: NodRequest): RequestOption[] {
+  if (isValueUnsupported(request)) return [];
   return request.options.length === 0
     ? [defaultDismissOption]
     : request.options;
+}
+
+export const VALUE_UNSUPPORTED_INSTRUCTION =
+  "Open this request in an updated iOS or macOS Nod app to answer it.";
+
+export function receiptValue(value: AnswerValue): string {
+  switch (value.kind) {
+    case "choice": return value.choice_id;
+    case "number": return value.decimal;
+    case "date": return value.date;
+    case "date_time": return value.instant;
+  }
+}
+
+export function isValueUnsupported(request: NodRequest): boolean {
+  return request.answer_field != null ||
+    request.signing?.version === "nod-request-v3" ||
+    request.options.some((option) => option.id === "__nod_value_open");
 }
 
 export function optionRequiresText(option: RequestOption): boolean {

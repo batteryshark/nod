@@ -117,7 +117,7 @@ pub(super) async fn get_request_on(
         r#"
         SELECT id, channel_id, title, summary, body_markdown, fields_json, links_json,
             image_url, notification_json, dedupe_key, expires_at, status, created_at,
-            updated_at, resolved_at, decision_json, callback_url, decision_resolution, recipient_salt
+            updated_at, resolved_at, decision_json, callback_url, decision_resolution, recipient_salt, answer_field_json
         FROM requests
         WHERE id = ?
         "#,

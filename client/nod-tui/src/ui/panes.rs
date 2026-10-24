@@ -191,6 +191,34 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         Line::from(request.summary.clone()),
         Line::from(""),
     ];
+    if let Some(field) = request
+        .answer_field
+        .as_ref()
+        .filter(|_| request.status == RequestStatus::Pending)
+    {
+        match field {
+            nod_proto::AnswerField::Choice { label, choices, .. } => {
+                lines.push(Line::from(format!(
+                    "{label}  V previous / v next · n notes (optional)"
+                )));
+                let value = app.answer_value(request);
+                for choice in choices {
+                    let selected = value
+                        == Some(nod_proto::AnswerValue::Choice {
+                            choice_id: choice.id.clone(),
+                        });
+                    lines.push(Line::from(format!(
+                        "{} {}",
+                        if selected { "●" } else { "○" },
+                        choice.label
+                    )));
+                }
+            }
+            _ => lines.push(Line::from(
+                "Open in app — use updated iOS or macOS Nod to answer (UTC for date/time).",
+            )),
+        }
+    }
     if !request.body_markdown.is_empty() {
         lines.extend(
             request
@@ -224,6 +252,17 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         if let Some(notes) = &decision.text {
             lines.push(Line::from(format!("Notes: {notes}")));
         }
+        if let Some(value) = &decision.answer_value {
+            let text = match value {
+                nod_proto::AnswerValue::Choice { choice_id } => format!("Choice: {choice_id}"),
+                nod_proto::AnswerValue::Number { decimal } => format!("Number: {decimal}"),
+                nod_proto::AnswerValue::Date { date } => format!("Date: {date}"),
+                nod_proto::AnswerValue::DateTime { instant } => {
+                    format!("Date/time (UTC): {instant}")
+                }
+            };
+            lines.push(Line::from(text));
+        }
     }
     lines.push(Line::from(format!(
         "Request: {} · Channel: {}",
@@ -232,7 +271,7 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     if request.status == RequestStatus::Pending {
         lines.push(Line::from(""));
         lines.push(Line::from("Options"));
-        if request.options.is_empty() {
+        if request.options.is_empty() && request.answer_field.is_none() {
             lines.push(Line::from("d dismiss"));
         } else {
             for option in &request.options {

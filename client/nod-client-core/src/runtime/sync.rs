@@ -149,7 +149,12 @@ fn is_expected_reconnect_error(error: &Error, has_connected: bool) -> bool {
 
 async fn run_connection(context: &SnapshotContext) -> Result<()> {
     let url = context.api.websocket_url()?;
-    let (mut socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(url.as_str()))
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut handshake = url.as_str().into_client_request()?;
+    handshake
+        .headers_mut()
+        .insert("Nod-Request-Contract", "single-value-v1".parse()?);
+    let (mut socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(handshake))
         .await
         .map_err(|_| anyhow!("Nod GET /api/v1/sync connection timed out; reconnecting."))?
         .map_err(|error| match error {

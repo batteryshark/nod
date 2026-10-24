@@ -17,6 +17,7 @@ use crate::{
 
 #[derive(Default)]
 pub struct CreateRequestMetadata<'a> {
+    pub origin: Option<&'a crate::db::lifecycle::Origin>,
     pub created_by_issuer_token_id: Option<&'a str>,
     pub idempotency_key: Option<&'a str>,
 }
@@ -34,7 +35,20 @@ pub async fn create_request(
             "idempotency_key must contain 1 to 128 bytes".to_string(),
         ));
     }
-    let fingerprint = format!("{:x}", Sha256::digest(serde_json::to_vec(&req)?));
+    let legacy_fingerprint = format!("{:x}", Sha256::digest(serde_json::to_vec(&req)?));
+    let fingerprint = if let Some(origin) = metadata.origin {
+        origin.validate()?;
+        format!(
+            "origin-v1:{:x}",
+            Sha256::digest(serde_json::to_vec(&(
+                "origin-v1",
+                &legacy_fingerprint,
+                origin
+            ))?)
+        )
+    } else {
+        legacy_fingerprint
+    };
     let scope = metadata.created_by_issuer_token_id.unwrap_or("admin");
     let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
     if let Some(key) = idempotency_key {
@@ -64,6 +78,56 @@ pub async fn create_request(
         if let Some(request) =
             find_pending_request_by_dedupe_key(&mut transaction, &req.channel_id, key).await?
         {
+            if req.answer_field.is_some() || request.answer_field.is_some() {
+                let summary = if req.summary.trim().is_empty() {
+                    req.body_markdown
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .chars()
+                        .take(160)
+                        .collect::<String>()
+                } else {
+                    req.summary.clone()
+                };
+                if req.answer_field != request.answer_field
+                    || req.title.trim() != request.title
+                    || summary.trim() != request.summary
+                    || req.body_markdown.trim() != request.body_markdown
+                    || req.fields != request.fields
+                    || req.links != request.links
+                    || req.image_url != request.image_url
+                    || normalized_notification(req.notification.clone()) != request.notification
+                    || req.expires_at != request.expires_at
+                    || req.callback_url != request.callback_url
+                    || normalize_options(req.options.clone()) != request.options
+                    || recipients != request.recipients
+                    || req
+                        .decision_resolution
+                        .clone()
+                        .unwrap_or(DecisionResolution::Shared)
+                        != request.decision_resolution
+                    || crate::db::lifecycle::origin_on(&mut transaction, &request.id)
+                        .await?
+                        .as_ref()
+                        != metadata.origin
+                {
+                    return Err(ApiError::Conflict(
+                        "pending value request has different content".into(),
+                    ));
+                }
+            }
+            if let Some(origin) = metadata.origin {
+                if crate::db::lifecycle::origin_on(&mut transaction, &request.id)
+                    .await?
+                    .as_ref()
+                    != Some(origin)
+                {
+                    return Err(ApiError::Conflict(
+                        "pending request has a different origin binding".into(),
+                    ));
+                }
+            }
             bind_idempotency(
                 &mut transaction,
                 IdempotencyBinding {
@@ -84,6 +148,11 @@ pub async fn create_request(
         }
     }
 
+    let answer_field_json = req
+        .answer_field
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
     let now = now_string();
     let id = new_id();
     let decision_resolution = req
@@ -136,6 +205,12 @@ pub async fn create_request(
     .execute(&mut *transaction)
     .await?;
 
+    sqlx::query("UPDATE requests SET answer_field_json=? WHERE id=?")
+        .bind(answer_field_json)
+        .bind(&id)
+        .execute(&mut *transaction)
+        .await?;
+
     for user_id in &recipients {
         insert_request_recipient(&mut transaction, &id, user_id).await?;
     }
@@ -161,6 +236,24 @@ pub async fn create_request(
     )
     .await?;
     let request = get_request_on(&mut transaction, &id).await?;
+    if let Some(origin) = metadata.origin {
+        sqlx::query(
+            "INSERT INTO request_origins(request_id,session,directory,reference) VALUES(?,?,?,?)",
+        )
+        .bind(&id)
+        .bind(&origin.session)
+        .bind(&origin.directory)
+        .bind(&origin.reference)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    crate::db::lifecycle::append_lifecycle_on(
+        &mut transaction,
+        &request,
+        "nod.request.created",
+        None,
+    )
+    .await?;
     transaction.commit().await?;
     Ok(CreatedDecisionRequest {
         request_id: id,

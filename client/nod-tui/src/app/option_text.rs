@@ -6,6 +6,8 @@ use crate::domain::OptionChoice;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OptionTextForm {
+    answer_value: Option<nod_proto::AnswerValue>,
+    expected_request_digest: Option<String>,
     request_id: String,
     option_id: String,
     label: String,
@@ -16,6 +18,14 @@ pub(crate) struct OptionTextForm {
 impl OptionTextForm {
     pub(super) fn from_choice(request: &Request, option: OptionChoice<'_>) -> Self {
         Self {
+            answer_value: request
+                .answer_field
+                .as_ref()
+                .map(|f| f.default_value().clone()),
+            expected_request_digest: request
+                .answer_field
+                .as_ref()
+                .and_then(|_| request.signing.as_ref().map(|c| c.request_digest.clone())),
             request_id: request.id.clone(),
             option_id: option.id.to_string(),
             label: option.label.to_string(),
@@ -26,6 +36,10 @@ impl OptionTextForm {
 
     pub(crate) fn label(&self) -> &str {
         &self.label
+    }
+
+    pub(super) fn set_answer(&mut self, value: Option<nod_proto::AnswerValue>) {
+        self.answer_value = value;
     }
 
     pub(crate) fn placeholder(&self) -> Option<&str> {
@@ -45,6 +59,8 @@ impl OptionTextForm {
             return ModalResult::submitting(
                 self.clone(),
                 vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
+                    answer_value: self.answer_value.clone(),
+                    expected_request_digest: self.expected_request_digest.clone(),
                     request_id: self.request_id.clone(),
                     option_id: self.option_id.clone(),
                     text: (!self.input.value().trim().is_empty())
@@ -137,6 +153,8 @@ mod tests {
         assert_eq!(
             result.commands,
             vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
+                answer_value: None,
+                expected_request_digest: None,
                 request_id: "deploy".into(),
                 option_id: "approve_notes".into(),
                 text: None

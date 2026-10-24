@@ -34,7 +34,15 @@ public final class NodStore: ObservableObject {
   @Published public var syncPhase = "offline"
   @Published public var lastSyncedAt: Date?
   @Published public var pendingActions = Set<String>()
-  @Published public var responseDrafts: [String: String] = [:]
+  @Published public var responseDrafts: [String: String] = [:] { didSet { persistAnswerState() } }
+  @Published public var answerValueDrafts: [String: NodAnswerValue] = [:] { didSet { persistAnswerState() } }
+  @Published public var answerAttempts: [String: NodAnswerAttempt] = [:] { didSet { persistAnswerState() } }
+  @Published public var answerReceipt: NodAnswerReceipt?
+  @Published public var answerContext: NodAnswerReceipt?
+  @Published public var answerDraftsSaved = false
+  @Published public var answerStorageError: String?
+  var answerStorageURL: URL?
+  var answerStorageEnabled = false
   @Published public var isRegistering = false
   @Published public var isRefreshing = false
   @Published public var acknowledgeOnOpen = UserDefaults.standard.object(forKey: "nod.acknowledgeOnOpen") as? Bool ?? true {
@@ -151,14 +159,39 @@ public final class NodStore: ObservableObject {
   private var explicitRead: (serverId: String, requestId: String)?
   @Published public private(set) var macPendingOnly = false
   @Published public private(set) var macSearchText = ""
+  @Published public private(set) var macHandledOnly = false
+  private var macInboxUIInitialized = false
+
+  public func initializeMacInboxUI() {
+    guard !macInboxUIInitialized else { return }
+    macInboxUIInitialized = true
+    macPendingOnly = true
+    reconcileMacSelection()
+  }
+
+  public func setMacInboxMode(handled: Bool) {
+    leaveExplicitRead()
+    macPendingOnly = !handled
+    macHandledOnly = handled
+    reconcileMacSelection()
+  }
 
   public var macInboxRequests: [NodRequest] {
     let query = macSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
     return requests.filter { request in
-      (!macPendingOnly || request.status == .pending) &&
+      (!macPendingOnly || needsAnswer(request)) &&
+        (!macHandledOnly || !needsAnswer(request)) &&
         (query.isEmpty || [request.title, request.summary, request.bodyMarkdown, request.id]
           .contains { $0.localizedCaseInsensitiveContains(query) })
     }
+  }
+  public func macNextPending(excluding requestId: String? = nil) -> [NodRequest] {
+    NodRequestInbox.newestFirst(macInboxRequests.filter { needsAnswer($0) && $0.id != requestId })
+  }
+
+  public func selectNextMacPending(excluding requestId: String? = nil) {
+    guard let next = macNextPending(excluding: requestId).first else { return }
+    selectRequestExplicitly(next.id)
   }
   #endif
   /// Pending request ids already turned into a local notification, so a backlog
@@ -181,6 +214,7 @@ public final class NodStore: ObservableObject {
     self.presentLocalNotifications = presentLocalNotifications
     self.appAttest = appAttest
     self.notificationControllerEnabled = configureNotificationController
+    self.answerStorageEnabled = configureNotificationController
 
     let savedDeviceName = defaults.string(forKey: "nod.deviceName") ?? defaultDeviceName
     self.baseURLString = ""
@@ -195,7 +229,7 @@ public final class NodStore: ObservableObject {
           Task { @MainActor in await self?.openNotification(target) }
         },
         onOption: { [weak self] target, optionId, text in
-          await self?.submitNotificationOption(target: target, optionId: optionId, text: text) ?? false
+          await self?.handleNotificationOption(target: target, optionId: optionId, text: text) ?? false
         }
       )
     }
@@ -458,14 +492,14 @@ public final class NodStore: ObservableObject {
   }
 
   @discardableResult
-  public func submit(request: NodRequest, option: NodRequestOption, text: String? = nil, serverId: String? = nil) async -> Bool {
+  public func submit(request: NodRequest, option: NodRequestOption, text: String? = nil, serverId: String? = nil, answerValue: NodAnswerValue? = nil) async -> Bool {
     guard let serverId = serverId ?? selectedServer?.id else { return false }
-    return await submitNotificationOption(target: NodNotificationTarget(serverId: serverId, requestId: request.id, channelId: request.channelId), optionId: option.id, text: text)
+    return await submitNotificationOption(target: NodNotificationTarget(serverId: serverId, requestId: request.id, channelId: request.channelId), optionId: option.id, text: text, answerValue: answerValue, expectedRequestDigest: request.answerField == nil ? nil : request.signing?.requestDigest)
   }
 
   @discardableResult
   public func dismissIfInformational(request: NodRequest, serverId: String? = nil) async -> Bool {
-    guard request.status == .pending, request.options.isEmpty, let serverId = serverId ?? selectedServer?.id else { return false }
+    guard !request.isValueRequest, request.status == .pending, request.options.isEmpty, let serverId = serverId ?? selectedServer?.id else { return false }
     let target = NodNotificationTarget(serverId: serverId, requestId: request.id, channelId: request.channelId)
     return await submitNotificationOption(target: target, optionId: "dismiss", text: nil)
   }
@@ -476,7 +510,7 @@ public final class NodStore: ObservableObject {
     let serverId = serverId ?? selectedServerId
     if explicitRead?.serverId == serverId && explicitRead?.requestId == request.id { return }
     leaveExplicitRead()
-    guard acknowledgeOnOpen, request.status == .pending, request.options.isEmpty,
+    guard acknowledgeOnOpen, !request.isValueRequest, request.status == .pending, request.options.isEmpty,
       let serverId else { return }
     explicitRead = (serverId, request.id)
   }
@@ -494,7 +528,7 @@ public final class NodStore: ObservableObject {
       // uncertain write; the normal runtime submit path reconciles with GET.
       guard self.runtime.state?.selectedServerId == read.serverId,
         let request = self.runtime.state?.requests.first(where: { $0.id == read.requestId }),
-        request.status == .pending, request.options.isEmpty else { return }
+        !request.isValueRequest, request.status == .pending, request.options.isEmpty else { return }
       await self.dismissIfInformational(request: request, serverId: read.serverId)
     }
   }
@@ -502,6 +536,7 @@ public final class NodStore: ObservableObject {
   public func selectRequestExplicitly(_ requestId: String?) {
     // SwiftUI can clear List selection while rows reconcile: not a user leave.
     guard let requestId, let request = macInboxRequests.first(where: { $0.id == requestId }) else { return }
+    answerReceipt = nil
     beginExplicitRead(request: request)
     selectedRequestId = requestId
   }
@@ -522,6 +557,7 @@ public final class NodStore: ObservableObject {
     guard pendingOnly != macPendingOnly || searchText != macSearchText else { return }
     leaveExplicitRead()
     macPendingOnly = pendingOnly
+    macHandledOnly = false
     macSearchText = searchText
     reconcileMacSelection()
   }
@@ -657,9 +693,14 @@ public final class NodStore: ObservableObject {
   }
 
   public func forgetServers(_ serverIds: [String]) {
+    prepareAnswerStorage()
     for serverId in serverIds {
       let server = servers.first { $0.id == serverId }
       responseDrafts = responseDrafts.filter { !$0.key.hasPrefix(serverId + ":") }
+      answerValueDrafts = answerValueDrafts.filter { !$0.key.hasPrefix(serverId + ":") }
+      answerAttempts = answerAttempts.filter { $0.value.serverId != serverId }
+      if answerReceipt?.serverId == serverId { answerReceipt = nil }
+      if answerContext?.serverId == serverId { answerContext = nil }
       try? appAttest.delete(account: Self.appAttestKeyAccount(for: server?.credentialId ?? serverId))
       Task { await NodNotificationController.shared.removeNotifications(for: NodNotificationTarget(serverId: serverId, deviceId: server?.deviceId)) }
     }
@@ -782,7 +823,7 @@ public final class NodStore: ObservableObject {
     ]
   }
 
-  func submitNotificationOption(target: NodNotificationTarget, optionId: String, text: String?) async -> Bool {
+  func submitNotificationOption(target: NodNotificationTarget, optionId: String, text: String?, answerValue: NodAnswerValue? = nil, expectedRequestDigest: String? = nil) async -> Bool {
     guard let requestId = target.requestId else { return false }
     do {
       try await ensureRuntimeStarted()
@@ -794,7 +835,7 @@ public final class NodStore: ObservableObject {
       let key = serverId + ":" + requestId
       guard pendingActions.insert(key).inserted else { return false }
       defer { pendingActions.remove(key) }
-      try await runtime.submitRequestOption(serverId: serverId, requestId: requestId, optionId: optionId, text: text)
+      try await runtime.submitRequestOption(serverId: serverId, requestId: requestId, optionId: optionId, text: text, answerValue: answerValue, expectedRequestDigest: expectedRequestDigest)
       if notificationControllerEnabled {
         await NodNotificationController.shared.removeNotifications(for: NodNotificationTarget(serverId: serverId, deviceId: target.deviceId ?? profiles.first { $0.id == serverId }?.deviceId, requestId: requestId))
       }

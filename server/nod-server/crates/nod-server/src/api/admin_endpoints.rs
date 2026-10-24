@@ -338,6 +338,7 @@ pub(super) async fn create_admin_test_request(
         &state,
         req.into(),
         db::CreateRequestMetadata {
+            origin: None,
             created_by_issuer_token_id: None,
             idempotency_key: idempotency_key.as_deref(),
         },

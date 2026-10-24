@@ -49,7 +49,11 @@ pub(super) fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &AppState, mo
             frame.render_stateful_widget(
                 List::new(items).block(
                     Block::default()
-                        .title("Actions · Enter selects · Esc cancels")
+                        .title(if request.answer_field.is_some() {
+                            "Actions · Enter answers · n notes · Esc cancels"
+                        } else {
+                            "Actions · Enter selects · Esc cancels"
+                        })
                         .borders(Borders::ALL),
                 ),
                 modal_area,

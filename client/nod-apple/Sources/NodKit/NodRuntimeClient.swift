@@ -128,15 +128,28 @@ public final class NodRuntimeClient: ObservableObject {
     try await callApplyingState("open_request", ["server_id": serverId, "request_id": requestId])
   }
 
-  public func submitRequestOption(serverId: String, requestId: String, optionId: String, text: String?) async throws {
+  public func getRequest(serverId: String, requestId: String) async throws -> NodRequest {
+    struct Envelope: Decodable { let ok: Bool; let result: ResultBody?; let error: String? }
+    struct ResultBody: Decodable { let request: NodRequest }
+    let data = try await send("get_request", ["server_id": serverId, "request_id": requestId])
+    let envelope = try JSONDecoder.nod.decode(Envelope.self, from: data)
+    guard envelope.ok, let result = envelope.result else { throw NodRuntimeError.rpc(envelope.error ?? "Could not check request status.") }
+    return result.request
+  }
+
+  public func submitRequestOption(serverId: String, requestId: String, optionId: String, text: String?, answerValue: NodAnswerValue? = nil, expectedRequestDigest: String? = nil) async throws {
     var params: [String: Any] = ["server_id": serverId, "request_id": requestId, "option_id": optionId]
     if let text { params["text"] = text }
+    if let answerValue { params["answer_value"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(answerValue)) }
+    if let expectedRequestDigest { params["expected_request_digest"] = expectedRequestDigest }
     try await call("submit_request_option", params)
   }
 
-  public func submitOption(requestId: String, optionId: String, text: String?) async throws {
+  public func submitOption(requestId: String, optionId: String, text: String?, answerValue: NodAnswerValue? = nil, expectedRequestDigest: String? = nil) async throws {
     var params: [String: Any] = ["request_id": requestId, "option_id": optionId]
     if let text { params["text"] = text }
+    if let answerValue { params["answer_value"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(answerValue)) }
+    if let expectedRequestDigest { params["expected_request_digest"] = expectedRequestDigest }
     try await call("submit_option", params)
   }
 

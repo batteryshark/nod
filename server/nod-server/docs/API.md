@@ -170,10 +170,75 @@ returns 409. Its record survives until the request is removed by retention or
 channel deletion. `dedupe_key` retains its separate pending-only behavior.
 Both fields are accepted by `/api/v1/admin/test-requests`.
 
-Requests may include `callback_url`, but callback delivery is an unsigned,
-best-effort wake-up after Nod records a decision. Do not treat the callback
+Requests may include `callback_url`; accepted answers atomically queue an unsigned,
+retryable wake-up with a frozen legacy cumulative payload. Do not treat the callback
 payload as proof of approval; use the authenticated read or wait endpoint before
 acting.
+The unchanged body contains `request_id`, `channel_id`, `status`, `decision`,
+`decisions`, and `decision_resolution`. `Nod-Delivery-Id`, `Nod-Event-Id`, and
+`Nod-Request-Revision` headers remain stable across retries; receivers must
+durably deduplicate deliveries to avoid repeated external effects. See
+[callback policies](../../../docs/deploy.md#callback-audit-and-delivery-policies).
+
+### Integration events and origin
+
+Create optionally accepts server-only `origin` with `session`, `directory`, and
+optional `reference`. It is not part of native DTOs or signing bytes. Validation
+requires a nonempty `ses_`-prefixed session (more than four, at most 256 bytes),
+an absolute `/`-prefixed directory (at most 4096 bytes), and, when present, a
+nonempty reference (at most 512 bytes); control characters and unknown origin
+fields are rejected. Nod does not check the directory on its host, execute it,
+or change into it. Treat origin-write issuers as trusted routing authorities.
+
+Origin is immutable. Matching idempotency retries reuse the original request;
+changed origin under the same key conflicts. Origin-absent callers retain the
+legacy fingerprint behavior. Pending dedupe is not durable idempotency: a
+supplied origin must match the existing binding, including rejecting a supplied
+origin when the existing request has none. An origin-absent dedupe retry neither
+erases nor replaces an existing binding. Deduped calls add no event/revision.
+
+Protected integration routes (Bearer admin or issuer; devices forbidden):
+
+- `GET /api/v1/integrations/events?after=0&limit=100` returns
+  `{events:[{seq,envelope}],next_cursor,high_water}`. `after` defaults to zero;
+  `limit` is 1–500. For bounded catch-up retain the first `high_water` and pass
+  `through=<high_water>` on subsequent pages with `after=<next_cursor>`.
+  Cursors are local journal sequence numbers, not request revisions or broker
+  sequences. `through` must be between `after` and the current high-water.
+  Cursor advancement includes scanned unauthorized rows: an empty filtered page
+  is not the end unless the cursor has reached the fixed high-water.
+- `GET /api/v1/integrations/events/{event_id}` returns
+  `{envelope,channel_id,created_by_issuer_token_id,origin,decision}`. Read
+  authorization uses the saved channel even after request pruning; existing
+  issuer request-write scopes imply read. Read-capable issuers can scan but see
+  only authorized channels. Revoked credentials do not retain access. Detail
+  contains exactly the accepted individual decision, not the first answer from
+  a later cumulative snapshot.
+- `POST /api/v1/integrations/requests/{request_id}/origin` accepts the origin
+  object directly. Requires channel request-write authorization; an issuer must
+  also be the request's creator (admin may register). Pending-only: absent
+  binding is installed, same binding is idempotent, replacement conflicts.
+  This does not increment revision, fabricate an event, or rewrite original
+  created-event detail. Reconcile migration races before owner cutover.
+
+One accepted create, individual answer, cancel or expiry produces one immutable
+event/revision transactionally. Types are `nod.request.created`,
+`nod.answer.recorded`, `nod.request.cancelled`, `nod.request.expired`; NATS
+subjects prepend `ev.`. CloudEvents 1.0 fields include stable `id`, persisted
+node `source` (`nod/<node-id>`), request-ID `subject`, `type`, `time`, and JSON
+`data`: `schema_version`, `request_id`, `revision`, `aggregate_status`, and
+`decision_resolution`. Answers also carry opaque `decision_id` equal to event
+ID. Per-user intermediate answers remain aggregate `pending`; final/shared
+answers are `resolved`. Process each unseen individual event, including older
+revisions delivered out of order; do not deduplicate by request ID alone.
+
+Broad events omit answer text/options, signatures, recipients and origin
+session/directory/reference. IDs/timing/status still reveal activity. Fetch
+private evidence only through authorized Nod HTTP, not an event-supplied URL.
+Journal evidence is retained independently of request pruning and broker
+retention. Existing signed-device decision semantics are unchanged; neither a
+bus message nor callback grants approval. No broker command endpoint or client
+broker credentials are introduced.
 
 List visible requests for a registered device:
 
@@ -277,6 +342,16 @@ health. Each delivery includes `request_id`, `device_id`, `status`, `attempts`,
 `updated_at`, and `error`; statuses are `queued`, `sending`, `accepted`, `failed`,
 and `skipped`. Accepted means the upstream accepted the push, not that a person
 saw it. See [delivery policies and backup/restore](../../../docs/deploy.md#callback-audit-and-delivery-policies).
+
+Activity also returns `integrations` with `publisher_status`,
+`lifecycle_total`, `lifecycle_pending`, `lifecycle_retrying`,
+`lifecycle_max_attempts`, `lifecycle_oldest_pending_at`, `callbacks_queued`,
+`callbacks_retrying`, `callbacks_blocked_policy`, `callbacks_sending`,
+`callbacks_delivered`, `callbacks_max_attempts`, and
+`callbacks_oldest_pending_at`. Oldest timestamps are nullable. Connected is
+connection readiness, not proof all events were published; JSONL audit health
+is separate from lifecycle/callback/push delivery readiness. Queue summaries
+are operational state, not full per-attempt audit history.
 
 New signature receipts include `public_key` alongside the canonical
 `signing_payload` and signature. Device revocation and user deletion preserve

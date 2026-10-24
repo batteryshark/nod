@@ -1,4 +1,5 @@
 use sqlx::SqlitePool;
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::{get_device, now_string, rows::row_to_channel, validation::validate_id};
 use crate::{
@@ -92,7 +93,9 @@ fn normalized_emoji(value: &str) -> String {
     if emoji.is_empty() {
         "🔔".to_string()
     } else {
-        emoji.chars().take(8).collect()
+        // Preserve the legacy eight-unit allowance, but never cut a flag,
+        // modifier or ZWJ family in the middle of an extended grapheme.
+        emoji.graphemes(true).take(8).collect()
     }
 }
 
@@ -155,4 +158,19 @@ pub async fn delete_channel(pool: &SqlitePool, channel_id: &str) -> Result<(), A
 
     tx.commit().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod emoji_tests {
+    use super::normalized_emoji;
+
+    #[test]
+    fn preserves_short_legacy_values_and_complete_emoji_clusters() {
+        for value in ["abcdefgh", "👨‍👩‍👧‍👦", "👩🏽‍❤️‍💋‍👨🏻", "🇺🇸", "🏴‍☠️", "👍🏿"]
+        {
+            assert_eq!(normalized_emoji(value), value);
+        }
+        assert_eq!(normalized_emoji("  "), "🔔");
+        assert_eq!(normalized_emoji("1234567👩🏽‍❤️‍💋‍👨🏻9"), "1234567👩🏽‍❤️‍💋‍👨🏻");
+    }
 }

@@ -87,6 +87,7 @@ impl DestructiveAction {
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppState {
+    value_drafts: std::collections::BTreeMap<String, nod_proto::AnswerValue>,
     client_state: ClientState,
     devices: Vec<UserDevice>,
     focus: Focus,
@@ -114,6 +115,7 @@ impl AppState {
             Some(Modal::Enrollment(EnrollmentForm::new()))
         };
         Self {
+            value_drafts: Default::default(),
             client_state,
             devices: Vec::new(),
             focus: Focus::Requests,
@@ -484,6 +486,8 @@ impl AppState {
             KeyCode::Char('a') => self.command_for_option_kind(OptionKind::Approve),
             KeyCode::Char('r') => self.command_for_option_kind(OptionKind::Reject),
             KeyCode::Char('d') => self.command_for_option_kind(OptionKind::Dismiss),
+            KeyCode::Char('V') => self.cycle_answer(-1),
+            KeyCode::Char('v') => self.cycle_answer(1),
             KeyCode::Char('n') => self.command_for_text_option(),
             KeyCode::Char('c') => self.command_for_clear_channel(),
             KeyCode::Enter => {
@@ -548,6 +552,23 @@ impl AppState {
             } => {
                 let options = domain::submittable_options(&request);
                 match key.code {
+                    KeyCode::Char('n')
+                        if matches!(
+                            request.answer_field,
+                            Some(nod_proto::AnswerField::Choice { .. })
+                        ) && request.status
+                            == nod_client_core::models::RequestStatus::Pending =>
+                    {
+                        if let Some(option) = options.get(selected) {
+                            let mut form = OptionTextForm::from_choice(
+                                &request,
+                                domain::OptionChoice::from_option(option),
+                            );
+                            form.set_answer(self.answer_value(&request));
+                            self.modal = Some(Modal::OptionText(form));
+                        }
+                        return Vec::new();
+                    }
                     KeyCode::Esc | KeyCode::Char('q') => return Vec::new(),
                     KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
                     KeyCode::Down | KeyCode::Char('j') => {
@@ -747,17 +768,37 @@ impl AppState {
         request: &Request,
         option: domain::OptionChoice<'_>,
     ) -> Vec<RuntimeCommand> {
+        if request
+            .answer_field
+            .as_ref()
+            .is_some_and(|f| !matches!(f, nod_proto::AnswerField::Choice { .. }))
+            || (option.id == "__nod_value_open"
+                && request
+                    .signing
+                    .as_ref()
+                    .is_some_and(|c| c.version == "nod-request-v3"))
+        {
+            self.set_error(
+                "Open in an updated iOS or macOS Nod app to answer this request.".into(),
+            );
+            return Vec::new();
+        }
         if request.status != nod_client_core::models::RequestStatus::Pending {
             self.set_error("This request has already been handled.".into());
             return Vec::new();
         }
         if option.requires_text {
-            self.modal = Some(Modal::OptionText(OptionTextForm::from_choice(
-                request, option,
-            )));
+            let mut form = OptionTextForm::from_choice(request, option);
+            form.set_answer(self.answer_value(request));
+            self.modal = Some(Modal::OptionText(form));
             Vec::new()
         } else {
             vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
+                answer_value: self.answer_value(request),
+                expected_request_digest: request
+                    .answer_field
+                    .as_ref()
+                    .and_then(|_| request.signing.as_ref().map(|c| c.request_digest.clone())),
                 request_id: request.id.clone(),
                 option_id: option.id.to_string(),
                 text: None,
@@ -766,18 +807,97 @@ impl AppState {
     }
 
     fn command_for_text_option(&mut self) -> Vec<RuntimeCommand> {
-        let Some(request) = self.selected_request() else {
+        let Some(request) = self.selected_request().cloned() else {
             self.set_error("No request selected.".to_string());
             return Vec::new();
         };
-        let Some(option) = domain::first_text_option(request) else {
+        if request.answer_field.is_some() {
+            if request.status != nod_client_core::models::RequestStatus::Pending {
+                self.set_error("This request has already been handled.".into());
+                return Vec::new();
+            }
+            if !matches!(
+                request.answer_field,
+                Some(nod_proto::AnswerField::Choice { .. })
+            ) {
+                self.set_error(
+                    "Open in an updated iOS or macOS Nod app to answer this request.".into(),
+                );
+                return Vec::new();
+            }
+            if let Some(option) = request.options.first() {
+                let mut form = OptionTextForm::from_choice(
+                    &request,
+                    domain::OptionChoice {
+                        id: &option.id,
+                        label: &option.label,
+                        placeholder: Some("Notes (optional)"),
+                        requires_text: false,
+                    },
+                );
+                form.set_answer(self.answer_value(&request));
+                self.modal = Some(Modal::OptionText(form));
+            }
+            return Vec::new();
+        }
+        let Some(option) = domain::first_text_option(&request) else {
             self.set_error("Selected request has no text option.".to_string());
             return Vec::new();
         };
 
         self.modal = Some(Modal::OptionText(OptionTextForm::from_choice(
-            request, option,
+            &request, option,
         )));
+        Vec::new()
+    }
+
+    fn value_draft_key(&self, request: &Request) -> String {
+        format!(
+            "{:?}:{}:{:?}",
+            self.client_state.selected_server_id,
+            request.id,
+            request.signing.as_ref().map(|c| &c.request_digest)
+        )
+    }
+
+    pub(crate) fn answer_value(&self, request: &Request) -> Option<nod_proto::AnswerValue> {
+        let field = request.answer_field.as_ref()?;
+        self.value_drafts
+            .get(&self.value_draft_key(request))
+            .cloned()
+            .or_else(|| Some(field.default_value().clone()))
+    }
+
+    fn cycle_answer(&mut self, delta: isize) -> Vec<RuntimeCommand> {
+        let Some(request) = self.selected_request() else {
+            return Vec::new();
+        };
+        if request.status != nod_client_core::models::RequestStatus::Pending {
+            return Vec::new();
+        }
+        let Some(nod_proto::AnswerField::Choice { choices, .. }) = &request.answer_field else {
+            return Vec::new();
+        };
+        if choices.is_empty() {
+            return Vec::new();
+        }
+        let current = self.answer_value(request);
+        let index = choices
+            .iter()
+            .position(|c| {
+                current
+                    == Some(nod_proto::AnswerValue::Choice {
+                        choice_id: c.id.clone(),
+                    })
+            })
+            .unwrap_or(0);
+        let next = (index as isize + delta).rem_euclid(choices.len() as isize) as usize;
+        self.value_drafts.insert(
+            self.value_draft_key(request),
+            nod_proto::AnswerValue::Choice {
+                choice_id: choices[next].id.clone(),
+            },
+        );
         Vec::new()
     }
 
@@ -872,6 +992,135 @@ mod tests {
         );
     }
 
+    fn value_app(field: nod_proto::AnswerField) -> AppState {
+        let mut state = client_state();
+        let mut card = request("value", "default");
+        card.answer_field = Some(field);
+        card.options = vec![RequestOption {
+            id: "apply".into(),
+            label: "Apply".into(),
+            kind: OptionKind::Approve,
+            style: "default".into(),
+            requires_text: false,
+            text_placeholder: None,
+            destructive: false,
+            foreground: false,
+        }];
+        card.signing = Some(nod_proto::RequestSigningContext {
+            version: "nod-request-v3".into(),
+            recipients_commitment: "a".repeat(64),
+            request_digest: "b".repeat(64),
+        });
+        state.requests = vec![card];
+        state.selected_request_id = Some("value".into());
+        AppState::new(state)
+    }
+
+    #[test]
+    fn choice_default_switch_and_optional_notes_are_explicit() {
+        let field = nod_proto::AnswerField::Choice {
+            label: "Batch".into(),
+            choices: vec![
+                nod_proto::AnswerChoice {
+                    id: "small".into(),
+                    label: "Small".into(),
+                },
+                nod_proto::AnswerChoice {
+                    id: "large".into(),
+                    label: "Large".into(),
+                },
+            ],
+            default: nod_proto::AnswerValue::Choice {
+                choice_id: "small".into(),
+            },
+        };
+        let mut app = value_app(field);
+        assert_eq!(
+            app.answer_value(app.selected_request().unwrap()),
+            Some(nod_proto::AnswerValue::Choice {
+                choice_id: "small".into()
+            })
+        );
+        assert!(app.handle_key(key(KeyCode::Char('v'))).is_empty());
+        let selected = Some(nod_proto::AnswerValue::Choice {
+            choice_id: "large".into(),
+        });
+        assert_eq!(app.answer_value(app.selected_request().unwrap()), selected);
+        app.handle_key(key(KeyCode::Char('n')));
+        app.handle_key(key(KeyCode::Char('o')));
+        app.handle_key(key(KeyCode::Char('k')));
+        let commands = app.handle_key(key(KeyCode::Enter));
+        let [RuntimeCommand::SubmitOption(params)] = commands.as_slice() else {
+            panic!("expected explicit submit");
+        };
+        assert_eq!(params.answer_value, selected);
+        assert_eq!(params.text.as_deref(), Some("ok"));
+        assert_eq!(
+            params.expected_request_digest.as_deref(),
+            Some("b".repeat(64).as_str())
+        );
+    }
+
+    #[test]
+    fn unsupported_value_blocks_keys_notes_and_action_sheet() {
+        let mut app = value_app(nod_proto::AnswerField::Number {
+            label: "Count".into(),
+            default: nod_proto::AnswerValue::Number {
+                decimal: "4".into(),
+            },
+        });
+        for code in ['a', 'r', 'd', 'n'] {
+            assert!(app.handle_key(key(KeyCode::Char(code))).is_empty());
+        }
+        app.handle_key(key(KeyCode::Char('o')));
+        assert!(app.handle_key(key(KeyCode::Enter)).is_empty());
+    }
+
+    #[test]
+    fn notes_can_accompany_each_choice_outcome_without_implicit_dismiss() {
+        let field = nod_proto::AnswerField::Choice {
+            label: "Batch".into(),
+            choices: vec![
+                nod_proto::AnswerChoice {
+                    id: "small".into(),
+                    label: "Small".into(),
+                },
+                nod_proto::AnswerChoice {
+                    id: "large".into(),
+                    label: "Large".into(),
+                },
+            ],
+            default: nod_proto::AnswerValue::Choice {
+                choice_id: "small".into(),
+            },
+        };
+        let mut app = value_app(field);
+        app.client_state.requests[0].options.push(RequestOption {
+            id: "hold".into(),
+            label: "Hold".into(),
+            kind: OptionKind::Reject,
+            style: "default".into(),
+            requires_text: false,
+            text_placeholder: None,
+            destructive: false,
+            foreground: false,
+        });
+        app.handle_key(key(KeyCode::Char('o')));
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Char('n')));
+        app.handle_key(key(KeyCode::Char('x')));
+        let commands = app.handle_key(key(KeyCode::Enter));
+        let [RuntimeCommand::SubmitOption(params)] = commands.as_slice() else {
+            panic!("expected notes submit");
+        };
+        assert_eq!(params.option_id, "hold");
+        assert_eq!(params.text.as_deref(), Some("x"));
+        app.modal = None;
+        app.client_state.requests[0].options.clear();
+        assert!(app.handle_key(key(KeyCode::Char('d'))).is_empty());
+        assert!(domain::submittable_options(app.selected_request().unwrap()).is_empty());
+    }
+
     #[test]
     fn text_option_opens_editor_and_submits_text() {
         let mut state = client_state();
@@ -901,6 +1150,8 @@ mod tests {
             commands,
             vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
                 request_id: "deploy".to_string(),
+                answer_value: None,
+                expected_request_digest: None,
                 option_id: "approve_notes".to_string(),
                 text: Some("ok".to_string())
             })]
@@ -995,6 +1246,8 @@ mod tests {
             app.handle_key(key(KeyCode::Enter)),
             vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
                 request_id: "deploy".into(),
+                answer_value: None,
+                expected_request_digest: None,
                 option_id: "restart".into(),
                 text: None
             })]

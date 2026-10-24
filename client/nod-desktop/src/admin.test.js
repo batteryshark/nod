@@ -2,12 +2,12 @@
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-const html = readFileSync("../../server/nod-server/assets/admin.html", "utf8");
+const html = readFileSync("../../server/nod-server/assets/admin.html", "utf8").replace('"__NOD_EMOJI_DATA__"', readFileSync("../../server/nod-server/assets/admin-emoji-data.json", "utf8").trim());
 const pages = [];
 afterEach(() => {
   pages.splice(0).forEach((page) => page.window.close());
 });
-function page(overrides = {}, { privateHttp = false } = {}) {
+function page(overrides = {}, { privateHttp = false, setup = () => {} } = {}) {
   const fixtures = {
     "/summary": {},
     "/users": {
@@ -43,8 +43,8 @@ function page(overrides = {}, { privateHttp = false } = {}) {
     const handler = overrides[path];
     const data = handler ? await handler(init) : fixtures[path];
     return {
-      ok: true,
-      status: 200,
+      ok: !data?.__status || data.__status < 400,
+      status: data?.__status || 200,
       text: async () => JSON.stringify(data ?? {}),
     };
   });
@@ -55,6 +55,8 @@ function page(overrides = {}, { privateHttp = false } = {}) {
     runScripts: "dangerously",
     beforeParse(window) {
       window.fetch = fetch;
+      window.TextEncoder = TextEncoder;
+      setup(window);
       if (privateHttp)
         Object.defineProperty(window.crypto, "randomUUID", {
           value: undefined,
@@ -68,6 +70,46 @@ async function ready(get) {
   await vi.waitFor(() => expect(get("status").textContent).toBe("Ready"));
 }
 describe("embedded admin UI", () => {
+  it("omits None and authors exactly one valid typed default without changing display fields", async () => {
+    const {dom,get} = page(); await ready(get);
+    const payload = () => dom.window.buildTestRequestPayload();
+    const change = () => get('testAnswerType').dispatchEvent(new dom.window.Event('change',{bubbles:true}));
+    get('testTitle').value = 'Batch'; get('testOptionPreset').value = 'approval';
+    expect(payload()).not.toHaveProperty('answer_field');
+    get('testAnswerType').value = 'choice'; change();
+    expect(JSON.parse(JSON.stringify(payload().answer_field))).toEqual({kind:'choice',label:'Batch',choices:[{id:'small',label:'Small'},{id:'large',label:'Large'}],default:{kind:'choice',choice_id:'small'}});
+    expect(payload().fields).toEqual([]);
+    get('testAnswerChoiceDefault').value = ''; expect(payload).toThrow('Choose a default');
+    get('testAnswerChoices').value = 'small: Small\nsmall: Large'; change(); expect(payload).toThrow('unique');
+    get('testAnswerChoices').value = 'small: Same\nlarge: Same'; change(); expect(payload).toThrow('unique');
+    get('testAnswerType').value = 'number'; change(); get('testAnswerLabel').value='Workers';
+    for (const value of ['4','1.5','-0.25']) { get('testAnswerDefault').value=value; expect(payload().answer_field.default).toEqual({kind:'number',decimal:value}); }
+    for (const value of ['', '1.50','-0','-0.0','01','1e2','+1',' 1','NaN','Infinity','1234567890123','0.0000001']) { get('testAnswerDefault').value=value; expect(payload).toThrow('exact decimal'); expect(dom.window.document.activeElement.id).toBe('testAnswerDefault'); }
+    get('testAnswerType').value = 'date'; change();
+    get('testAnswerDefault').value = '2026-10-25'; expect(payload().answer_field.default).toEqual({kind:'date',date:'2026-10-25'});
+    get('testAnswerDefault').value = '2026-02-29'; expect(payload).toThrow('real date');
+    get('testAnswerType').value = 'date_time'; change();
+    get('testAnswerDefault').value = '2026-10-25T09:30:00Z'; expect(payload().answer_field.default).toEqual({kind:'date_time',instant:'2026-10-25T09:30:00Z'});
+    for (const value of ['2026-10-25T09:30:01Z','2026-10-25T09:30:00+00:00','2026-02-30T09:30:00Z']) { get('testAnswerDefault').value=value; expect(payload).toThrow('UTC minute'); }
+    get('testAnswerDefault').value = '2026-10-25T09:30:00Z'; get('testOptionPreset').value = 'approval_text'; expect(payload).toThrow('ordinary outcome');
+  });
+  it("keeps typed drafts across navigation and quiet reads and changes attempt identity with the default", async () => {
+    const bodies=[];
+    const {dom,get} = page({'/test-requests':async init=>{bodies.push(JSON.parse(init.body));throw Error('lost');}}); await ready(get);
+    get('testTitle').value='Batch';get('testOptionPreset').value='approval';get('testAnswerType').value='choice';get('testAnswerType').dispatchEvent(new dom.window.Event('change',{bubbles:true}));
+    const submit=()=>get('testRequestForm').dispatchEvent(new dom.window.Event('submit',{cancelable:true}));
+    submit(); await vi.waitFor(()=>expect(bodies).toHaveLength(1));
+    await dom.window.loadAll();
+    expect(get('testAnswerType').value).toBe('choice');
+    get('testAnswerChoiceDefault').value='large'; submit();await vi.waitFor(()=>expect(bodies).toHaveLength(2));
+    expect(bodies[1].answer_field.default.choice_id).toBe('large');expect(bodies[1].idempotency_key).not.toBe(bodies[0].idempotency_key);
+  });
+  it("escapes tagged receipt values alongside notes with shared receipt fallback", async () => {
+    const {dom,get}=page({'/activity':async()=>({requests:[{id:'typed',title:'Batch',channel_id:'default',status:'answered',decisions:[],decision:{option_label:'Apply',answer_value:{kind:'choice',choice_id:'<img src=x>'},text:'<script>notes</script>'}}],deliveries:[]})});await ready(get);
+    dom.window.document.querySelector('[data-inspect-request="typed"]').click();
+    const inspector=dom.window.document.querySelector('[data-inspector="activity"]');
+    expect(inspector.textContent).toContain('Answer (choice): <img src=x>');expect(inspector.textContent).toContain('<script>notes</script>');expect(inspector.querySelector('img,script')).toBeNull();
+  });
   it("runs with local assets and renders activity content as text", async () => {
     const { dom, get } = page();
     await ready(get);
@@ -159,5 +201,211 @@ describe("embedded admin UI", () => {
     expect(field.value).toContain("code=ABCDEFGH");
     expect(field.selectionEnd).toBe(field.value.length);
     expect(get("status").textContent).toContain("Press Ctrl+C or Command+C");
+  });
+});
+
+describe('A Inset admin safety and tasks', () => {
+  const change = (dom, node) => node.dispatchEvent(new dom.window.Event('change', {bubbles:true}));
+  it.each([
+    ['shared receipt with empty per-user list', {decisions:[],decision:{actor_user_id:'owner',option_label:'Shared approval',text:'Shared reason'}}, ['Shared approval','Shared reason']],
+    ['per-user receipts', {decisions:[{decision:{actor_user_id:'owner',option_label:'Owner approved',text:'Owner reason'}},{decision:{actor_user_id:'other',option_label:'Other rejected',text:'Other reason'}}],decision:{option_label:'Do not duplicate shared fallback'}}, ['Owner approved','Owner reason','Other rejected','Other reason']]
+  ])('receipt inspector displays %s', async (_name, receipts, expected) => {
+    const {dom,get}=page({'/activity':()=>({requests:[{id:'receipt-card',title:'Receipt card',channel_id:'default',status:'answered',...receipts}],deliveries:[],audit:{healthy:true}})});
+    await ready(get);
+    dom.window.document.querySelector('[data-inspect-request="receipt-card"]').click();
+    const detail=dom.window.document.querySelector('[data-inspector="activity"]');
+    expected.forEach(value=>expect(detail.textContent).toContain(value));
+    expect(detail.textContent).not.toContain('No decision receipts');
+    expect(detail.textContent).not.toContain('Do not duplicate shared fallback');
+  });
+  it('focuses subscriptions and rejects a late response for a previously closed user dialog', async () => {
+    let release; const pending = new Promise(resolve => release = resolve);
+    const {dom,get}=page({
+      '/users':()=>({users:[{id:'owner',name:'Owner'},{id:'other',name:'Other'}]}),
+      '/users/owner/subscriptions':()=>pending,
+      '/users/other/subscriptions':()=>({channels:[{id:'default',name:'Default',subscribed:false}]})
+    });
+    await ready(get);
+    dom.window.document.querySelector('[data-manage-subscriptions="owner"]').click();
+    expect(dom.window.document.activeElement).toBe(get('subscriptionSearch'));
+    get('closeSubscriptionModal').click();
+    dom.window.document.querySelector('[data-manage-subscriptions="other"]').click();
+    await vi.waitFor(()=>expect(get('subscriptionList').querySelector('input')).not.toBeNull());
+    release({channels:[{id:'default',name:'Wrong old user data',subscribed:true}]});
+    await new Promise(resolve=>setTimeout(resolve,20));
+    expect(get('subscriptionModalTitle').textContent).toContain('Other');
+    expect(get('subscriptionList').textContent).not.toContain('Wrong old user');
+    expect(get('subscriptionList').querySelector('input').checked).toBe(false);
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+    expect(get('subscriptionModalBackdrop').classList.contains('hidden')).toBe(true);
+  });
+  it('separates active access from searchable known revocation history', async () => {
+    const {dom,get} = page({'/issuer-tokens': () => ({tokens:[
+      {id:'a',name:'Build agent',scopes:['requests:write:default']},
+      {id:'r',name:'Old deploy',scopes:['requests:read:default'],revoked_at:'2026-10-01T00:00:00Z'}
+    ]})});
+    await ready(get);
+    expect(get('tokensBody').textContent).toContain('Build agent');
+    expect(get('tokensBody').textContent).not.toContain('Old deploy');
+    dom.window.document.querySelector('[data-token-mode="revoked"]').click();
+    const search = dom.window.document.querySelector('[aria-label="Search revoked tokens"]');
+    search.value = 'Old deploy'; search.dispatchEvent(new dom.window.Event('input'));
+    expect([...get('tokensBody').rows].filter(row=>!row.hidden)).toHaveLength(1);
+    expect(get('tokensBody').textContent).not.toContain('Build agent');
+    dom.window.document.querySelector('[data-inspect-token="r"]').click();
+    const detail = dom.window.document.querySelector('[data-inspector="token"]');
+    expect(detail.textContent).toContain('requests:read:default');
+    expect(detail.querySelector('[data-revoke-token]')).toBeNull();
+    search.value = 'unknown'; search.dispatchEvent(new dom.window.Event('input'));
+    expect([...get('tokensBody').rows].filter(row=>!row.hidden)).toHaveLength(0);
+  });
+  it('bundles full keyword/category/skin search and roundtrips complex pasted Unicode', async () => {
+    const saved = [];
+    const {dom,get} = page({'/channels': init => {
+      if (init?.body) saved.push(JSON.parse(init.body));
+      return {channels:[{id:'default',name:'Default',emoji:saved.at(-1)?.emoji || '🔔'}]};
+    }});
+    await ready(get);
+    dom.window.document.querySelector('[data-edit-channel="default"]').click();
+    get('emojiPickerToggle').click();
+    expect(get('emojiCount').textContent).toMatch(/of [3-9]\d{3} emoji/);
+    get('emojiSearch').value='astronaut medium skin'; get('emojiSearch').dispatchEvent(new dom.window.Event('input'));
+    expect(get('emojiResults').textContent).toContain('👩🏽‍🚀');
+    get('emojiCategory').value='9'; change(dom,get('emojiCategory'));
+    expect(get('emojiResults').children).toHaveLength(0);
+    get('emojiCategory').value=''; get('emojiSearch').value=''; change(dom,get('emojiCategory'));
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+    expect(get('emojiPickerPopover').classList.contains('hidden')).toBe(true);
+    expect(get('channelModalBackdrop').classList.contains('hidden')).toBe(false);
+    get('emojiPickerToggle').click();
+    get('channelEmojiPicker').value='123456789'; get('applyChannelEmoji').click();
+    expect(get('emojiValidation').textContent).toContain('at most 8');
+    expect(get('channelEmoji').value).toBe('🔔');
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+    for (const emoji of ['👩🏽‍❤️‍💋‍👨🏻','🇺🇸','👨‍👩‍👧‍👦','👍🏿']) {
+      get('emojiPickerToggle').click(); get('channelEmojiPicker').value=emoji; get('applyChannelEmoji').click();
+      expect(get('channelEmoji').value).toBe(emoji);
+      expect(get('channelEmojiPreview').textContent).toBe(emoji);
+      get('channelForm').dispatchEvent(new dom.window.Event('submit',{cancelable:true}));
+      await vi.waitFor(()=>expect(saved.at(-1)?.emoji).toBe(emoji));
+      await vi.waitFor(()=>expect(get('channelModalBackdrop').classList.contains('hidden')).toBe(true));
+      dom.window.document.querySelector('[data-edit-channel="default"]').click();
+      expect(get('channelEmojiPicker').value).toBe(emoji);
+    }
+  });
+  it('selects only enabled subscribers while retaining explicit override capability', async () => {
+    const {dom,get} = page({'/users':()=>({users:[{id:'owner',name:'Owner',subscribed_channel_ids:['default']},{id:'other',name:'Other',subscribed_channel_ids:[]}]})});
+    await ready(get);
+    get('testRecipientsSpecific').checked=true; change(dom,get('testRecipientsSpecific'));
+    get('selectTestRecipients').click();
+    const inputs = [...get('testRecipientsList').querySelectorAll('input')];
+    expect(inputs.map(node=>node.checked)).toEqual([true,false]);
+    inputs[1].checked=true; change(dom,inputs[1]);
+    expect(get('testRecipientSummary').textContent).toContain('2 selected');
+  });
+  it('clears secrets/dialogs/drafts immediately and rejects late responses after logout', async () => {
+    let resolve;
+    const pending = new Promise(r=>resolve=r);
+    const {dom,get} = page({'/issuer-tokens': init=>init?.method==='POST' ? pending : {tokens:[]}});
+    await ready(get);
+    get('openTokenModal').click(); get('tokenName').value='Secret issuer';
+    get('tokenForm').dispatchEvent(new dom.window.Event('submit',{cancelable:true}));
+    await vi.waitFor(()=>expect(get('status').textContent).not.toBe('Checking session'));
+    get('logoutButton').click(); resolve({token:'SHOULD-NOT-REAPPEAR'});
+    await new Promise(r=>setTimeout(r,30));
+    expect(get('adminView').classList.contains('hidden')).toBe(true);
+    expect(get('tokenSecret').textContent).toBe('');
+    expect(get('tokenName').value).toBe('');
+    expect(dom.window.document.querySelector('.modal-backdrop:not(.hidden)')).toBeNull();
+    expect(dom.window.document.body.textContent).not.toContain('SHOULD-NOT-REAPPEAR');
+  });
+  it('clears protected context on expiry while retaining known state on transient read failure', async () => {
+    let status=200;
+    const {get} = page({'/activity':()=>status===200 ? {requests:[{id:'known',title:'Known request'}],deliveries:[]} : {__status:status,message:'Read failed'}});
+    await ready(get); status=500; get('refreshButton').click();
+    await vi.waitFor(()=>expect(get('status').textContent).toBe('Read failed'));
+    expect(get('activityRequests').textContent).toContain('Known request');
+    status=401; get('refreshButton').click();
+    await vi.waitFor(()=>expect(get('adminView').classList.contains('hidden')).toBe(true));
+    expect(get('activityRequests').textContent).toBe('');
+  });
+  it('reconciles per-user partial membership saves and resumes failed intent without retrying success', async () => {
+    let fail=true;
+    const members={owner:false,other:false}; const writes=[];
+    const {dom,get}=page({
+      '/users':()=>({users:Object.keys(members).map(id=>({id,name:id,subscribed_channel_ids:members[id]?['default']:[]}))}),
+      '/users/owner/subscriptions':init=>{writes.push('owner');members.owner=true;return{};},
+      '/users/other/subscriptions':init=>{writes.push('other');if(fail)throw Error('Offline');members.other=true;return{};}
+    });
+    await ready(get);
+    dom.window.document.querySelector('[data-manage-channel-members="default"]').click();
+    get('addAllChannelMembers').click(); get('saveChannelMembershipChanges').click();
+    await vi.waitFor(()=>expect(get('saveChannelMembershipChanges').textContent).toBe('Retry failed'));
+    expect(get('channelMembershipList').textContent).toContain('Saved');
+    expect(get('channelMembershipList').textContent).toContain('Failed');
+    get('closeChannelMembershipModal').click();
+    dom.window.document.querySelector('[data-manage-channel-members="default"]').click();
+    expect(get('channelMembershipList').querySelector('[data-channel-member-user="other"]').checked).toBe(true);
+    fail=false; get('saveChannelMembershipChanges').click();
+    await vi.waitFor(()=>expect(get('status').textContent).toBe('Channel members saved'));
+    expect(writes).toEqual(['owner','other','other']);
+  });
+  it('does not restore a session from a late login response or leave the password in the DOM', async () => {
+    let resolve; const pending=new Promise(r=>resolve=r);
+    const {dom,get}=page({'/admin/session':init=>init?.method==='POST'?pending:{}});
+    await ready(get); dom.window.eval('showLogin()');
+    get('adminToken').value='ONE-TIME-PASSWORD';
+    get('loginForm').dispatchEvent(new dom.window.Event('submit',{cancelable:true}));
+    get('logoutButton').click(); resolve({ok:true});
+    await new Promise(r=>setTimeout(r,20));
+    expect(get('adminToken').value).toBe('');
+    expect(get('adminView').classList.contains('hidden')).toBe(true);
+    expect(dom.window.document.body.innerHTML).not.toContain('ONE-TIME-PASSWORD');
+  });
+  it('closing a membership save stops unstarted writes and keeps the remaining draft', async () => {
+    let release; const pending=new Promise(r=>release=r); const writes=[]; let owner=false;
+    const {dom,get}=page({
+      '/users':()=>({users:[{id:'owner',name:'Owner',subscribed_channel_ids:owner?['default']:[]},{id:'other',name:'Other',subscribed_channel_ids:[]}]}),
+      '/users/owner/subscriptions':async()=>{writes.push('owner');await pending;owner=true;return{};},
+      '/users/other/subscriptions':()=>{writes.push('other');return{};}
+    });
+    await ready(get);
+    dom.window.document.querySelector('[data-manage-channel-members="default"]').click();
+    get('addAllChannelMembers').click();get('saveChannelMembershipChanges').click();
+    await vi.waitFor(()=>expect(writes).toEqual(['owner']));
+    get('cancelChannelMembershipChanges').click();release({});
+    await vi.waitFor(()=>expect(get('status').textContent).toContain('1 member changes remain'));
+    expect(writes).toEqual(['owner']);
+    dom.window.document.querySelector('[data-manage-channel-members="default"]').click();
+    expect(get('channelMembershipList').textContent).toContain('Not attempted');
+    expect(get('channelMembershipList').querySelector('[data-channel-member-user="other"]').checked).toBe(true);
+  });
+  it('a pending clipboard failure cannot recreate copy fallback DOM after logout', async () => {
+    let reject; const pending=new Promise((_,r)=>reject=r);
+    const {dom,get}=page({}, {setup:window=>Object.defineProperty(window.navigator,'clipboard',{value:{writeText:()=>pending}})});
+    await ready(get);
+    dom.window.eval('showSecret("tokenSecret","Access token","COPY-SECRET")');
+    get('tokenSecret').querySelector('button').click();
+    get('logoutButton').click(); reject(Error('Denied'));
+    await new Promise(r=>setTimeout(r,20));
+    expect(dom.window.document.querySelector('[data-copy-fallback]')).toBeNull();
+    expect(get('tokenSecret').textContent).toBe('');
+    expect(dom.window.document.body.innerHTML).not.toContain('COPY-SECRET');
+  });
+  it('quiet GET reconciliation preserves drafts, recipient intent and focused controls', async () => {
+    const {dom,get,fetch}=page(); await ready(get);
+    get('testTitle').value='Draft title';
+    get('testBody').value='Draft body';
+    get('testRecipientsSpecific').checked=true; change(dom,get('testRecipientsSpecific'));
+    get('selectTestRecipients').click();
+    get('testTitle').focus();
+    const control=get('testTitle'); const before=fetch.mock.calls.length;
+    await dom.window.eval('loadAll({quiet:true})');
+    expect(get('testTitle')).toBe(control);
+    expect(dom.window.document.activeElement).toBe(control);
+    expect(control.value).toBe('Draft title');
+    expect(get('testBody').value).toBe('Draft body');
+    expect(get('testRecipientsList').querySelector('input').checked).toBe(true);
+    expect(fetch.mock.calls.slice(before).every(([,init])=>!init.method || init.method==='GET')).toBe(true);
   });
 });

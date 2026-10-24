@@ -93,6 +93,7 @@ mod tests {
     fn callback_payload_uses_the_decision_projection() {
         let now = Utc::now();
         let decision = Decision {
+            answer_value: None,
             request_id: "request-1".to_string(),
             option_id: "approve".to_string(),
             option_kind: OptionKind::Approve,
@@ -104,6 +105,7 @@ mod tests {
             resolved_at: now,
         };
         let request = DecisionRequest {
+            answer_field: None,
             id: "request-1".to_string(),
             channel_id: "deploys".to_string(),
             recipients: vec!["owner".to_string()],

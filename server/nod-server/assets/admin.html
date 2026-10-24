@@ -48,6 +48,7 @@
     main { max-width: 1320px; margin: 0 auto; padding: 18px; }
 
     .hidden { display: none !important; }
+    [hidden] { display:none !important; }
     .stack { display: grid; gap: 14px; }
     .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .split { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -551,6 +552,79 @@
       .wide, .full { grid-column: auto; }
       header { align-items: flex-start; }
     }
+    /* A Inset: persistent task rail, bounded results, adjacent inspection. */
+    :root { --bg:#eef1ed; --surface:#fff; --surface-2:#edf4ed; --text:#213d32; --muted:#617168; --border:#dce4dc; --accent:#285640; }
+    header { position:relative; margin-left:208px; padding:24px 36px; background:none; border:0; backdrop-filter:none; }
+    h1 { font-size:28px; letter-spacing:-1px; } h2 { font-size:20px; }
+    main { max-width:none; margin-left:208px; padding:0 36px 36px; }
+    #adminTabs { position:fixed; inset:0 auto 0 0; width:208px; display:flex; flex-direction:column; align-items:stretch; padding:112px 17px 24px; border-right:1px solid var(--border); background:var(--bg); gap:6px; }
+    #adminTabs:before { content:'Nod'; position:absolute; top:28px; left:32px; font-size:29px; font-weight:750; letter-spacing:-1.8px; }
+    #adminTabs button { text-align:left; border:0; background:none; color:var(--muted); min-height:44px; flex-shrink:0; }
+    #adminTabs { flex-wrap:nowrap; overflow-y:auto; }
+    #adminTabs [data-tab="users-devices"] { margin-top:25px; }
+    #adminTabs button.active { background:var(--surface-2); color:var(--text); font-weight:650; }
+    #summary { display:none; }
+    .panel { border-radius:14px; padding:22px; box-shadow:none; min-width:0; }
+    button, input, select { min-height:44px; } button { min-width:44px; border-radius:7px; }
+    button.link,button.table-action { min-height:44px; min-width:44px; }
+    button.danger.primary { background:var(--danger); border-color:var(--danger); color:white; }
+    button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible { outline:3px solid #2674ba; outline-offset:2px; }
+    td { height:56px; overflow-wrap:anywhere; } th { height:42px; }
+    th,td { padding:6px 9px; vertical-align:middle; }
+    header #status,header #freshness { display:inline; font-size:13px; } header #freshness { margin-left:12px; }
+    .users-table .name-col,.channel-name-cell { min-width:120px; }
+    .users-table .actions-col { width:70px; }
+    .users-table .id-col { width:140px; }
+    .users-table .created-col { width:170px; }
+    .table-wrap { border:0; border-radius:0; }
+    #tokensBody td:first-child { width:24%; }
+    td button[data-inspect-token],td button[data-inspect-request] { border:0; background:none; padding:0; text-align:left; white-space:normal; }
+    table { min-width:0; width:100%; } .table-wrap,.table-scroll { min-width:0; overflow-x:auto; }
+    .result-tools,.pager,.modes { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .result-tools { justify-content:space-between; } .result-tools input { width:min(300px,100%); }
+    .result-tools label { width:min(300px,100%); }
+    .pager { justify-content:flex-end; color:var(--muted); }
+    .modes [aria-pressed=true] { background:var(--surface-2); font-weight:650; }
+    .task-layout { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:24px; align-items:start; }
+    .task-inspector { border-left:1px solid var(--border); padding-left:24px; min-width:0; overflow-wrap:anywhere; }
+    .task-inspector:empty { display:none; } .task-layout:has(.task-inspector:empty) { grid-template-columns:1fr; }
+    .task-inspector dl { display:grid; gap:10px; } .task-inspector dd { margin:0; padding-bottom:10px; border-bottom:1px solid var(--border); }
+    .task-inspector dl:has(.fact) { display:block; }
+    .fact { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid var(--border); }
+    .task-inspector .fact dd { padding:0; border:0; text-align:right; } .fact dt { color:var(--muted); }
+    .task-inspector summary { min-height:44px; padding:10px 0; cursor:pointer; }
+    tr.selected { background:var(--surface-2); }
+    .integration-alert { background:#fbf1e0; padding:14px 18px; border-radius:9px; }
+    .modal { overflow:auto; }
+    .emoji-icon-button { width:44px; min-width:44px; min-height:44px; }
+    #channelEmojiPicker { height:44px; }
+    .emoji-popover { position:static; display:grid; grid-template-columns:minmax(0,1fr) auto; width:100%; gap:8px; padding:12px; overflow:visible; z-index:20; }
+    #emojiResults { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:4px; max-height:220px; overflow:auto; }
+    #emojiResults,#emojiCount,#emojiMore,#emojiValidation { grid-column:1/-1; }
+    #emojiResults button { font-size:24px; padding:4px; }
+    summary { min-height:44px; padding:10px 0; cursor:pointer; }
+    .subscription-row label,.recipient-list label,.checks label { min-height:44px; }
+    #loginView { margin:10vh auto; }
+    @media(max-width:1300px) { main { padding:0 24px 24px; } header { padding:24px; } .task-layout { grid-template-columns:minmax(0,1fr) 270px; gap:18px; } .task-inspector { padding-left:18px; } }
+    @media(max-width:800px) {
+      header,main { margin-left:0; padding:18px; } #adminTabs { position:relative; inset:auto; width:auto; padding:8px; flex-direction:row; flex-wrap:wrap; border:0; } #adminTabs:before { display:none; }
+      #adminTabs [data-tab="users-devices"] { margin-top:0; }
+      .task-layout { grid-template-columns:1fr; } .task-inspector { border-left:0; border-top:1px solid var(--border); padding:18px 0 0; }
+      .panel { padding:14px; } .split { flex-wrap:wrap; } .emoji-popover { position:relative; left:0; top:0; }
+      .users-table .id-col,.users-table .created-col { display:none; }
+      .table-wrap table,.table-scroll table,.table-wrap tbody,.table-scroll tbody { display:block; width:100%; }
+      .table-wrap thead,.table-scroll thead { display:none; }
+      .table-wrap tr,.table-scroll tr { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px 12px; padding:12px 0; border-bottom:1px solid var(--border); }
+      .table-wrap td,.table-scroll td { display:block; width:auto !important; min-width:0 !important; height:auto; padding:0; border:0; white-space:normal; overflow-wrap:anywhere; }
+      .table-wrap td:first-child,.table-scroll td:first-child,.channel-actions-cell,.users-table .actions-col { grid-column:1/-1; }
+      .table-wrap td::before,.table-scroll td::before { content:attr(data-label); display:block; color:var(--muted); font-size:12px; font-weight:400; }
+      .channels-table td:nth-child(2),.users-table td.id-col,.users-table td.created-col { display:none; }
+      .channels-table td:first-child { grid-column:auto; }
+      .channel-actions-cell .actions-cell { justify-content:flex-start; }
+      .table-wrap,.table-scroll { overflow-x:visible; }
+      #emojiResults { grid-template-columns:repeat(5,minmax(0,1fr)); }
+      .modal { max-height:calc(100dvh - 36px); } form.channel-form { grid-template-columns:1fr; }
+    }
   </style>
 </head>
 <body>
@@ -582,6 +656,7 @@
       <nav id="adminTabs" class="tabs" aria-label="Admin sections">
         <button class="tab-button" type="button" data-tab="users-devices">Users & Devices</button>
         <button class="tab-button" type="button" data-tab="channels">Channels</button>
+        <button class="tab-button" type="button" data-tab="tokens">Tokens</button>
         <button class="tab-button" type="button" data-tab="test-request">Test Request</button>
         <button class="tab-button" type="button" data-tab="activity">Activity & Delivery</button>
         <button class="tab-button" type="button" data-tab="settings">Settings</button>
@@ -776,6 +851,7 @@
             <h2>Settings</h2>
           </div>
           <div id="settingsBody" class="settings-grid"></div>
+          <details><summary>Emoji data licenses</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">__NOD_EMOJI_NOTICES__</pre></details>
         </section>
       </div>
     </div>
@@ -820,10 +896,15 @@
             <button id="emojiPickerToggle" class="emoji-icon-button" type="button" aria-label="Choose channel emoji" aria-expanded="false" aria-controls="emojiPickerPopover">
               <span id="channelEmojiPreview" aria-hidden="true">🔔</span>
             </button>
-            <div id="emojiPickerPopover" class="emoji-popover hidden" aria-label="Emoji picker">
-              <label>Channel emoji<input id="channelEmojiPicker" aria-label="Channel emoji" maxlength="32" placeholder="Paste an emoji" list="channelEmojiPresets"></label>
-              <datalist id="channelEmojiPresets"><option value="🔔"><option value="🚀"><option value="✅"><option value="🛠️"><option value="📦"><option value="💬"><option value="⚠️"><option value="🏠"><option value="🔐"></datalist>
+            <div id="emojiPickerPopover" class="emoji-popover hidden" role="group" aria-label="Emoji picker">
+              <label>Search emoji<input id="emojiSearch" type="search" placeholder="Name or keyword"></label>
+              <label>Category<select id="emojiCategory"><option value="">All categories</option></select></label>
+              <label>Or paste a value<input id="channelEmojiPicker" aria-label="Channel emoji" placeholder="Paste an emoji"></label>
               <button id="applyChannelEmoji" type="button">Use emoji</button>
+              <div id="emojiValidation" role="status" class="muted"></div>
+              <div id="emojiCount" role="status" class="muted"></div>
+              <div id="emojiResults" role="group" aria-label="Emoji results"></div>
+              <button id="emojiMore" type="button">More emoji</button>
             </div>
           </div>
           <label>Name
@@ -909,7 +990,7 @@
           </div>
           <div class="row">
             <span id="channelMembershipDirtyState" class="muted"></span>
-            <button id="cancelChannelMembershipChanges" type="button">Cancel</button>
+            <button id="cancelChannelMembershipChanges" type="button">Close · keep draft</button>
             <button id="saveChannelMembershipChanges" class="primary" type="button">Save</button>
           </div>
         </div>
@@ -966,8 +1047,14 @@
     const basePath = location.pathname.replace(/\/admin\/?$/, "");
     const adminBase = `${basePath}/admin`;
     const apiBase = `${basePath}/api/v1/admin`;
-    const defaultTab = "users-devices";
-    const tabIds = [defaultTab, "channels", "test-request", "activity", "settings"];
+    const defaultTab = "activity";
+    const tabIds = [defaultTab, "users-devices", "channels", "tokens", "test-request", "settings"];
+    let sessionGeneration = 0;
+    let authenticated = false;
+    let loading = false;
+    let readRevision = 0;
+    let pendingReload = false;
+    const pendingRequests = new Set();
     const state = {
       users: [],
       channels: [],
@@ -981,6 +1068,7 @@
       editingChannelId: null,
       activeTab: defaultTab,
       emojiPickerOpen: false,
+      membershipDrafts: {},
       subscriptionModal: {
         userId: null,
         userName: "",
@@ -1018,15 +1106,47 @@
       $("channelEmoji").value = emoji;
       $("channelEmojiPreview").textContent = emoji;
       $("channelEmojiPicker").value = emoji;
+      if ($('emojiValidation')) $('emojiValidation').textContent = '';
     }
 
     function setEmojiPickerOpen(open) {
       state.emojiPickerOpen = open;
       $("emojiPickerPopover").classList.toggle("hidden", !open);
       $("emojiPickerToggle").setAttribute("aria-expanded", open ? "true" : "false");
+      $('applyChannelEmoji').classList.toggle('primary',open);
+      if (open) $('channelSubmit').disabled = true; else updateChannelSlug();
+      if (open) { renderEmoji(); $('emojiSearch').focus(); }
     }
 
     function showLogin() {
+      sessionGeneration++;
+      authenticated = false;
+      pendingRequests.forEach((controller) => controller.abort());
+      pendingRequests.clear();
+      document.querySelectorAll('.modal-backdrop').forEach((node) => node.classList.add('hidden'));
+      document.querySelectorAll('form').forEach((form) => form.reset());
+      document.querySelectorAll('input:not([type=checkbox]):not([type=radio]), textarea').forEach((node) => { node.value = ''; });
+      if ($('testAnswerType')) refreshAnswerEditor();
+      document.querySelectorAll('[data-copy-secret]').forEach((node) => node.removeAttribute('data-copy-secret'));
+      ['tokenSecret', 'deviceEnrollmentSecret', 'testRequestResult', 'usersBody', 'devicesBody', 'channelsBody', 'tokensBody', 'activityRequests', 'activityDeliveries', 'settingsBody', 'subscriptionList', 'channelMembershipList', 'userModalDevices', 'testRecipientsList'].forEach((id) => { $(id).replaceChildren(); });
+      state.users = []; state.channels = []; state.devices = []; state.tokens = [];
+      state.settings = null; state.activity = null; state.summary = null; state.testAttempt = null;
+      state.subscriptionModal = { userId: null, channels: [], original: {}, visibleIds: [] };
+      state.channelMembershipModal = { channelId: null, users: [], original: {}, visibleIds: [] };
+      state.editingUserId = null; state.editingChannelId = null;
+      state.membershipDrafts = {};
+      pendingReload = false;
+      setEmojiPickerOpen(false);
+      document.querySelectorAll('[data-inspector]').forEach((node) => node.replaceChildren());
+      if ($('integrationActivity')) $('integrationActivity').replaceChildren();
+      if ($('freshness')) { $('freshness').textContent = ''; delete $('freshness').dataset.lastRead; }
+      if ($('emojiResults')) $('emojiResults').replaceChildren();
+      $('channelEmojiPreview').textContent = '🔔';
+      document.querySelectorAll('.modal [id$="Title"], .modal [id$="Summary"]').forEach((node) => { node.textContent = ''; });
+      document.querySelectorAll('.result-tools input').forEach((node) => { node.value = ''; });
+      ['tokenChannel','testChannel','deviceEnrollmentUser','summary'].forEach((id) => $(id).replaceChildren());
+      document.querySelectorAll('.slug-display,.field-note,.pager span').forEach((node) => { node.textContent = ''; });
+      document.dispatchEvent(new Event('nod-session-cleared'));
       $("loginView").classList.remove("hidden");
       $("adminView").classList.add("hidden");
       $("logoutButton").classList.add("hidden");
@@ -1035,6 +1155,7 @@
     }
 
     function showAdmin() {
+      authenticated = true;
       $("loginView").classList.add("hidden");
       $("adminView").classList.remove("hidden");
       $("logoutButton").classList.remove("hidden");
@@ -1048,8 +1169,10 @@
 
     function setActiveTab(tab, updateHash = true) {
       state.activeTab = tabIds.includes(tab) ? tab : defaultTab;
+      document.querySelector('header h1').textContent = ({activity:'Activity',channels:'Channels',tokens:'Tokens','users-devices':'Users & devices','test-request':'Test request',settings:'Settings'})[state.activeTab];
       document.querySelectorAll("[data-tab]").forEach((button) => {
         button.classList.toggle("active", button.dataset.tab === state.activeTab);
+        if (button.dataset.tab === state.activeTab) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current');
       });
       document.querySelectorAll("[data-tab-panel]").forEach((panel) => {
         panel.classList.toggle("hidden", panel.dataset.tabPanel !== state.activeTab);
@@ -1060,13 +1183,23 @@
     }
 
     async function api(path, options = {}) {
+      if (options.method && options.method !== 'GET') readRevision++;
+      const generation = sessionGeneration;
+      const controller = new AbortController();
+      pendingRequests.add(controller);
+      const timeout = setTimeout(() => controller.abort(), 15000);
       const headers = options.body ? { "content-type": "application/json" } : {};
-      const response = await fetch(`${apiBase}${path}`, {
+      let response, text;
+      try {
+      response = await fetch(`${apiBase}${path}`, {
         credentials: "same-origin",
         ...options,
+        signal: controller.signal,
         headers: { ...headers, ...(options.headers || {}) }
       });
-      const text = await response.text();
+      text = await response.text();
+      } finally { clearTimeout(timeout); pendingRequests.delete(controller); }
+      if (generation !== sessionGeneration) throw new Error('Session changed');
       let data = {};
       if (text) {
         try {
@@ -1085,8 +1218,13 @@
       return data;
     }
 
-    async function loadAll() {
-      setStatus("Loading");
+    async function loadAll({ quiet = false } = {}) {
+      if (loading) { pendingReload = true; return; }
+      loading = true;
+      const generation = sessionGeneration;
+      const revision = readRevision;
+      try {
+      if (!quiet) setStatus("Loading");
       const [summary, users, channels, devices, tokens, settings, activity] = await Promise.all([
         api("/summary"),
         api("/users"),
@@ -1096,6 +1234,8 @@
         api("/settings"),
         api("/activity")
       ]);
+      if (generation !== sessionGeneration) return;
+      if (revision !== readRevision) { pendingReload = true; return; }
       state.summary = summary;
       state.users = users.users || [];
       state.channels = channels.channels || [];
@@ -1104,8 +1244,25 @@
       state.settings = settings;
       state.activity = activity;
       showAdmin();
-      render();
-      setStatus("Ready", "ok");
+      if (quiet) {
+        // Reconcile reads without replacing form drafts or the focused row.
+        for (const [id, paint] of [['usersBody',renderUsers],['channelsBody',renderChannels],['devicesBody',renderDevices],['tokensBody',renderTokens],['activityRequests',renderActivity]]) {
+          const panel = $(id).closest('.panel');
+          if (!panel?.contains(document.activeElement)) paint();
+        }
+        renderSettings();
+        const selected = selectedTestRecipientIds().length;
+        const subscribed = state.users.filter((user) => userSubscribedToChannel(user,$('testChannel').value)).length;
+        $('testRecipientSummary').textContent = testRecipientMode() === 'specific' ? `${selected} selected / ${state.users.length} users (explicit recipients override subscriptions)` : `${subscribed} subscribed`;
+      } else { render(); setStatus("Ready", "ok"); }
+      if ($('freshness')) { const checked = `Last checked ${new Date().toLocaleTimeString()}`; $('freshness').textContent = checked; $('freshness').dataset.lastRead = checked; }
+      } catch (err) {
+        if (authenticated && $('freshness')) $('freshness').textContent = 'Offline or unavailable · showing last successful read';
+        throw err;
+      } finally {
+        loading = false;
+        if (pendingReload && authenticated) { pendingReload = false; queueMicrotask(() => loadAll({quiet:true}).catch(() => {})); }
+      }
     }
 
     function formatDate(value) {
@@ -1169,15 +1326,13 @@
           <td class="count-col">${esc(user.device_count)}</td>
           <td class="count-col">
             <button class="link" data-manage-subscriptions="${esc(user.id)}" data-user-name="${esc(user.name)}" aria-label="Manage subscriptions for ${esc(user.name)}" title="Manage subscriptions">
-              ${esc(user.subscribed_channel_count ?? 0)} / ${esc(state.channels.length)}
+              ${esc(user.subscribed_channel_count ?? 0)} / ${esc(state.channels.length)} · Manage
             </button>
           </td>
           <td class="created-col">${esc(formatDate(user.created_at))}</td>
           <td class="actions-col">
             <div class="actions-cell">
-              <button class="table-action" data-edit-user="${esc(user.id)}">Edit</button>
-              <button class="table-action" data-manage-subscriptions="${esc(user.id)}" data-user-name="${esc(user.name)}">Subscriptions</button>
-              ${user.id === "owner" ? "" : `<button class="danger" data-delete-user="${esc(user.id)}" data-user-name="${esc(user.name)}">Delete</button>`}
+              <button class="table-action" data-edit-user="${esc(user.id)}" aria-label="Edit ${esc(user.name)}">Edit</button>
             </div>
           </td>
         </tr>
@@ -1191,15 +1346,13 @@
           <td class="id-col"><code>${esc(channel.id)}</code></td>
           <td class="channel-name-cell">${esc(channel.name)}</td>
           <td class="channel-members-cell">
-            <button class="link" data-manage-channel-members="${esc(channel.id)}" data-channel-name="${esc(channel.name)}" aria-label="Manage members for ${esc(channel.name)}" title="Manage members">
-              ${esc(channelMemberCount(channel.id))} / ${esc(state.users.length)}
-            </button>
+            ${esc(channelMemberCount(channel.id))} / ${esc(state.users.length)}
           </td>
           <td class="channel-actions-cell">
             <div class="actions-cell">
-              <button class="table-action" data-edit-channel="${esc(channel.id)}">Edit</button>
-              <button class="table-action" data-manage-channel-members="${esc(channel.id)}" data-channel-name="${esc(channel.name)}">Members</button>
-              <button class="danger" data-delete-channel="${esc(channel.id)}" data-channel-name="${esc(channel.name)}">Delete</button>
+              <button class="table-action" data-edit-channel="${esc(channel.id)}" aria-label="Edit ${esc(channel.name)}">Edit</button>
+              <button class="table-action" data-manage-channel-members="${esc(channel.id)}" data-channel-name="${esc(channel.name)}" aria-label="Manage members for ${esc(channel.name)}">Members</button>
+              <button class="danger" data-delete-channel="${esc(channel.id)}" data-channel-name="${esc(channel.name)}" aria-label="Delete ${esc(channel.name)} and its history">Delete</button>
             </div>
           </td>
         </tr>
@@ -1288,6 +1441,10 @@
       $("userModalBackdrop").classList.remove("hidden");
       updateUserSlug();
       renderUserModalDevices();
+      $('userForm').querySelector('[data-delete-user]')?.remove();
+      if (user && user.id !== 'owner') {
+        const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'danger'; remove.dataset.deleteUser = user.id; remove.dataset.userName = user.name; remove.textContent = `Delete ${user.name}`; $('userForm').append(remove);
+      }
       $("userName").focus();
     }
 
@@ -1326,15 +1483,15 @@
     }
 
     function renderTokens() {
-      $("tokensBody").innerHTML = state.tokens.map((token) => {
+      const mode = document.querySelector('[data-token-mode][aria-pressed="true"]')?.dataset.tokenMode || 'active';
+      $("tokensBody").innerHTML = state.tokens.filter((token) => mode === 'active' ? !token.revoked_at : !!token.revoked_at).map((token) => {
         const active = !token.revoked_at;
         return `
-          <tr>
-            <td>${esc(token.name)}<br><code>${esc(token.id)}</code></td>
-            <td>${renderTokenChannelScopes(token)}</td>
+          <tr data-search="${esc([token.name,token.id,...(token.scopes || []),token.created_at,token.revoked_at].join(' '))}">
+            <td><button data-inspect-token="${esc(token.id)}">${esc(token.name)}</button></td>
+            <td>${esc(tokenChannelIds(token).map((id) => channelById(id)?.name || id).join(', ') || 'Custom scopes')} · ${esc((token.scopes || []).length)} scopes</td>
             <td>${esc(formatDate(token.created_at))}</td>
-            <td class="${active ? "ok" : "muted"}">${active ? "active" : `revoked ${formatDate(token.revoked_at)}`}</td>
-            <td>${active ? `<button class="danger" data-revoke-token="${esc(token.id)}">Revoke</button>` : ""}</td>
+            <td class="${active ? "ok" : "muted"}">${active ? "active" : `revoked ${esc(formatDate(token.revoked_at))}`}</td>
           </tr>
         `;
       }).join("") || `<tr><td colspan="5" class="muted">No access tokens</td></tr>`;
@@ -1440,15 +1597,15 @@
       const activity = state.activity || {};
       const audit = activity.audit || {};
       $("auditHealth").textContent = audit.healthy ? "Audit logging healthy" : `Audit logging needs attention: ${audit.last_error || "status unavailable"}`;
-      $("auditHealth").className = audit.healthy ? "ok" : "danger-text";
+      $("auditHealth").className = audit.healthy ? "hidden" : "danger-text";
       $("activityRequests").innerHTML = (activity.requests || []).map((request) => {
         const decisions = request.decisions?.length ? request.decisions.map((entry) => entry.decision) : request.decision ? [request.decision] : [];
-        const receipts = decisions.map((decision) => `<li>${esc(decision.actor_user_id || "Unknown user")}: ${esc(decision.option_label)} · ${esc(formatDate(decision.resolved_at))}${decision.text ? `<p>${esc(decision.text)}</p>` : ""}</li>`).join("");
+        const receipts = decisions.map((decision) => `<li>${esc(decision.actor_user_id || "Unknown user")}: ${esc(decision.option_label)} · ${esc(formatDate(decision.resolved_at))}${answerReceipt(decision)}${decision.text ? `<p>${esc(decision.text)}</p>` : ""}</li>`).join("");
         const ageMinutes = Math.max(0, Math.floor((Date.now() - new Date(request.created_at).getTime()) / 60000));
         const age = request.status === "pending" && Number.isFinite(ageMinutes) ? ` · waiting ${ageMinutes < 60 ? `${ageMinutes}m` : `${Math.floor(ageMinutes / 60)}h`}` : "";
-        return `<tr><td>${esc(request.title)}<br><code>${esc(request.id)}</code>${receipts ? `<details><summary>${decisions.length} decision receipt(s)</summary><ul>${receipts}</ul></details>` : ""}</td><td>${esc(request.channel_id)}</td><td>${esc(request.status + age)}</td><td>${esc(formatDate(request.updated_at))}</td></tr>`;
+        return `<tr><td><button data-inspect-request="${esc(request.id)}">${esc(request.title)}</button></td><td>${esc(request.channel_id)}</td><td>${esc(request.status + age)}</td><td>${esc(formatDate(request.updated_at))}</td></tr>`;
       }).join("") || '<tr><td colspan="4">No recent requests.</td></tr>';
-      $("activityDeliveries").innerHTML = (activity.deliveries || []).map((delivery) => `<tr><td><code>${esc(delivery.request_id)}</code></td><td>${esc(delivery.device_id)}</td><td>${esc(delivery.status)}</td><td>${esc(delivery.attempts)}</td><td>${esc(formatDate(delivery.updated_at))}<br>${esc(delivery.error || "")}</td></tr>`).join("") || '<tr><td colspan="5">No push delivery attempts. WebSocket clients receive requests through their live connection.</td></tr>';
+      $("activityDeliveries").innerHTML = (activity.deliveries || []).map((delivery,index) => `<tr><td><button data-inspect-push="${index}">${esc((activity.requests || []).find((request) => request.id === delivery.request_id)?.title || delivery.request_id)}</button></td><td>${esc(state.devices.find((device) => device.id === delivery.device_id)?.name || delivery.device_id)}</td><td>${esc(delivery.status)}</td><td>${esc(delivery.attempts)}</td><td>${esc(formatDate(delivery.updated_at))}<br>${esc(delivery.error || "")}</td></tr>`).join("") || '<tr><td colspan="5">No push delivery attempts. WebSocket clients receive requests through their live connection.</td></tr>';
     }
 
     function render() {
@@ -1488,14 +1645,21 @@
     }
 
     async function copySecret(button) {
-      const value = button.dataset.copySecret;
+      const generation = sessionGeneration;
+      let value = button.dataset.copySecret;
+      const clearCopy = () => { value = ''; button.removeAttribute('data-copy-secret'); };
+      document.addEventListener('nod-session-cleared',clearCopy,{once:true});
+      try {
       if (navigator.clipboard?.writeText) {
         try {
           await navigator.clipboard.writeText(value);
+          value = '';
+          if (generation !== sessionGeneration || !authenticated || !button.isConnected) return;
           setStatus("Copied", "ok");
           return;
         } catch (_) { /* Private HTTP and browser permissions can disable clipboard access. */ }
       }
+      if (generation !== sessionGeneration || !authenticated || !button.isConnected) { value = ''; return; }
       let field = button.nextElementSibling;
       if (!field?.hasAttribute("data-copy-fallback")) {
         field = document.createElement("textarea");
@@ -1506,6 +1670,7 @@
         button.insertAdjacentElement("afterend", field);
       }
       field.value = value;
+      value = '';
       field.focus();
       field.select();
       let copied = false;
@@ -1517,6 +1682,7 @@
       } else {
         setStatus("Text selected. Press Ctrl+C or Command+C to copy.");
       }
+      } finally { value = ''; document.removeEventListener('nod-session-cleared',clearCopy); }
     }
 
     function subscriptionDiffs() {
@@ -1569,7 +1735,7 @@
     }
 
     async function openSubscriptionModal(userId, userName) {
-      state.subscriptionModal = {
+      const modal = state.subscriptionModal = {
         userId,
         userName: userName || userId,
         channels: [],
@@ -1580,14 +1746,18 @@
       $("subscriptionFilter").value = "all";
       $("subscriptionList").innerHTML = `<div class="subscription-row"><span class="muted">Loading channels</span></div>`;
       renderSubscriptionModal();
-      const data = await api(`/users/${encodeURIComponent(userId)}/subscriptions`);
+      $('subscriptionSearch').focus();
+      let data;
+      try { data = await api(`/users/${encodeURIComponent(userId)}/subscriptions`); }
+      catch (err) { if (state.subscriptionModal !== modal) return; throw err; }
+      if (state.subscriptionModal !== modal) return;
       const channels = data.channels || [];
       const original = {};
       channels.forEach((channel) => {
         original[channel.id] = Boolean(channel.subscribed);
       });
-      state.subscriptionModal.channels = channels;
-      state.subscriptionModal.original = original;
+      modal.channels = channels;
+      modal.original = original;
       renderSubscriptionModal();
     }
 
@@ -1636,15 +1806,16 @@
       const diffs = channelMembershipDiffs();
       $("channelMembershipModalSummary").textContent = `${memberCount} of ${modal.users.length} users included`;
       $("channelMembershipDirtyState").textContent = diffs.length ? `${diffs.length} pending change${diffs.length === 1 ? "" : "s"}` : "No changes";
-      $("saveChannelMembershipChanges").disabled = diffs.length === 0;
+      $("saveChannelMembershipChanges").disabled = modal.saving || diffs.length === 0;
+      ['addVisibleChannelMembers','removeVisibleChannelMembers','addAllChannelMembers','removeAllChannelMembers'].forEach((id) => { $(id).disabled = !!modal.saving; });
 
       const visible = filteredChannelMembershipUsers();
       modal.visibleIds = visible.map((user) => user.id);
       $("channelMembershipList").innerHTML = visible.map((user) => `
         <div class="subscription-row">
           <label>
-            <input type="checkbox" data-channel-member-user="${esc(user.id)}" ${user.member ? "checked" : ""}>
-            <span>${esc(user.name)} <code>${esc(user.id)}</code></span>
+            <input type="checkbox" data-channel-member-user="${esc(user.id)}" ${user.member ? "checked" : ""} ${modal.saving ? 'disabled' : ''}>
+            <span>${esc(user.name)} <code>${esc(user.id)}</code> ${esc(modal.outcomes?.[user.id] || '')}</span>
           </label>
           <span class="muted">${esc(user.device_count ?? 0)} device${Number(user.device_count ?? 0) === 1 ? "" : "s"}</span>
         </div>
@@ -1652,6 +1823,12 @@
     }
 
     function openChannelMembershipModal(channelId, channelName) {
+      if (state.membershipDrafts[channelId]) {
+        state.channelMembershipModal = state.membershipDrafts[channelId];
+        renderChannelMembershipModal();
+        $('channelMembershipSearch').focus();
+        return;
+      }
       const channel = channelById(channelId);
       const original = {};
       const users = state.users.map((user) => {
@@ -1667,12 +1844,15 @@
         original,
         visibleIds: []
       };
+      state.membershipDrafts[channelId] = state.channelMembershipModal;
       $("channelMembershipSearch").value = "";
       $("channelMembershipFilter").value = "all";
       renderChannelMembershipModal();
+      $('channelMembershipSearch').focus();
     }
 
     function closeChannelMembershipModal() {
+      if (state.channelMembershipModal.saving) state.channelMembershipModal.cancelRequested = true;
       state.channelMembershipModal = {
         channelId: null,
         channelName: "",
@@ -1724,7 +1904,9 @@
     }
 
     function setChannelMembershipState(userIds, member) {
+      if (state.channelMembershipModal.saving) return;
       const ids = new Set(userIds);
+      ids.forEach((id) => { if (state.channelMembershipModal.outcomes) delete state.channelMembershipModal.outcomes[id]; });
       state.channelMembershipModal.users = state.channelMembershipModal.users.map((user) => (
         ids.has(user.id) ? { ...user, member } : user
       ));
@@ -1937,6 +2119,41 @@
       }
     }
 
+    function answerReceipt(decision) {
+      const value = decision.answer_value;
+      if (!value) return '';
+      const member = {choice:'choice_id',number:'decimal',date:'date',date_time:'instant'}[value.kind];
+      return `<p>Answer (${esc(value.kind)}): ${esc(member ? value[member] : 'Unsupported value')}${value.kind === 'date_time' ? ' · UTC' : ''}</p>`;
+    }
+
+    function buildAnswerField() {
+      const kind = $('testAnswerType').value;
+      if (kind === 'none') return undefined;
+      const fail = (id, message) => { selectTestMode('message'); $(id).focus(); throw new Error(message); };
+      const label = $('testAnswerLabel').value;
+      const validLabel = (s, max) => s === s.trim() && [...s].length >= 1 && [...s].length <= max && !/[\p{Cc}\p{Cs}]/u.test(s);
+      if (!validLabel(label,64)) fail('testAnswerLabel','Answer label must be 1–64 characters, trimmed and without controls');
+      const field = {kind,label};
+      const raw = $('testAnswerDefault').value;
+      if (kind === 'choice') {
+        const choices = $('testAnswerChoices').value.split('\n').map(line => { const at = line.indexOf(':'); return {id:at > 0 ? line.slice(0,at) : '',label:line.slice(at+1).trim()}; });
+        if (choices.length < 2 || choices.length > 12 || choices.some(c => !/^[A-Za-z0-9_-]{1,40}$/.test(c.id) || !validLabel(c.label,48)) || new Set(choices.map(c=>c.id)).size !== choices.length || new Set(choices.map(c=>c.label)).size !== choices.length) fail('testAnswerChoices','Use 2–12 unique ID: Label lines; IDs use ASCII letters, numbers, _ or - (1–40); labels use 1–48 characters');
+        field.choices = choices;
+        if (!choices.some(c=>c.id === $('testAnswerChoiceDefault').value)) fail('testAnswerChoiceDefault','Choose a default from the dropdown choices');
+        field.default = {kind,choice_id:$('testAnswerChoiceDefault').value};
+      } else if (kind === 'number') {
+        if (!/^-?(0|[1-9][0-9]{0,11})(\.[0-9]{0,5}[1-9])?$/.test(raw) || raw === '-0') fail('testAnswerDefault','Use an exact decimal, for example 4, 1.5 or -0.25; remove leading/trailing zeros, spaces or exponent (12 integer / 6 fractional digits maximum)');
+        field.default = {kind,decimal:raw};
+      } else if (kind === 'date' || kind === 'date_time') {
+        const date = raw.slice(0,10);
+        const validDate = /^\d{4}-\d{2}-\d{2}$/.test(date) && date.slice(0,4) !== '0000' && Number.isFinite(Date.parse(date+'T00:00:00Z')) && new Date(date+'T00:00:00Z').toISOString().slice(0,10) === date;
+        if (!validDate || (kind === 'date' ? raw !== date : !/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d:00Z$/.test(raw))) fail('testAnswerDefault',kind === 'date' ? 'Use a real date: YYYY-MM-DD' : 'Use a real UTC minute: YYYY-MM-DDTHH:mm:00Z');
+        field.default = kind === 'date' ? {kind,date:raw} : {kind,instant:raw};
+      } else fail('testAnswerType','Choose one supported answer type');
+      if (new TextEncoder().encode(JSON.stringify(field)).length > 4096) fail('testAnswerLabel','Answer definition exceeds 4096 UTF-8 bytes; shorten labels');
+      return field;
+    }
+
     function buildTestRequestPayload() {
       const channelId = $("testChannel").value;
       if (!channelId) {
@@ -1951,6 +2168,11 @@
         links: parseLinkLines($("testLinks").value),
         options: testOptionsFromPreset()
       };
+      const answer = buildAnswerField();
+      if (answer) {
+        if (!payload.options.some(option => !option.destructive && !option.kind.endsWith('_with_text'))) { selectTestMode('delivery'); $('testOptionPreset').focus(); throw new Error('Value cards need an ordinary outcome: choose Approve / Reject so the visible default can be answered in one tap'); }
+        payload.answer_field = answer;
+      }
       if (!payload.title) {
         throw new Error("Title is required");
       }
@@ -2002,25 +2224,35 @@
 
     $("loginForm").addEventListener("submit", async (event) => {
       event.preventDefault();
+      if ($('loginForm').dataset.busy === 'true') return;
+      $('loginForm').dataset.busy = 'true';
+      const generation = sessionGeneration;
+      const controller = new AbortController(); pendingRequests.add(controller);
+      const loginTimeout = setTimeout(() => controller.abort(),15000);
       setStatus("Logging in");
       try {
         const response = await fetch(`${adminBase}/session`, {
           method: "POST",
+          signal: controller.signal,
           credentials: "same-origin",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ token: $("adminToken").value })
         });
+        if (generation !== sessionGeneration) return;
         if (!response.ok) throw new Error("Login failed");
         $("adminToken").value = "";
         await loadAll();
       } catch (err) {
-        setStatus(err.message, "danger-text");
-      }
+        if (generation === sessionGeneration) setStatus(err.message, "danger-text");
+      } finally { clearTimeout(loginTimeout); pendingRequests.delete(controller); $('adminToken').value = ''; delete $('loginForm').dataset.busy; }
     });
 
     $("logoutButton").addEventListener("click", async () => {
-      await fetch(`${adminBase}/session`, { method: "DELETE", credentials: "same-origin" });
       showLogin();
+      try {
+        const response = await fetch(`${adminBase}/session`, { method: "DELETE", credentials: "same-origin" });
+        if (!response.ok) throw new Error('Logout not confirmed');
+      } catch (_) { setStatus('Local data cleared; server logout not confirmed. Retry logout before leaving this browser.', 'danger-text'); $("logoutButton").classList.remove('hidden'); }
     });
 
     $("refreshButton").addEventListener("click", () => {
@@ -2050,6 +2282,8 @@
       if (event.key === "Escape" && state.emojiPickerOpen) {
         setEmojiPickerOpen(false);
         $("emojiPickerToggle").focus();
+        event.preventDefault();
+        return;
       }
       if (event.key === "Escape" && !$("deviceEnrollmentModalBackdrop").classList.contains("hidden")) {
         closeDeviceEnrollmentModal();
@@ -2080,6 +2314,9 @@
     $("resetChannelForm").addEventListener("click", resetChannelForm);
     $("channelName").addEventListener("input", updateChannelSlug);
     $("applyChannelEmoji").addEventListener("click", () => {
+      const value = $('channelEmojiPicker').value.trim();
+      if (typeof Intl.Segmenter !== 'function') { $('emojiValidation').textContent = 'This browser cannot validate pasted emoji. Choose a result above or update your browser.'; return; }
+      if ([...new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value)].length > 8) { $('emojiValidation').textContent = 'Use at most 8 characters (a joined emoji counts as one).'; return; }
       setChannelEmoji($("channelEmojiPicker").value.trim());
       setEmojiPickerOpen(false);
       $("emojiPickerToggle").focus();
@@ -2095,7 +2332,7 @@
     });
     $("selectTestRecipients").addEventListener("click", () => {
       document.querySelectorAll("[data-test-recipient]:not(:disabled)").forEach((input) => {
-        input.checked = true;
+        input.checked = state.users.some((user) => user.id === input.dataset.testRecipient && userSubscribedToChannel(user, $("testChannel").value));
       });
       renderTestRecipients();
     });
@@ -2125,7 +2362,7 @@
           method: "PUT",
           body: JSON.stringify({ updates })
         });
-        closeSubscriptionModal();
+        if (state.subscriptionModal === modal) closeSubscriptionModal();
         await loadAll();
         setStatus("Subscriptions saved", "ok");
       } catch (err) {
@@ -2144,20 +2381,69 @@
     $("saveChannelMembershipChanges").addEventListener("click", async () => {
       const modal = state.channelMembershipModal;
       const updates = channelMembershipDiffs();
-      if (!modal.channelId || updates.length === 0) return;
+      if (!modal.channelId || updates.length === 0 || modal.saving) return;
+      modal.saving = true;
+      modal.cancelRequested = false;
+      modal.outcomes = modal.outcomes || {};
+      updates.forEach((update) => { if (!modal.outcomes[update.user_id]?.startsWith('Failed')) modal.outcomes[update.user_id] = 'Pending'; });
+      const generation = sessionGeneration;
+      const save = $("saveChannelMembershipChanges");
+      save.disabled = true;
       try {
         setStatus("Saving channel members");
-        await Promise.all(updates.map((update) => api(`/users/${encodeURIComponent(update.user_id)}/subscriptions`, {
-          method: "PUT",
-          body: JSON.stringify({
-            updates: [{ channel_id: modal.channelId, subscribed: update.subscribed }]
-          })
-        })));
-        closeChannelMembershipModal();
-        await loadAll();
-        setStatus("Channel members saved", "ok");
+        // Independent writes are not an atomic transaction. Reconcile each user,
+        // including uncertain responses, before offering an explicit retry.
+        for (const update of updates) {
+          if (generation !== sessionGeneration) return;
+          if (modal.cancelRequested) break;
+          if (modal.outcomes[update.user_id]?.startsWith('Failed')) {
+            // Explicit retry first checks whether an uncertain prior PUT committed.
+            try {
+              const current = await api('/users');
+              const user = (current.users || []).find((item) => item.id === update.user_id);
+              if (!user) throw new Error('User no longer exists');
+              const actual = userSubscribedToChannel(user, modal.channelId);
+              modal.original[user.id] = actual;
+              if (actual === update.subscribed) { modal.outcomes[user.id] = 'Saved'; continue; }
+            } catch (_) { modal.outcomes[update.user_id] = 'Failed · reconciliation unavailable'; continue; }
+          }
+          modal.outcomes[update.user_id] = 'Saving';
+          let writeError = null;
+          try {
+            await api(`/users/${encodeURIComponent(update.user_id)}/subscriptions`, {
+              method: "PUT",
+              body: JSON.stringify({ updates: [{ channel_id: modal.channelId, subscribed: update.subscribed }] })
+            });
+          } catch (err) { writeError = err; }
+          if (generation !== sessionGeneration) return;
+          try {
+            const current = await api('/users');
+            const user = (current.users || []).find((item) => item.id === update.user_id);
+            if (!user) throw new Error('User no longer exists');
+            const actual = userSubscribedToChannel(user, modal.channelId);
+            modal.original[user.id] = actual;
+            state.users = state.users.map((item) => item.id === user.id ? user : item);
+            modal.outcomes[user.id] = actual === update.subscribed ? 'Saved' : 'Failed · retry required';
+          } catch (_) {
+            if (generation !== sessionGeneration) return;
+            modal.outcomes[update.user_id] = 'Failed · could not verify; retry to reconcile';
+          }
+          if (writeError && modal.outcomes[update.user_id] !== 'Saved') modal.outcomes[update.user_id] = 'Failed · retry required';
+          renderChannelMembershipModal();
+          save.disabled = true;
+        }
+        Object.keys(modal.outcomes).forEach((id) => { if (modal.outcomes[id] === 'Pending') modal.outcomes[id] = 'Not attempted · draft retained'; });
+        const remaining = modal.users.filter((user) => Boolean(user.member) !== Boolean(modal.original[user.id])).length;
+        setStatus(remaining ? `${remaining} member changes remain. Saved changes are retained; reopen Members to resume or retry.` : 'Channel members saved', remaining ? 'danger-text' : 'ok');
+        renderChannels();
       } catch (err) {
         setStatus(err.message, "danger-text");
+      } finally {
+        modal.saving = false;
+        if (generation === sessionGeneration) {
+          renderChannelMembershipModal();
+          save.textContent = Object.values(modal.outcomes).some((value) => value.startsWith('Failed')) ? 'Retry failed' : 'Save';
+        }
       }
     });
 
@@ -2301,7 +2587,7 @@
         showSecret("tokenSecret", "Access token", data.token);
         closeTokenModal();
         await loadAll();
-        setActiveTab("channels");
+        setActiveTab("tokens");
       } catch (err) {
         setStatus(err.message, "danger-text");
       }
@@ -2309,7 +2595,7 @@
 
     document.addEventListener("click", async (event) => {
       const target = event.target instanceof Element ? event.target : event.target.parentElement;
-      if (state.emojiPickerOpen && target && !target.closest(".emoji-control")) {
+      if (state.emojiPickerOpen && target && !target.closest(".emoji-control, #emojiPickerPopover")) {
         setEmojiPickerOpen(false);
       }
 
@@ -2390,7 +2676,8 @@
       }
 
       if (button.dataset.revokeDevice) {
-        if (!confirm("Revoke this device?")) return;
+        const device = state.devices.find((item) => item.id === button.dataset.revokeDevice);
+        if (!device || !confirm(`Revoke device "${device.name || device.id}"? It will lose access to Nod.`)) return;
         try {
           await api(`/devices/${encodeURIComponent(button.dataset.revokeDevice)}`, { method: "DELETE" });
           await loadAll();
@@ -2401,7 +2688,8 @@
       }
 
       if (button.dataset.revokeToken) {
-        if (!confirm("Revoke this access token?")) return;
+        const token = state.tokens.find((item) => item.id === button.dataset.revokeToken);
+        if (!token || token.revoked_at || !confirm(`Revoke access token "${token.name}"? This immediately removes its access and cannot be undone.`)) return;
         try {
           await api(`/issuer-tokens/${encodeURIComponent(button.dataset.revokeToken)}`, { method: "DELETE" });
           await loadAll();
@@ -2422,11 +2710,292 @@
       }
       if (input.matches("[data-channel-member-user]")) {
         const userId = input.dataset.channelMemberUser;
+        if (state.channelMembershipModal.saving) return;
+        if (state.channelMembershipModal.outcomes) delete state.channelMembershipModal.outcomes[userId];
         state.channelMembershipModal.users = state.channelMembershipModal.users.map((user) => (
           user.id === userId ? { ...user, member: input.checked } : user
         ));
         renderChannelMembershipModal();
       }
+    });
+
+    const emojiDataset = "__NOD_EMOJI_DATA__";
+    document.querySelector('.channel-modal').append($('emojiPickerPopover'));
+    const emojiEntries = Array.isArray(emojiDataset) ? emojiDataset.flatMap((entry) => [entry, ...(entry.skins || []).map((skin) => ({...skin,tags:entry.tags}))]).filter((entry) => entry.group != null) : [];
+    const emojiCategories = ['Smileys & emotion','People & body','Component','Animals & nature','Food & drink','Travel & places','Activities','Objects','Symbols','Flags'];
+    emojiCategories.forEach((name,index) => { const option = document.createElement('option'); option.value = String(index); option.textContent = name; $('emojiCategory').append(option); });
+    let emojiLimit = 60;
+    function renderEmoji() {
+      const words = $('emojiSearch').value.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
+      const category = $('emojiCategory').value;
+      const entries = emojiEntries.filter((entry) => (category === '' || String(entry.group) === category) && words.every((word) => `${entry.label} ${(entry.tags || []).join(' ')} ${entry.unicode}`.toLocaleLowerCase().includes(word)));
+      $('emojiResults').innerHTML = entries.slice(0,emojiLimit).map((entry,index) => `<button type="button" tabindex="${index ? -1 : 0}" data-emoji="${esc(entry.unicode)}" aria-label="${esc(entry.label)}" title="${esc(entry.label)}">${esc(entry.unicode)}</button>`).join('');
+      $('emojiCount').textContent = `${Math.min(entries.length,emojiLimit)} of ${entries.length} emoji`;
+      $('emojiMore').hidden = entries.length <= emojiLimit;
+    }
+    ['emojiSearch','emojiCategory'].forEach((id) => $(id).addEventListener(id === 'emojiSearch' ? 'input' : 'change', () => { emojiLimit = 60; renderEmoji(); }));
+    $('emojiMore').addEventListener('click', () => { emojiLimit += 60; renderEmoji(); });
+    $('emojiResults').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-emoji]'); if (!button) return;
+      setChannelEmoji(button.dataset.emoji); setEmojiPickerOpen(false); $('emojiPickerToggle').focus();
+    });
+    $('emojiResults').addEventListener('keydown', (event) => {
+      const columns = innerWidth <= 800 ? 5 : 6;
+      const offsets = {ArrowRight:1,ArrowLeft:-1,ArrowDown:columns,ArrowUp:-columns};
+      const buttons = [...$('emojiResults').querySelectorAll('button')];
+      const index = buttons.indexOf(document.activeElement);
+      if (index < 0) return;
+      let next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : index + (offsets[event.key] || 0);
+      if (!(event.key in offsets) && !['Home','End'].includes(event.key)) return;
+      event.preventDefault();
+      const target = buttons[Math.max(0,Math.min(buttons.length - 1,next))];
+      buttons.forEach((button) => { button.tabIndex = button === target ? 0 : -1; }); target?.focus();
+    });
+
+    // Task shell is built once; existing capability forms remain the source of truth.
+    const testForm = $('testRequestForm');
+    const testModes = document.createElement('div'); testModes.className = 'modes';
+    testModes.innerHTML = '<button type="button" data-test-mode="message" aria-pressed="true">Message</button><button type="button" data-test-mode="recipients" aria-pressed="false">Channel & recipients</button><button type="button" data-test-mode="delivery" aria-pressed="false">Delivery & options</button>';
+    testForm.before(testModes);
+    const testGroups = {};
+    for (const mode of ['message','recipients','delivery']) { const group = document.createElement('div'); group.dataset.testSection = mode; group.className = 'test-grid'; testGroups[mode] = group; }
+    [...testForm.children].filter((node) => node !== $('testRequestSubmit')).forEach((node) => {
+      const mode = node.contains($('testChannel')) || node.contains($('testRecipientsAll')) ? 'recipients' : ['testOptionPreset','testNotificationRedact','testExpires','testDedupeKey','testCallbackUrl'].some((id) => node.contains($(id))) ? 'delivery' : 'message';
+      testGroups[mode].append(node);
+    });
+    testForm.className = 'stack';
+    Object.values(testGroups).forEach((group) => testForm.insertBefore(group,$('testRequestSubmit')));
+    function selectTestMode(mode) {
+      Object.entries(testGroups).forEach(([id,group]) => { group.hidden = id !== mode; });
+      testModes.querySelectorAll('button').forEach((node) => node.setAttribute('aria-pressed',String(node.dataset.testMode === mode)));
+    }
+    selectTestMode('message');
+    const answerEditor = document.createElement('div'); answerEditor.className = 'stack'; answerEditor.style.gridColumn = '1 / -1';
+    answerEditor.innerHTML = `<label>Answer value<select id="testAnswerType"><option value="none">None</option><option value="choice">Dropdown</option><option value="number">Number</option><option value="date">Date</option><option value="date_time">Date & time (UTC)</option></select></label><div id="testAnswerEditor" class="stack" hidden><label>Answer label<input id="testAnswerLabel" value="Batch"></label><label id="testAnswerChoicesLabel">Choices · stable ID: Label, one per line<textarea id="testAnswerChoices" rows="3">small: Small
+large: Large</textarea></label><label id="testAnswerChoiceDefaultLabel">Default choice<select id="testAnswerChoiceDefault"></select></label><label id="testAnswerDefaultLabel" hidden>Default value<input id="testAnswerDefault" type="text" autocomplete="off"><span id="testAnswerFormat" class="muted"></span></label><p id="testAnswerPreview" role="status"></p><p class="muted">Authoring preview only — not a server-verified answer. Notes remain optional.</p></div>`;
+    testGroups.message.append(answerEditor);
+    function refreshAnswerEditor() {
+      const kind = $('testAnswerType').value, choice = kind === 'choice';
+      $('testAnswerEditor').hidden = kind === 'none';
+      $('testAnswerChoicesLabel').hidden = !choice; $('testAnswerChoiceDefaultLabel').hidden = !choice; $('testAnswerDefaultLabel').hidden = choice;
+      const old = $('testAnswerChoiceDefault').value;
+      const choices = $('testAnswerChoices').value.split('\n').map(line=>{const at=line.indexOf(':');return {id:line.slice(0,at),label:line.slice(at+1).trim()};});
+      $('testAnswerChoiceDefault').replaceChildren(...choices.map(c=>new Option(c.label,c.id)));
+      if (choices.some(c=>c.id===old)) $('testAnswerChoiceDefault').value=old;
+      $('testAnswerFormat').textContent = {number:'Exact decimal, e.g. 4 or 1.5 (not 1.50).',date:'YYYY-MM-DD',date_time:'UTC only: YYYY-MM-DDTHH:mm:00Z'}[kind] || '';
+      $('testAnswerPreview').textContent = `Default preview · ${$('testAnswerLabel').value}: ${choice ? $('testAnswerChoiceDefault').selectedOptions[0]?.textContent || 'Choose a default' : $('testAnswerDefault').value || 'Enter a valid default'}${kind === 'date_time' ? ' · UTC' : ''}`;
+    }
+    answerEditor.addEventListener('input',refreshAnswerEditor);
+    answerEditor.addEventListener('change',event => {
+      if (event.target.id === 'testAnswerType' && event.target.value === 'choice') {
+        if (!$('testAnswerLabel').value) $('testAnswerLabel').value = 'Batch';
+        if (!$('testAnswerChoices').value) $('testAnswerChoices').value = 'small: Small\nlarge: Large';
+      }
+      refreshAnswerEditor();
+    });
+    refreshAnswerEditor();
+    testModes.addEventListener('click', (event) => { const button = event.target.closest('[data-test-mode]'); if (button) selectTestMode(button.dataset.testMode); });
+    testForm.addEventListener('invalid', (event) => { const group = event.target.closest('[data-test-section]'); if (group) selectTestMode(group.dataset.testSection); },true);
+    const userSections = [...document.querySelector('[data-tab-panel="users-devices"]').children];
+    const userModes = document.createElement('div'); userModes.className = 'modes';
+    userModes.innerHTML = '<button data-user-mode="users" aria-pressed="true">Users</button><button data-user-mode="devices" aria-pressed="false">Devices & enrollment</button>';
+    userSections[0].before(userModes); userSections[1].classList.add('hidden');
+    $('resetUserForm').classList.add('primary'); $('resetChannelForm').classList.add('primary');
+    userModes.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-user-mode]'); if (!button) return;
+      userModes.querySelectorAll('button').forEach((node) => node.setAttribute('aria-pressed',String(node === button)));
+      userSections[0].classList.toggle('hidden',button.dataset.userMode !== 'users');
+      userSections[1].classList.toggle('hidden',button.dataset.userMode !== 'devices');
+    });
+    const tokenPanel = $('tokensBody').closest('section');
+    tokenPanel.querySelector('thead tr').lastElementChild.remove();
+    const tokenView = document.createElement('div');
+    tokenView.className = 'tab-panel stack hidden';
+    tokenView.dataset.tabPanel = 'tokens';
+    tokenView.append(tokenPanel);
+    $('adminView').append(tokenView);
+    const activityNav = document.querySelector('[data-tab="activity"]');
+    activityNav.textContent = 'Activity';
+    $('adminTabs').prepend(activityNav);
+    const secondaryNav = document.querySelector('[data-tab="users-devices"]');
+    $('adminTabs').append(secondaryNav,document.querySelector('[data-tab="test-request"]'),document.querySelector('[data-tab="settings"]'));
+    const freshness = document.createElement('div');
+    freshness.id = 'freshness'; freshness.className = 'muted'; freshness.setAttribute('role', 'status');
+    document.querySelector('header > div').append(freshness);
+    const modes = document.createElement('div');
+    modes.className = 'modes';
+    modes.innerHTML = '<button type="button" data-token-mode="active" aria-pressed="true">Active</button><button type="button" data-token-mode="revoked" aria-pressed="false">Revoked log</button>';
+    tokenPanel.querySelector('.table-wrap').before(modes);
+
+    // norman: pagination covers only endpoint-provided records; request server
+    // cursors if an endpoint exceeds 5,000 rows or exposes paged history.
+    const results = new Map();
+    function paginate(id, reset = false) {
+      const result = results.get(id);
+      if (!result) return;
+      if (reset) result.page = 0;
+      const query = result.input.value.toLocaleLowerCase().trim();
+      const rows = [...$(id).rows];
+      const headings = [...$(id).closest('table').querySelectorAll('thead th')].map((node) => node.textContent);
+      rows.forEach((row) => [...row.cells].forEach((cell,index) => { cell.dataset.label = headings[index] || ''; }));
+      const matches = rows.filter((row) => `${row.textContent} ${row.dataset.search || ''}`.toLocaleLowerCase().includes(query));
+      const pageSize = innerWidth <= 800 ? 3 : innerHeight < 850 ? 4 : 5;
+      result.page = Math.min(result.page, Math.max(0, Math.ceil(matches.length / pageSize) - 1));
+      rows.forEach((row) => { row.hidden = true; });
+      matches.slice(result.page * pageSize, result.page * pageSize + pageSize).forEach((row) => { row.hidden = false; });
+      result.label.textContent = matches.length ? `${result.page * pageSize + 1}–${Math.min(matches.length, result.page * pageSize + pageSize)} of ${matches.length}` : 'No matching results';
+      result.previous.disabled = result.page === 0;
+      result.next.disabled = (result.page + 1) * pageSize >= matches.length;
+    }
+    for (const [id, name] of [['usersBody','users'],['devicesBody','devices'],['channelsBody','channels'],['tokensBody','tokens'],['activityRequests','recent requests'],['activityDeliveries','push deliveries']]) {
+      const wrap = $(id).closest('.table-wrap, .table-scroll');
+      const tools = document.createElement('div'); tools.className = 'result-tools';
+      const label = document.createElement('label'); label.textContent = `Search ${name}`;
+      const input = document.createElement('input'); input.type = 'search'; input.setAttribute('aria-label', `Search ${name}`); label.append(input); tools.append(label); wrap.before(tools);
+      const pager = document.createElement('div'); pager.className = 'pager';
+      const previous = document.createElement('button'); previous.textContent = 'Previous'; previous.setAttribute('aria-label', `Previous ${name} page`);
+      const range = document.createElement('span'); range.setAttribute('aria-live', 'polite');
+      const next = document.createElement('button'); next.textContent = 'Next'; next.setAttribute('aria-label', `Next ${name} page`);
+      pager.append(previous,range,next); wrap.after(pager);
+      results.set(id, { input, label:range, previous, next, page:0 });
+      input.addEventListener('input', () => paginate(id,true));
+      previous.addEventListener('click', () => { results.get(id).page--; paginate(id); });
+      next.addEventListener('click', () => { results.get(id).page++; paginate(id); });
+      new MutationObserver(() => paginate(id)).observe($(id), { childList:true });
+    }
+    const tokenQueries = {active:'',revoked:''};
+    modes.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-token-mode]'); if (!button) return;
+      const previous = modes.querySelector('[aria-pressed="true"]').dataset.tokenMode;
+      tokenQueries[previous] = results.get('tokensBody').input.value;
+      results.get('tokensBody').input.value = tokenQueries[button.dataset.tokenMode];
+      modes.querySelectorAll('button').forEach((node) => node.setAttribute('aria-pressed', String(node === button)));
+      results.get('tokensBody').input.setAttribute('aria-label', button.dataset.tokenMode === 'revoked' ? 'Search revoked tokens' : 'Search active tokens');
+      renderTokens(); paginate('tokensBody',true); renderTokenInspector();
+    });
+    const tokenLayout = document.createElement('div'); tokenLayout.className = 'task-layout';
+    const tokenList = document.createElement('div'); tokenList.className = 'stack';
+    const tokenInspector = document.createElement('aside'); tokenInspector.className = 'task-inspector'; tokenInspector.dataset.inspector = 'token'; tokenInspector.setAttribute('aria-label','Token details');
+    [...tokenPanel.children].filter((node) => !node.classList.contains('split')).forEach((node) => tokenList.append(node));
+    tokenLayout.append(tokenList,tokenInspector); tokenPanel.append(tokenLayout);
+    let selectedToken = null;
+    function renderTokenInspector() {
+      const token = state.tokens.find((item) => item.id === selectedToken);
+      $('openTokenModal').classList.toggle('primary',!token);
+      if (!token) { tokenInspector.replaceChildren(); return; }
+      tokenInspector.innerHTML = `<div class="split"><h2 tabindex="-1">${esc(token.name)}</h2><button data-close-token>Close</button></div><dl><dt>Status</dt><dd>${token.revoked_at ? 'Revoked' : 'Active'}</dd><dt>Scopes</dt><dd>${renderTokenChannelScopes(token)}</dd><dt>Created</dt><dd>${esc(formatDate(token.created_at)) || 'Not available'}</dd><dt>ID</dt><dd>${esc(token.id)}</dd>${token.revoked_at ? `<dt>Revoked</dt><dd>${esc(formatDate(token.revoked_at))}</dd>` : ''}</dl>${!token.revoked_at ? `<button class="danger primary" data-revoke-token="${esc(token.id)}">Revoke ${esc(token.name)}</button>` : ''}`;
+      $('tokensBody').querySelectorAll('tr').forEach((row) => row.classList.toggle('selected', row.querySelector('[data-inspect-token]')?.dataset.inspectToken === selectedToken));
+    }
+    document.addEventListener('click', (event) => {
+      const inspect = event.target.closest('[data-inspect-token]');
+      if (inspect) { selectedToken = inspect.dataset.inspectToken; renderTokenInspector(); tokenInspector.querySelector('h2').focus(); }
+      if (event.target.closest('[data-close-token]')) { selectedToken = null; renderTokenInspector(); }
+    });
+    new MutationObserver(() => renderTokenInspector()).observe($('tokensBody'), {childList:true});
+    const integration = document.createElement('div'); integration.id = 'integrationActivity';
+    const activityPanel = $('activityRequests').closest('section'); activityPanel.prepend(integration);
+    $('activityRequests').closest('table').querySelector('th').textContent = 'Request';
+    activityPanel.querySelector('h2').remove();
+    const deliveryExplanation = activityPanel.querySelector('p');
+    deliveryExplanation.textContent = 'Accepted means the push provider accepted delivery, not that someone saw the notification.';
+    const activityModes = document.createElement('div'); activityModes.className = 'modes';
+    activityModes.innerHTML = '<button data-activity-mode="requests" aria-pressed="true">Recent requests & receipts</button><button data-activity-mode="push" aria-pressed="false">Push deliveries</button>';
+    integration.after(activityModes);
+    const activityLayout = document.createElement('div'); activityLayout.className = 'task-layout';
+    const activityList = document.createElement('div'); activityList.className = 'stack';
+    const activityInspector = document.createElement('aside'); activityInspector.className = 'task-inspector'; activityInspector.dataset.inspector = 'activity';
+    [...activityPanel.children].forEach((node) => activityList.append(node));
+    activityLayout.append(activityList, activityInspector); activityPanel.append(activityLayout);
+    const activityRequestHeading = [...activityList.querySelectorAll('h3')][0];
+    const activityPushHeading = [...activityList.querySelectorAll('h3')][1];
+    function selectActivityMode(mode) {
+      const requests = mode === 'requests';
+      for (const [id,visible] of [['activityRequests',requests],['activityDeliveries',!requests]]) {
+        const wrap = $(id).closest('.table-scroll'); wrap.hidden = !visible;
+        wrap.previousElementSibling.hidden = !visible; wrap.nextElementSibling.hidden = !visible;
+      }
+      activityRequestHeading.hidden = !requests; activityPushHeading.hidden = requests; deliveryExplanation.hidden = requests;
+      activityModes.querySelectorAll('button').forEach((node) => node.setAttribute('aria-pressed',String(node.dataset.activityMode === mode)));
+    }
+    selectActivityMode('requests');
+    activityModes.addEventListener('click', (event) => { const button = event.target.closest('[data-activity-mode]'); if (button) selectActivityMode(button.dataset.activityMode); });
+    let inspectingIntegrations = false;
+    document.addEventListener('nod-session-cleared', () => {
+      selectedToken = null; inspectingIntegrations = false;
+      tokenQueries.active = ''; tokenQueries.revoked = '';
+      results.forEach((result) => { result.page = 0; result.input.value = ''; result.label.textContent = ''; });
+      $('emojiSearch').value = ''; $('emojiCategory').value = ''; emojiLimit = 60;
+      selectTestMode('message');
+    });
+    function renderIntegrations() {
+      const data = state.activity?.integrations;
+      if (!data) { integration.textContent = 'Integration status unavailable'; activityInspector.replaceChildren(); return; }
+      const attention = Number(data.callbacks_retrying || 0) + Number(data.callbacks_blocked_policy || 0) + Number(data.lifecycle_retrying || 0);
+      integration.className = attention ? 'integration-alert split' : 'split';
+      integration.innerHTML = `<span>${attention ? `${attention} integration items need attention` : 'Integrations'} · Publisher ${esc(data.publisher_status)}</span><button class="${attention && !inspectingIntegrations ? 'primary' : ''}" data-inspect-integrations>Inspect integrations</button>`;
+      if (inspectingIntegrations) {
+        const facts = (prefix) => Object.entries(data).filter(([key]) => key.startsWith(prefix)).map(([key,value]) => `<div class="fact"><dt>${esc(key.replace(prefix,'').replaceAll('_',' '))}</dt><dd>${esc(value == null ? 'None' : key.endsWith('_at') ? formatDate(value) : value)}</dd></div>`).join('');
+        activityInspector.innerHTML = `<div class="split"><h2 tabindex="-1">Callbacks</h2><button data-close-integrations>Close</button></div><dl>${facts('callbacks_')}</dl><details><summary>Lifecycle publisher · ${esc(data.publisher_status)}</summary><dl>${facts('lifecycle_')}</dl></details><button class="primary" data-check-integrations>Check status</button>`;
+      }
+    }
+    new MutationObserver(renderIntegrations).observe($('activityRequests'), {childList:true});
+    document.addEventListener('click', (event) => {
+      const pushButton = event.target.closest('[data-inspect-push]');
+      if (pushButton) {
+        const delivery = state.activity?.deliveries?.[Number(pushButton.dataset.inspectPush)];
+        if (!delivery) return;
+        inspectingIntegrations = false;
+        activityInspector.innerHTML = `<div class="split"><h2 tabindex="-1">Push delivery</h2><button data-close-integrations>Close</button></div><dl>${Object.entries(delivery).map(([key,value]) => `<div class="fact"><dt>${esc(key.replaceAll('_',' '))}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl><p>Accepted is provider acceptance, not proof that a person saw the request.</p>`;
+        activityInspector.querySelector('h2').focus();
+      }
+      const requestButton = event.target.closest('[data-inspect-request]');
+      if (requestButton) {
+        const request = state.activity?.requests?.find((item) => item.id === requestButton.dataset.inspectRequest);
+        if (!request) return;
+        inspectingIntegrations = false;
+        const decisions = request.decisions?.length ? request.decisions.map((entry) => entry.decision) : request.decision ? [request.decision] : [];
+        activityInspector.innerHTML = `<div class="split"><h2 tabindex="-1">${esc(request.title)}</h2><button data-close-integrations>Close</button></div><dl><dt>Request</dt><dd>${esc(request.id)}</dd><dt>Channel</dt><dd>${esc(request.channel_id)}</dd><dt>Status</dt><dd>${esc(request.status)}</dd></dl><h3>Decision receipts (read only)</h3>${decisions.length ? decisions.map((decision) => `<p>${esc(decision.actor_user_id || 'Unknown user')}: ${esc(decision.option_label)} · ${esc(formatDate(decision.resolved_at))}</p>${answerReceipt(decision)}${decision.text ? `<p>${esc(decision.text)}</p>` : ''}`).join('') : '<p>No decision receipts</p>'}`;
+        activityInspector.querySelector('h2').focus();
+        $('activityRequests').querySelectorAll('tr').forEach((row) => row.classList.toggle('selected', row.querySelector('button') === requestButton));
+      }
+      if (event.target.closest('[data-inspect-integrations]')) { inspectingIntegrations = true; renderIntegrations(); activityInspector.querySelector('h2')?.focus(); }
+      if (event.target.closest('[data-close-integrations]')) { inspectingIntegrations = false; activityInspector.replaceChildren(); }
+      if (event.target.closest('[data-check-integrations]')) loadAll().catch((err) => setStatus(err.message,'danger-text'));
+    });
+    // norman: drafts resume within this authenticated page, not across reload;
+    // add server-side safe drafts only if cross-reload recovery is required.
+    // Never persist passwords, one-time tokens or enrollment codes.
+    // norman: GET freshness is bounded to 30 seconds while visible; replace only
+    // when an owner-approved authenticated admin event/replay contract exists.
+    // Bounded GET reconciliation only; never replay a mutation or refresh drafts.
+    const refreshTimer = setInterval(() => {
+      if (authenticated && !document.hidden && !loading) loadAll({quiet:true}).catch(() => {});
+    }, 30000);
+    window.addEventListener('pagehide', () => clearInterval(refreshTimer), {once:true});
+    window.addEventListener('resize', () => results.forEach((_,id) => paginate(id)));
+    document.addEventListener('visibilitychange', () => {
+      if (!authenticated) return;
+      if (document.hidden) $('freshness').textContent = `${$('freshness').dataset.lastRead || 'Not checked'} · refresh paused while hidden`;
+      else { $('freshness').textContent = `${$('freshness').dataset.lastRead || 'Not checked'} · checking after pause`; loadAll({quiet:true}).catch(() => {}); }
+    });
+    // Modal keyboard containment; Escape is handled above, picker first.
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Tab') return;
+      const modal = [...document.querySelectorAll('.modal-backdrop:not(.hidden)')].at(-1);
+      if (!modal) return;
+      const controls = [...modal.querySelectorAll('button,input,select,textarea,[tabindex="0"]')].filter((node) => !node.disabled && !node.closest('.hidden,[hidden]') && node.type !== 'hidden' && node.tabIndex !== -1);
+      const first = controls[0], last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    });
+    let dialogOpener = null;
+    document.addEventListener('click', (event) => {
+      if (!document.querySelector('.modal-backdrop:not(.hidden)')) dialogOpener = event.target.closest('button');
+    },true);
+    document.querySelectorAll('.modal-backdrop').forEach((backdrop) => {
+      new MutationObserver(() => {
+        if (backdrop.classList.contains('hidden') && authenticated && !document.querySelector('.modal-backdrop:not(.hidden)') && dialogOpener?.isConnected && dialogOpener.getBoundingClientRect().width) dialogOpener.focus();
+      }).observe(backdrop,{attributes:true,attributeFilter:['class']});
     });
 
     state.activeTab = tabFromHash();

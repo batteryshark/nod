@@ -18,6 +18,8 @@ pub use nod_proto::DecisionSignature as SubmitDecisionSignature;
 /// projection time for full snapshots and single-recipient views.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecisionRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_field: Option<nod_proto::AnswerField>,
     pub id: String,
     pub channel_id: String,
     pub recipients: Vec<String>,
@@ -60,7 +62,7 @@ impl DecisionRequest {
     /// the independently verifiable, salted v2 signing context instead.
     pub fn to_wire(&self) -> nod_proto::Request {
         let mut wire = nod_proto::Request::from(self);
-        if !self.private_recipients {
+        if !self.private_recipients && self.answer_field.is_none() {
             wire.request_digest = nod_proto::request_digest(&wire).ok();
         }
         wire
@@ -70,6 +72,7 @@ impl DecisionRequest {
 impl From<&DecisionRequest> for nod_proto::Request {
     fn from(request: &DecisionRequest) -> Self {
         nod_proto::Request {
+            answer_field: request.answer_field.clone(),
             id: request.id.clone(),
             request_id: request.id.clone(),
             channel_id: request.channel_id.clone(),

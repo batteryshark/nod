@@ -26,6 +26,10 @@ use crate::{
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CreateRequestRequest {
+    #[serde(default, deserialize_with = "nod_proto::answer::deserialize_present")]
+    answer_field: Option<nod_proto::AnswerField>,
+    #[serde(default)]
+    origin: Option<db::lifecycle::Origin>,
     #[serde(default = "default_channel")]
     channel_id: String,
     #[serde(default)]
@@ -67,11 +71,33 @@ fn default_channel() -> String {
     "default".to_string()
 }
 
+pub(super) fn value_capable(headers: &HeaderMap) -> bool {
+    headers
+        .get("Nod-Request-Contract")
+        .and_then(|h| h.to_str().ok())
+        == Some("single-value-v1")
+}
+
+fn guard_value_read(
+    request: &crate::models::DecisionRequest,
+    principal: &auth::Principal,
+    headers: &HeaderMap,
+) -> Result<(), ApiError> {
+    if request.answer_field.is_some()
+        && matches!(principal, auth::Principal::Device(_))
+        && !value_capable(headers)
+    {
+        return Err(ApiError::ClientUpdateRequired);
+    }
+    Ok(())
+}
+
 impl From<CreateRequestRequest> for CreateDecisionRequest {
     fn from(req: CreateRequestRequest) -> Self {
         // Accept template metadata while storing only the rendered request snapshot.
         let _template_snapshot = (&req.template_id, &req.template_version, &req.variables);
         Self {
+            answer_field: req.answer_field,
             channel_id: req.channel_id,
             recipients: req.recipients,
             decision_resolution: req.decision_resolution,
@@ -103,10 +129,12 @@ pub(super) async fn create_request(
         _ => None,
     };
     let idempotency_key = req.idempotency_key.clone();
+    let origin = req.origin.clone();
     let response = services::requests::create(
         &state,
         req.into(),
         db::CreateRequestMetadata {
+            origin: origin.as_ref(),
             created_by_issuer_token_id,
             idempotency_key: idempotency_key.as_deref(),
         },
@@ -134,10 +162,10 @@ pub(super) async fn list_requests(
         },
     )
     .await?;
-    Ok(Json(RequestsResponse::from_page(
-        requests.requests,
-        requests.next_cursor,
-    )))
+    Ok(Json(
+        RequestsResponse::from_page(requests.requests, requests.next_cursor)
+            .contract(value_capable(&headers)),
+    ))
 }
 
 pub(super) async fn get_request(
@@ -148,7 +176,9 @@ pub(super) async fn get_request(
     let principal = auth::authenticate(&headers, &state.pool, state.config.admin_token()).await?;
     let request =
         services::requests::request_for_principal(&state, &principal, &request_id).await?;
-    Ok(Json(RequestResponse::from_request(&request)))
+    Ok(Json(RequestResponse::from_request(&request).contract(
+        !matches!(principal, auth::Principal::Device(_)) || value_capable(&headers),
+    )))
 }
 
 pub(super) async fn cancel_request(
@@ -177,6 +207,7 @@ pub(super) async fn get_request_decision(
     let principal = auth::authenticate(&headers, &state.pool, state.config.admin_token()).await?;
     let request =
         services::requests::request_for_principal(&state, &principal, &request_id).await?;
+    guard_value_read(&request, &principal, &headers)?;
     Ok(Json(RequestDecisionResponse::from_request(&request)))
 }
 
@@ -201,6 +232,7 @@ pub(super) async fn wait_for_request_decision(
         }
     };
     let wait_for = Duration::from_secs(query.timeout_seconds.unwrap_or(55).clamp(1, 60));
+    guard_value_read(&initial_request, &principal, &headers)?;
     let waited = services::requests::wait_for_decision(
         &state,
         &request_id,
@@ -224,7 +256,9 @@ pub(super) async fn submit_option(
     let device = auth::require_device(&headers, &state.pool).await?;
     let request =
         services::requests::record_decision(&state, &device, &request_id, &option_id, req).await?;
-    Ok(Json(RequestResponse::from_request(&request)))
+    Ok(Json(
+        RequestResponse::from_request(&request).contract(value_capable(&headers)),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

@@ -5,7 +5,7 @@ mod signing;
 mod state;
 mod store;
 
-pub use api::{display_name_for, normalize_base_url, profile_id_for};
+pub use api::{display_name_for, normalize_base_url, profile_id_for, NodApi, SubmitOptionRequest};
 pub use runtime::{
     ChannelParams, DeviceNotificationPreferenceParams, EnrollParams, NodClientMessage,
     NodClientRuntime, NotificationPreferenceParams, OpenRequestParams, QueryHistoryParams,
@@ -14,6 +14,6 @@ pub use runtime::{
     SubmitOptionParams, SubmitRequestOptionParams,
 };
 pub use signing::{
-    build_decision_signature, DecisionSigningRequest, DeviceSigner, ForeignSigner,
-    ForeignSignerKey, StoredSigningKey,
+    build_decision_signature, build_value_decision_signature, DecisionSigningRequest, DeviceSigner,
+    ForeignSigner, ForeignSignerKey, StoredSigningKey,
 };

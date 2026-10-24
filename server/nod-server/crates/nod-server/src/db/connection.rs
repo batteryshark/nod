@@ -38,6 +38,14 @@ async fn migrate_existing_databases(pool: &SqlitePool) -> anyhow::Result<()> {
     // Additive migrations preserve installed enrollments and the original v1
     // request snapshots. The random salt is never included in device views.
     for (table, column, definition) in [
+        ("requests", "answer_field_json", "TEXT"),
+        ("push_deliveries", "lease_until", "INTEGER"),
+        (
+            "push_deliveries",
+            "claim_generation",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("requests", "revision", "INTEGER NOT NULL DEFAULT 0"),
         ("users", "deleted_at", "TEXT"),
         ("devices", "revoked_at", "TEXT"),
         (
@@ -75,6 +83,10 @@ async fn migrate_existing_databases(pool: &SqlitePool) -> anyhow::Result<()> {
 }
 
 async fn seed_defaults(pool: &SqlitePool) -> anyhow::Result<()> {
+    sqlx::query("INSERT OR IGNORE INTO integration_meta(key,value) VALUES('node_id',?)")
+        .bind(crate::auth::new_id())
+        .execute(pool)
+        .await?;
     sqlx::query(
         "INSERT OR IGNORE INTO channels (id, name, emoji, created_at) VALUES ('default', 'Default', '🔔', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
     )
@@ -155,6 +167,8 @@ mod tests {
             )
             .replace("    recipient_salt TEXT NOT NULL DEFAULT '',\n", "")
             .replace("    explicit_recipients INTEGER NOT NULL DEFAULT 0,\n", "");
+        let previous_schema =
+            previous_schema.replace("    revision INTEGER NOT NULL DEFAULT 0,\n", "");
         sqlx::raw_sql(&previous_schema).execute(&old).await.unwrap();
         seed_defaults(&old).await.unwrap();
         sqlx::query("INSERT INTO devices(id,user_id,name,platform,token_hash,signing_public_key,last_seen_at,created_at) VALUES('installed','owner','Phone','ios','preserved-token-hash','preserved-public-key','2026-09-01T00:00:00.000Z','2026-09-01T00:00:00.000Z')")
@@ -190,5 +204,16 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(retained, salt);
+        let revision: i64 =
+            sqlx::query_scalar("SELECT revision FROM requests WHERE id='old-request'")
+                .fetch_one(&upgraded)
+                .await
+                .unwrap();
+        assert_eq!(revision, 0);
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM lifecycle_events")
+            .fetch_one(&upgraded)
+            .await
+            .unwrap();
+        assert_eq!(events, 0);
     }
 }

@@ -4,6 +4,18 @@ use super::NotificationActivation;
 
 const MAX_NOTIFICATION_OPTIONS: usize = 4;
 
+pub(crate) fn value_unsupported(request: &Request) -> bool {
+    request.answer_field.is_some()
+        || request
+            .signing
+            .as_ref()
+            .is_some_and(|signing| signing.version == "nod-request-v3")
+        || request
+            .options
+            .iter()
+            .any(|option| option.id == "__nod_value_open")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DesktopNotificationOption {
     pub(super) id: String,
@@ -18,7 +30,10 @@ pub(super) fn desktop_notification_options(
     if request.status != RequestStatus::Pending {
         return Vec::new();
     }
-    if request.notification.redact || request.options.len() > MAX_NOTIFICATION_OPTIONS {
+    if value_unsupported(request)
+        || request.notification.redact
+        || request.options.len() > MAX_NOTIFICATION_OPTIONS
+    {
         return vec![DesktopNotificationOption {
             id: "open".into(),
             label: "Open Nod".into(),

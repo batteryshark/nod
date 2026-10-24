@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::ApiError;
 
 /// APNs transport boundary used by the HTTP relay.
+// async_trait adds must_use to an already must-use Future; retain the generated API.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ApnsDelivery: Send + Sync {
     async fn send(&self, notification: &RelayNotification) -> anyhow::Result<()>;

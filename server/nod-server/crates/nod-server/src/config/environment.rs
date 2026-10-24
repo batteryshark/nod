@@ -15,6 +15,30 @@ pub(super) fn optional_env(name: &str) -> Option<String> {
 }
 
 pub(super) fn apply_server_env(config: &mut Config) -> anyhow::Result<()> {
+    if let Some(value) = raw_env("NOD_TOWER_NATS_USER") {
+        config.integrations.nats.user = Some(value);
+    }
+    if let Some(value) = raw_env("NOD_TOWER_PASSWORD_FILE") {
+        config.integrations.nats.password_file = Some(PathBuf::from(value));
+    }
+    if let Some(value) = raw_env("NOD_TOWER_INBOX_PREFIX") {
+        config.integrations.nats.inbox_prefix = Some(value);
+    }
+    if let Some(value) = raw_env("NOD_NATS_URL") {
+        config.integrations.nats.url = Some(value);
+    }
+    if let Some(value) = raw_env("NOD_TOWER_NATS_URL") {
+        config.integrations.nats.url = Some(value);
+    }
+    if let Some(value) = raw_env("NOD_NATS_CREDENTIALS_FILE") {
+        config.integrations.nats.credentials_file = Some(PathBuf::from(value));
+    }
+    if let Some(value) = raw_env("NOD_NATS_TOKEN_FILE") {
+        config.integrations.nats.token_file = Some(PathBuf::from(value));
+    }
+    if let Some(value) = raw_env("NOD_NATS_EXPECTED_STREAM") {
+        config.integrations.nats.expected_stream = value;
+    }
     if let Some(value) = raw_env("NOD_BIND") {
         config.bind = value;
     }

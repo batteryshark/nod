@@ -4,9 +4,12 @@ use anyhow::bail;
 
 mod environment;
 mod file;
+mod integrations;
+pub use integrations::{IntegrationsConfig, NatsConfig};
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub integrations: IntegrationsConfig,
     pub bind: String,
     pub database_url: String,
     pub data_dir: PathBuf,
@@ -41,6 +44,7 @@ impl Config {
 
     fn without_secrets() -> Self {
         Self {
+            integrations: IntegrationsConfig::default(),
             bind: default_bind(),
             database_url: default_database_url(),
             data_dir: default_data_dir(),

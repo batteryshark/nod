@@ -57,6 +57,7 @@ pub fn request(id: &str, channel_id: &str) -> Request {
 
 pub fn request_with_status(id: &str, channel_id: &str, status: RequestStatus) -> Request {
     Request {
+        answer_field: None,
         id: id.to_string(),
         request_id: id.to_string(),
         channel_id: channel_id.to_string(),

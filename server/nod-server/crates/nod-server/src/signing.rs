@@ -16,12 +16,13 @@ pub const DEFAULT_ALGORITHM: &str = nod_proto::DECISION_SIGNING_ALGORITHM;
 /// `nod-proto` (the single source of truth shared with clients). This function
 /// keeps the server-side policy: algorithm, key-id, nonce, and digest-binding
 /// checks. Returns the canonical `(request_digest, signing_payload)`.
-pub fn verify_decision_signature(
+pub fn verify_value_decision_signature(
     request: &DecisionRequest,
     option: &RequestOption,
     actor: &Device,
     text: Option<&str>,
     provided: &SubmitDecisionSignature,
+    answer: Option<&nod_proto::AnswerValue>,
 ) -> Result<(String, String), ApiError> {
     let Some(device_key_id) = actor.signing_key_id.as_deref() else {
         return Err(ApiError::BadRequest(
@@ -56,14 +57,12 @@ pub fn verify_decision_signature(
     // to_wire honors a stamped canonical digest, so even a per-user projection
     // reaching this path would verify against the full-snapshot digest.
     let wire = request.to_wire();
-    let legacy_digest = wire
-        .request_digest
-        .ok_or_else(|| ApiError::Internal("could not compute request digest".to_string()))?;
+    let legacy_digest = wire.request_digest;
     let private_digest = wire
         .signing
         .as_ref()
         .map(|context| context.request_digest.as_str());
-    if provided.request_digest != legacy_digest
+    if Some(provided.request_digest.as_str()) != legacy_digest.as_deref()
         && Some(provided.request_digest.as_str()) != private_digest
     {
         return Err(ApiError::BadRequest(
@@ -77,7 +76,7 @@ pub fn verify_decision_signature(
         .with_timezone(&Utc);
     let signed_at = signed_at.to_rfc3339_opts(SecondsFormat::Millis, true);
 
-    let signing_payload = nod_proto::decision_signing_payload(nod_proto::DecisionSigningInput {
+    let input = nod_proto::DecisionSigningInput {
         request_id: &request.id,
         request_digest: &request_digest,
         option_id: &option.id,
@@ -88,7 +87,32 @@ pub fn verify_decision_signature(
         nonce: &provided.nonce,
         signed_at: &signed_at,
         text,
-    });
+    };
+    let signing_payload = if let Some(field) = &request.answer_field {
+        if provided.payload_version.as_deref()
+            != Some(nod_proto::value_signing::VALUE_DECISION_PAYLOAD_VERSION)
+            || private_digest != Some(provided.request_digest.as_str())
+            || provided.signed_at != signed_at
+        {
+            return Err(ApiError::BadRequest(
+                "invalid value signature context".into(),
+            ));
+        }
+        let answer =
+            answer.ok_or_else(|| ApiError::BadRequest("explicit answer_value required".into()))?;
+        field
+            .validate_value(answer)
+            .map_err(|e| ApiError::BadRequest(e.into()))?;
+        nod_proto::value_signing::decision_signing_payload_v2(input, answer)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?
+    } else {
+        if answer.is_some() || provided.payload_version.is_some() {
+            return Err(ApiError::BadRequest(
+                "ordinary request does not accept value payload".into(),
+            ));
+        }
+        nod_proto::decision_signing_payload(input)
+    };
 
     nod_proto::verify_payload(public_key, signing_payload.as_bytes(), &provided.signature)
         .map_err(|_| ApiError::Forbidden)?;

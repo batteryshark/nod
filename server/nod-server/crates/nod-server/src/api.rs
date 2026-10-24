@@ -10,12 +10,22 @@ use crate::{admin, state::AppState};
 mod activity;
 mod admin_endpoints;
 mod device_endpoints;
+mod integration_events;
 mod requests;
 mod responses;
 mod sync_socket;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/api/v1/integrations/events", get(integration_events::list))
+        .route(
+            "/api/v1/integrations/events/{event_id}",
+            get(integration_events::detail),
+        )
+        .route(
+            "/api/v1/integrations/requests/{request_id}/origin",
+            post(integration_events::bind_origin),
+        )
         .route("/admin", get(admin::admin_page))
         .route("/admin/", get(admin::admin_page))
         .route(

@@ -105,39 +105,26 @@ async fn handle_activation(
     runtime: &Arc<Mutex<NodClientRuntime>>,
     activation: NotificationActivation,
 ) -> Option<NodClientMessage> {
-    match activation {
-        NotificationActivation::Open {
-            server_id,
-            request_id,
-        } => {
-            let request_id = request_id?;
-            let mut runtime = runtime.lock().await;
-            runtime
-                .open_request(OpenRequestParams {
-                    server_id,
-                    request_id,
-                })
-                .await
-                .err()
-                .map(|error| transient_desktop_error("open notification", error))
-        }
-        NotificationActivation::Submit {
-            server_id,
-            request_id,
-            option_id,
-        } => {
-            let mut runtime = runtime.lock().await;
-            runtime
-                .submit_request_option(SubmitRequestOptionParams {
-                    server_id,
-                    request_id,
-                    option_id,
-                    text: None,
-                })
-                .await
-                .err()
-                .map(|error| transient_desktop_error("submit notification option", error))
-        }
+    let mut runtime = runtime.lock().await;
+    crate::notifier::activation::activate(&mut *runtime, activation)
+        .await
+        .err()
+        .map(|error| transient_desktop_error("activate notification", error))
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl crate::notifier::activation::ActivationRuntime for NodClientRuntime {
+    async fn read(
+        &mut self,
+        params: OpenRequestParams,
+    ) -> anyhow::Result<nod_client_core::models::Request> {
+        self.get_request(params).await
+    }
+    async fn open(&mut self, params: OpenRequestParams) -> anyhow::Result<()> {
+        self.open_request(params).await.map(|_| ())
+    }
+    async fn submit(&mut self, params: SubmitRequestOptionParams) -> anyhow::Result<()> {
+        self.submit_request_option(params).await.map(|_| ())
     }
 }
 
