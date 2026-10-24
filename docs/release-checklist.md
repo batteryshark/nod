@@ -71,19 +71,36 @@ server/nod-server/scripts/nod-smoke
 - [ ] VM reboot → still enrolled; autostart behaves as configured
 - [ ] Server restart while app open → sync reconnects
 
-## macOS app — run from the stapled DMG, fresh copy in /Applications
+## macOS app — 1.1.0 continuity install and public DMG acceptance
 
-- [ ] First launch passes Gatekeeper with no override (notarized build)
+- [ ] Principal installs the existing local development-signed continuity
+      candidate in place, preserving installed identity, keys and enrollment;
+      no fresh-copy, uninstall, reset or re-enrollment requirement
+- [ ] D18: in the SAME install handoff, give the principal a 30-second
+      heads-up, then show ONE visible INERT fixture covering sheets, EVERY
+      option, small windows and keyboard. No real app, network, credentials,
+      APNs, signing or enrollment; exact permissions require principal hands.
+      No early windows. AFTER install, ONE real many-option card is final acceptance
+- [ ] Public Developer ID-signed, notarized, stapled DMG passes Gatekeeper
+      with no override, preserving the current installed identity
 - [ ] Menu-bar nod-head glyph renders in light + dark mode; pending count
-- [ ] Enroll, receive, decide (Secure Enclave signing), notification + sound
+- [ ] With preserved enrollment, receive, decide (Secure Enclave signing),
+      notification + sound
 - [ ] Quit + relaunch → still enrolled
 - [ ] `spctl --assess --type execute -vv Nod.app` reports Notarized Developer ID
 
-## iOS — TestFlight build
+Public DMG and tag remain held pending chief Developer ID verification,
+then ONE authorized `release-macos` run.
 
-- [ ] Install from TestFlight on a physical device
-- [ ] APNs push arrives with the app backgrounded
-- [ ] Approve from the notification and in-app; verify on server
+## iOS — direct ad-hoc 1.1.0 handoff
+
+- [ ] Confirm strict signed-export/profile verification, production APNs and
+      App Attest, device coverage and preserved signing/keychain identity
+- [ ] Principal installs in place on the physical device WITHOUT uninstall,
+      reset or enrollment; existing identity and enrollment are preserved
+- [ ] Natural APNs push arrives with the app backgrounded
+- [ ] Open the app and submit a signed value with notes; verify the receipt
+      in-app and on the server, WITHOUT notification quick-submit of a value
 
 ## Cut runbook
 
