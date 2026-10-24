@@ -1823,18 +1823,23 @@
     }
 
     function openChannelMembershipModal(channelId, channelName) {
-      if (state.membershipDrafts[channelId]) {
-        state.channelMembershipModal = state.membershipDrafts[channelId];
+      const draft = state.membershipDrafts[channelId];
+      if (draft?.saving) {
+        state.channelMembershipModal = draft;
         renderChannelMembershipModal();
         $('channelMembershipSearch').focus();
         return;
       }
       const channel = channelById(channelId);
       const original = {};
+      const outcomes = {};
       const users = state.users.map((user) => {
         const member = userSubscribedToChannel(user, channelId);
         original[user.id] = member;
-        return { ...user, member };
+        const previous = draft?.users.find((item) => item.id === user.id);
+        const dirty = previous && Boolean(previous.member) !== Boolean(draft.original[user.id]);
+        if (dirty && draft.outcomes?.[user.id]) outcomes[user.id] = draft.outcomes[user.id];
+        return { ...user, member: dirty ? previous.member : member };
       });
 
       state.channelMembershipModal = {
@@ -1842,6 +1847,7 @@
         channelName: channelName || channel?.name || channelId,
         users,
         original,
+        outcomes,
         visibleIds: []
       };
       state.membershipDrafts[channelId] = state.channelMembershipModal;
@@ -2404,6 +2410,7 @@
               if (!user) throw new Error('User no longer exists');
               const actual = userSubscribedToChannel(user, modal.channelId);
               modal.original[user.id] = actual;
+              state.users = state.users.map((item) => item.id === user.id ? user : item);
               if (actual === update.subscribed) { modal.outcomes[user.id] = 'Saved'; continue; }
             } catch (_) { modal.outcomes[update.user_id] = 'Failed · reconciliation unavailable'; continue; }
           }
@@ -2429,18 +2436,20 @@
             modal.outcomes[update.user_id] = 'Failed · could not verify; retry to reconcile';
           }
           if (writeError && modal.outcomes[update.user_id] !== 'Saved') modal.outcomes[update.user_id] = 'Failed · retry required';
-          renderChannelMembershipModal();
-          save.disabled = true;
+          if (state.channelMembershipModal === modal) {
+            renderChannelMembershipModal();
+            save.disabled = true;
+          }
         }
         Object.keys(modal.outcomes).forEach((id) => { if (modal.outcomes[id] === 'Pending') modal.outcomes[id] = 'Not attempted · draft retained'; });
         const remaining = modal.users.filter((user) => Boolean(user.member) !== Boolean(modal.original[user.id])).length;
-        setStatus(remaining ? `${remaining} member changes remain. Saved changes are retained; reopen Members to resume or retry.` : 'Channel members saved', remaining ? 'danger-text' : 'ok');
+        if (state.channelMembershipModal === modal) setStatus(remaining ? `${remaining} member changes remain. Saved changes are retained; reopen Members to resume or retry.` : 'Channel members saved', remaining ? 'danger-text' : 'ok');
         renderChannels();
       } catch (err) {
-        setStatus(err.message, "danger-text");
+        if (state.channelMembershipModal === modal) setStatus(err.message, "danger-text");
       } finally {
         modal.saving = false;
-        if (generation === sessionGeneration) {
+        if (generation === sessionGeneration && state.channelMembershipModal === modal) {
           renderChannelMembershipModal();
           save.textContent = Object.values(modal.outcomes).some((value) => value.startsWith('Failed')) ? 'Retry failed' : 'Save';
         }

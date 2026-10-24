@@ -374,11 +374,66 @@ describe('A Inset admin safety and tasks', () => {
     get('addAllChannelMembers').click();get('saveChannelMembershipChanges').click();
     await vi.waitFor(()=>expect(writes).toEqual(['owner']));
     get('cancelChannelMembershipChanges').click();release({});
-    await vi.waitFor(()=>expect(get('status').textContent).toContain('1 member changes remain'));
+    await vi.waitFor(()=>expect(dom.window.eval('state.membershipDrafts.default.saving')).toBe(false));
     expect(writes).toEqual(['owner']);
     dom.window.document.querySelector('[data-manage-channel-members="default"]').click();
     expect(get('channelMembershipList').textContent).toContain('Not attempted');
     expect(get('channelMembershipList').querySelector('[data-channel-member-user="other"]').checked).toBe(true);
+  });
+  it('rebases clean and dirty membership drafts onto the current roster', async () => {
+    const {dom,get}=page(); await ready(get);
+    const open=()=>dom.window.openChannelMembershipModal('default');
+    const checked=id=>get('channelMembershipList').querySelector(`[data-channel-member-user="${id}"]`)?.checked;
+    open(); get('cancelChannelMembershipChanges').click();
+    dom.window.eval('state.users = [{id:"new",name:"New",subscribed_channel_ids:["default"]},{id:"owner",name:"Owner",subscribed_channel_ids:[]}]');
+    open(); expect(checked('new')).toBe(true); expect(checked('owner')).toBe(false);
+    get('addAllChannelMembers').click(); get('cancelChannelMembershipChanges').click();
+    dom.window.eval('state.users = state.users.filter(user => user.id !== "new")');
+    open(); expect(checked('new')).toBeUndefined(); expect(checked('owner')).toBe(true);
+    expect(dom.window.eval('state.channelMembershipModal.original.owner')).toBe(false);
+  });
+  it('refreshes fully saved drafts and reconciles an uncertain commit without a second PUT', async () => {
+    let actual=false, unavailable=false; const writes=[];
+    const {dom,get}=page({
+      '/users':()=>{if(unavailable)throw Error('Offline');return {users:[{id:'owner',name:'Owner',subscribed_channel_ids:actual?['default']:[]}]};},
+      '/users/owner/subscriptions':()=>{writes.push('owner');actual=true;unavailable=true;throw Error('Uncertain');}
+    });
+    await ready(get); dom.window.openChannelMembershipModal('default');
+    get('addAllChannelMembers').click();get('saveChannelMembershipChanges').click();
+    await vi.waitFor(()=>expect(get('saveChannelMembershipChanges').textContent).toBe('Retry failed'));
+    get('cancelChannelMembershipChanges').click();dom.window.openChannelMembershipModal('default');
+    expect(get('channelMembershipList').querySelector('input').checked).toBe(true);
+    expect(get('channelMembershipList').textContent).toContain('Failed');
+    unavailable=false;get('saveChannelMembershipChanges').click();
+    await vi.waitFor(()=>expect(get('status').textContent).toBe('Channel members saved'));
+    expect(writes).toEqual(['owner']);
+    expect(dom.window.eval('state.users[0].subscribed_channel_ids.includes("default")')).toBe(true);
+    expect(dom.window.eval('state.users.filter(user => userSubscribedToChannel(user,"default")).length')).toBe(1);
+    get('cancelChannelMembershipChanges').click();
+    dom.window.eval('state.users = [{id:"fresh",name:"Fresh",subscribed_channel_ids:[]}]');
+    dom.window.openChannelMembershipModal('default');
+    expect(get('channelMembershipList').textContent).toContain('Fresh');
+    expect(get('channelMembershipList').querySelector('[data-channel-member-user="owner"]')).toBeNull();
+  });
+  it('a deferred channel save cannot change another channel modal controls or status', async () => {
+    let release; const pending=new Promise(r=>release=r); let actual=false;
+    const {dom,get}=page({
+      '/users':()=>({users:[{id:'owner',name:'Owner',subscribed_channel_ids:actual?['default']:[]}]}),
+      '/users/owner/subscriptions':async()=>{await pending;actual=true;return{};}
+    });
+    await ready(get); dom.window.openChannelMembershipModal('default');
+    get('addAllChannelMembers').click();get('saveChannelMembershipChanges').click();
+    const saving=dom.window.eval('state.channelMembershipModal');
+    get('cancelChannelMembershipChanges').click();dom.window.openChannelMembershipModal('other','Other');
+    get('addAllChannelMembers').click();
+    const status=get('status').textContent, label=get('saveChannelMembershipChanges').textContent;
+    get('channelMembershipSearch').focus(); release();
+    await vi.waitFor(()=>expect(saving.saving).toBe(false));
+    expect(get('status').textContent).toBe(status);
+    expect(get('saveChannelMembershipChanges').textContent).toBe(label);
+    expect(get('saveChannelMembershipChanges').disabled).toBe(false);
+    expect(dom.window.document.activeElement).toBe(get('channelMembershipSearch'));
+    expect(dom.window.eval('state.channelMembershipModal.channelId')).toBe('other');
   });
   it('a pending clipboard failure cannot recreate copy fallback DOM after logout', async () => {
     let reject; const pending=new Promise((_,r)=>reject=r);
