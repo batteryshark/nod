@@ -63,6 +63,7 @@ create_signed_cert untrusted-client "nod-untrusted-client-test" untrusted-client
 openssl genpkey \
   -algorithm EC \
   -pkeyopt ec_paramgen_curve:P-256 \
+  -pkeyopt ec_param_enc:named_curve \
   -out apns-auth-key.p8
 
 rm -f *.csr *.srl *.ext
