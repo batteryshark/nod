@@ -73,16 +73,21 @@ server/nod-server/scripts/nod-smoke
 
 ## macOS app — 1.1.0 continuity install and public DMG acceptance
 
-- [ ] Principal installs the existing local development-signed continuity
-      candidate in place, preserving installed identity, keys and enrollment;
-      no fresh-copy, uninstall, reset or re-enrollment requirement
 - [ ] D18: in the SAME install handoff, give the principal a 30-second
       heads-up, then show ONE visible INERT fixture covering sheets, EVERY
       option, small windows and keyboard. No real app, network, credentials,
       APNs, signing or enrollment; exact permissions require principal hands.
-      No early windows. AFTER install, ONE real many-option card is final acceptance
+      No early windows
+- [ ] Principal installs the existing local Apple Development-signed continuity
+      candidate in place, preserving the EXACT installed signing identity and
+      designated requirement, keys and enrollment;
+      no fresh-copy, uninstall, reset or re-enrollment requirement
+- [ ] AFTER install, ONE real many-option card is final Mac acceptance
 - [ ] Public Developer ID-signed, notarized, stapled DMG passes Gatekeeper
-      with no override, preserving the current installed identity
+      with no override and preserves the bundle identifier; check this PUBLIC
+      artifact SEPARATELY. Its certificate and designated requirement differ
+      from the local Apple Development candidate; this check does not authorize
+      installing the public DMG over that candidate or changing installed identity
 - [ ] Menu-bar nod-head glyph renders in light + dark mode; pending count
 - [ ] With preserved enrollment, receive, decide (Secure Enclave signing),
       notification + sound
