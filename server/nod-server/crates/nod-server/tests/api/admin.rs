@@ -52,6 +52,8 @@ async fn admin_session_login_logout_and_cookie_auth() {
     assert!(set_cookie.contains("nod_admin_session="), "{set_cookie}");
     assert!(set_cookie.contains("HttpOnly"), "{set_cookie}");
     assert!(set_cookie.contains("Max-Age=43200"), "{set_cookie}");
+    // Plain-HTTP login: no Secure flag, or a LAN install would lose the cookie.
+    assert!(!set_cookie.contains("Secure"), "{set_cookie}");
     let cookie = set_cookie.split(';').next().unwrap().to_string();
 
     let (status, _headers, summary) = app
@@ -71,6 +73,49 @@ async fn admin_session_login_logout_and_cookie_auth() {
         .unwrap()
         .to_string();
     assert!(set_cookie.contains("Max-Age=0"), "{set_cookie}");
+}
+
+#[tokio::test]
+async fn admin_session_cookie_is_secure_behind_tls_and_failed_logins_are_delayed() {
+    let app = TestApp::new().await;
+
+    let request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .header("x-forwarded-proto", "https")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(
+            json!({ "token": "admin-test-token" }).to_string(),
+        ))
+        .unwrap();
+    let response = tower::ServiceExt::oneshot(app.router.clone(), request)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let set_cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(set_cookie.contains("; Secure"), "{set_cookie}");
+    assert!(set_cookie.contains("HttpOnly"), "{set_cookie}");
+
+    let started = std::time::Instant::now();
+    let (status, _) = app
+        .request(
+            Method::POST,
+            "/admin/session",
+            None,
+            Some(json!({ "token": "wrong" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(450),
+        "failed login returned in {:?}",
+        started.elapsed()
+    );
 }
 
 #[tokio::test]
