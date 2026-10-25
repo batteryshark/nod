@@ -772,11 +772,10 @@ impl AppState {
             .answer_field
             .as_ref()
             .is_some_and(|f| !matches!(f, nod_proto::AnswerField::Choice { .. }))
-            || (option.id == "__nod_value_open"
-                && request
-                    .signing
-                    .as_ref()
-                    .is_some_and(|c| c.version == "nod-request-v3"))
+            || request
+                .options
+                .iter()
+                .any(|option| option.id == "__nod_value_open")
         {
             self.set_error(
                 "Open in an updated iOS or macOS Nod app to answer this request.".into(),
@@ -1007,7 +1006,7 @@ mod tests {
             foreground: false,
         }];
         card.signing = Some(nod_proto::RequestSigningContext {
-            version: "nod-request-v3".into(),
+            version: nod_proto::value_signing::VALUE_REQUEST_DIGEST_VERSION.into(),
             recipients_commitment: "a".repeat(64),
             request_digest: "b".repeat(64),
         });
@@ -1059,6 +1058,83 @@ mod tests {
             params.expected_request_digest.as_deref(),
             Some("b".repeat(64).as_str())
         );
+    }
+
+    #[test]
+    fn legacy_value_tag_is_still_answerable() {
+        let field = nod_proto::AnswerField::Choice {
+            label: "Batch".into(),
+            choices: vec![
+                nod_proto::AnswerChoice {
+                    id: "small".into(),
+                    label: "Small".into(),
+                },
+                nod_proto::AnswerChoice {
+                    id: "large".into(),
+                    label: "Large".into(),
+                },
+            ],
+            default: nod_proto::AnswerValue::Choice {
+                choice_id: "small".into(),
+            },
+        };
+        let mut app = value_app(field);
+        app.client_state.requests[0]
+            .signing
+            .as_mut()
+            .unwrap()
+            .version = nod_proto::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION.into();
+        assert!(app.handle_key(key(KeyCode::Char('v'))).is_empty());
+        app.handle_key(key(KeyCode::Char('n')));
+        app.handle_key(key(KeyCode::Char('o')));
+        app.handle_key(key(KeyCode::Char('k')));
+        let commands = app.handle_key(key(KeyCode::Enter));
+        let [RuntimeCommand::SubmitOption(params)] = commands.as_slice() else {
+            panic!("expected explicit submit for a legacy value tag");
+        };
+        assert_eq!(
+            params.answer_value,
+            Some(nod_proto::AnswerValue::Choice {
+                choice_id: "large".into()
+            })
+        );
+    }
+
+    #[test]
+    fn value_placeholder_is_never_answerable() {
+        let field = nod_proto::AnswerField::Choice {
+            label: "Batch".into(),
+            choices: vec![
+                nod_proto::AnswerChoice {
+                    id: "small".into(),
+                    label: "Small".into(),
+                },
+                nod_proto::AnswerChoice {
+                    id: "large".into(),
+                    label: "Large".into(),
+                },
+            ],
+            default: nod_proto::AnswerValue::Choice {
+                choice_id: "small".into(),
+            },
+        };
+        let mut app = value_app(field);
+        let card = &mut app.client_state.requests[0];
+        card.answer_field = None;
+        card.options = vec![RequestOption {
+            id: "__nod_value_open".into(),
+            label: "Open in app".into(),
+            kind: OptionKind::Custom,
+            style: "default".into(),
+            requires_text: false,
+            text_placeholder: None,
+            destructive: false,
+            foreground: true,
+        }];
+        card.signing.as_mut().unwrap().version =
+            nod_proto::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION.into();
+        assert!(app.handle_key(key(KeyCode::Char('a'))).is_empty());
+        assert!(app.handle_key(key(KeyCode::Enter)).is_empty());
     }
 
     #[test]
