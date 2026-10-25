@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.2.2 - 2026-10-25
+
+- macOS: right-click a sidebar request to acknowledge an informational card or
+  choose a safe ordinary answer. Destructive, text-required and value-card
+  answers remain in the detail view.
+- Menu answers use the existing rendered-digest signing and receipt path,
+  with stale-request, server-switch and duplicate-submission guards.
+
+Full notes: [docs/release-notes/v1.2.2.md](docs/release-notes/v1.2.2.md)
+
 ## v1.2.1 - 2026-10-25
 
 - See [docs/release-notes/v1.2.1.md](docs/release-notes/v1.2.1.md).
