@@ -19,6 +19,7 @@ pub mod decision;
 pub mod notification;
 mod preferences;
 mod preview;
+pub mod receipt;
 pub mod request;
 pub mod signing;
 pub mod value_signing;
@@ -31,6 +32,10 @@ pub use decision::{
 pub use notification::{NotificationDelivery, NotificationDeliveryMode};
 pub use preferences::DeviceNotificationPreferences;
 pub use preview::{notification_preview, NotificationPreview};
+pub use receipt::{
+    verify_decision_receipt, DigestVersion, PinnedKey, ReceiptError, ReceiptVerificationInput,
+    VerifiedReceipt, DEFAULT_MAX_CLOCK_SKEW,
+};
 pub use request::{
     CardField, CardLink, CreateDecisionRequest, CreatedDecisionRequest, DecisionResolution,
     OptionKind, Request, RequestNotification, RequestOption, RequestSigningContext, RequestStatus,

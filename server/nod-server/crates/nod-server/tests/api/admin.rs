@@ -294,6 +294,14 @@ async fn admin_can_revoke_device_and_manage_subscriptions() {
     assert_eq!(devices["devices"][0]["id"], device_id);
     assert_eq!(devices["devices"][0]["has_push_token"], false);
     assert!(devices["devices"][0]["push_token"].is_null(), "{devices}");
+    // The admin list is where an agent operator pins device keys from.
+    let signer = app.signer_for(&device_token);
+    assert_eq!(devices["devices"][0]["has_signing_key"], true);
+    assert_eq!(devices["devices"][0]["signing_key_id"], signer.key_id);
+    assert_eq!(
+        devices["devices"][0]["signing_public_key"],
+        signer.public_key
+    );
 
     let (status, updated) = app
         .request(
