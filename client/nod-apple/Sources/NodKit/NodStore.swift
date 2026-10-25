@@ -504,6 +504,11 @@ public final class NodStore: ObservableObject {
   @discardableResult
   public func dismissIfInformational(request: NodRequest, serverId: String? = nil) async -> Bool {
     guard request.isPendingInformational, let serverId = serverId ?? selectedServer?.id else { return false }
+    #if os(macOS)
+    // A menu/detail answer may still be in flight or unconfirmed. Leaving an
+    // explicit read must not turn that attempt into an automatic retry.
+    guard answerAttempt(requestId: request.id, serverId: serverId) == nil else { return false }
+    #endif
     return await submitRenderedRequest(request, serverId: serverId, optionId: "dismiss", text: nil)
   }
 

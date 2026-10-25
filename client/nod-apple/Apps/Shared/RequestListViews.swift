@@ -1,5 +1,8 @@
 import NodKit
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct ChannelRequestsView: View {
   @EnvironmentObject private var store: NodStore
@@ -106,16 +109,34 @@ struct RequestListView: View {
       } else {
         List(selection: Binding(get: { store.selectedRequestId }, set: { requestId in
           #if os(macOS)
+          // AppKit may propose a List selection while opening a contextual menu.
+          // Only primary navigation is an explicit read (and may leave another).
+          if let event = NSApp.currentEvent,
+            event.type == .rightMouseDown || event.type == .rightMouseUp || event.type == .rightMouseDragged
+              || (event.modifierFlags.contains(.control)
+                && [.leftMouseDown, .leftMouseUp, .leftMouseDragged].contains(event.type)) { return }
           store.selectRequestExplicitly(requestId)
           #else
           store.selectedRequestId = requestId
           #endif
         })) {
           requestSections { request in
+            let serverId = store.selectedServerId
             RequestRow(request: request)
               .tag(Optional(request.id))
               #if os(macOS)
+              .contextMenu {
+                if let serverId {
+                  ForEach(store.sidebarActions(for: request, serverId: serverId)) { option in
+                    Button(option.label) {
+                      Task { await store.performSidebarAction(option, request: request, serverId: serverId) }
+                    }
+                    .disabled(!store.canPerformSidebarAction(option, request: request, serverId: serverId))
+                  }
+                }
+              }
               .simultaneousGesture(TapGesture().onEnded {
+                if NSApp.currentEvent?.modifierFlags.contains(.control) == true { return }
                 store.selectRequestExplicitly(request.id)
               })
               #endif
