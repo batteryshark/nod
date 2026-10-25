@@ -303,7 +303,7 @@ wait_for_release() {
 }
 
 upload_macos_dmg() {
-  [[ "$build_macos" == true ]] || return
+  [[ "$build_macos" == true ]] || return 0
 
   info "Building notarized macOS DMG"
   NOD_MAC_BUILD_NUMBER="$build_number" client/nod-apple/scripts/release-macos "$version"
@@ -318,7 +318,7 @@ upload_macos_dmg() {
 
   local sums_dir
   sums_dir="$(mktemp -d)"
-  trap 'rm -rf "$sums_dir"' RETURN
+  trap 'rm -rf "${sums_dir:-}"; trap - RETURN' RETURN
   gh release download "$tag_name" --pattern SHA256SUMS --dir "$sums_dir" --clobber
 
   local checksum_line
@@ -330,7 +330,7 @@ upload_macos_dmg() {
 }
 
 upload_ios_testflight() {
-  [[ "$upload_testflight" == true ]] || return
+  [[ "$upload_testflight" == true ]] || return 0
 
   info "Uploading iOS TestFlight build"
   NOD_MARKETING_VERSION="$version" \
@@ -339,7 +339,7 @@ upload_ios_testflight() {
 }
 
 publish_if_requested() {
-  [[ "$publish_release" == true ]] || return
+  [[ "$publish_release" == true ]] || return 0
 
   wait_for_release
   info "Publishing ${tag_name}"
