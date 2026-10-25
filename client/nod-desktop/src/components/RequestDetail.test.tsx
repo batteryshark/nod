@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(cleanup);
 import { RequestDetail } from "./RequestDetail";
+import { REQUEST_SIGNING_VERSIONS } from "../domain";
 import type { NodRequest, RequestOption } from "../types";
 
 const approve: RequestOption = {
@@ -69,11 +70,12 @@ function pendingRequest(options: RequestOption[]): NodRequest {
 }
 
 describe("RequestDetail notes", () => {
-  it.each(["schema", "placeholder", "v3", "empty"])("keeps %s value cards visible without any decision action", (mode) => {
+  it.each(["schema", "placeholder", "v2", "v3", "empty"])("keeps %s value cards visible without any decision action", (mode) => {
     const request = pendingRequest(mode === "empty" ? [] : [approve, reject]);
-    if (mode === "schema" || mode === "empty") request.answer_field = { kind: "number", label: "Count", default: { kind: "number", decimal: "4" } };
+    if (mode === "schema" || mode === "empty" || mode === "v2") request.answer_field = { kind: "number", label: "Count", default: { kind: "number", decimal: "4" } };
     if (mode === "placeholder") request.options = [{ ...approve, id: "__nod_value_open", label: "Open in app", kind: "custom" }];
-    if (mode === "v3") request.signing = { version: "nod-request-v3", request_digest: "digest", recipients_commitment: "c" };
+    if (mode === "v2") request.signing = { version: REQUEST_SIGNING_VERSIONS.value, request_digest: "digest", recipients_commitment: "c" };
+    if (mode === "v3") request.signing = { version: REQUEST_SIGNING_VERSIONS.legacyValue, request_digest: "digest", recipients_commitment: "c" };
     const onOption = vi.fn();
     const onOpenUrl = vi.fn();
     render(<RequestDetail request={request} onOption={onOption} onOpenUrl={onOpenUrl} />);

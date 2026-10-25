@@ -47,7 +47,7 @@ private actor AnswerFixture {
     if informational { request["options"] = [] }
     if let fieldJSON {
       request["answer_field"] = try! JSONSerialization.jsonObject(with: Data(fieldJSON.utf8))
-      request["signing"] = ["version":"nod-request-v3", "recipients_commitment":"synthetic", "request_digest":"rendered-digest"]
+      request["signing"] = ["version":"nod-request-v2", "recipients_commitment":"synthetic", "request_digest":"rendered-digest"]
     }
     if resolved {
       if perUser { request["decisions"] = [["user_id":"me", "decision":decision]] }

@@ -43,7 +43,7 @@ describe("runtime wire integration", () => {
       server_id: initial.selected_server_id,
       request: {
         id: initial.selected_request_id,
-        signing: { version: "nod-request-v2" },
+        signing: { version: "nod-request-v1" },
       },
     });
   });

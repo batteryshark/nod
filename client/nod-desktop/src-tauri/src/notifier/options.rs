@@ -5,15 +5,16 @@ use super::NotificationActivation;
 const MAX_NOTIFICATION_OPTIONS: usize = 4;
 
 pub(crate) fn value_unsupported(request: &Request) -> bool {
-    request.answer_field.is_some()
-        || request
+    nod_proto::is_value_request(
+        request.answer_field.is_some(),
+        request
             .signing
             .as_ref()
-            .is_some_and(|signing| signing.version == "nod-request-v3")
-        || request
-            .options
-            .iter()
-            .any(|option| option.id == "__nod_value_open")
+            .map(|signing| signing.version.as_str()),
+    ) || request
+        .options
+        .iter()
+        .any(|option| option.id == "__nod_value_open")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,4 +98,43 @@ fn requires_text(kind: &OptionKind) -> bool {
         kind,
         OptionKind::ApproveWithText | OptionKind::RejectWithText
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(version: &str, with_value: bool) -> Request {
+        let mut card: serde_json::Value = serde_json::from_str(
+            r#"{"id":"r","request_id":"r","channel_id":"c","title":"t","summary":"","body_markdown":"","notification":{},"status":"pending","created_at":"2026-05-28T12:00:00Z","updated_at":"2026-05-28T12:00:00Z","options":[{"id":"approve","label":"Approve","kind":"approve"}]}"#,
+        )
+        .unwrap();
+        card["signing"] = serde_json::json!({
+            "version": version,
+            "recipients_commitment": "a".repeat(64),
+            "request_digest": "b".repeat(64)
+        });
+        if with_value {
+            card["answer_field"] = serde_json::json!({
+                "kind": "number",
+                "label": "Count",
+                "default": {"kind": "number", "decimal": "4"}
+            });
+        }
+        serde_json::from_value(card).unwrap()
+    }
+
+    #[test]
+    fn current_and_legacy_value_tags_open_in_app_but_legacy_ordinary_does_not() {
+        for version in [
+            nod_proto::value_signing::VALUE_REQUEST_DIGEST_VERSION,
+            nod_proto::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION,
+        ] {
+            assert!(value_unsupported(&request(version, true)), "{version}");
+        }
+        assert!(!value_unsupported(&request(
+            nod_proto::LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION,
+            false
+        )));
+    }
 }
