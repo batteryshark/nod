@@ -32,6 +32,25 @@ const HEALTH_DEADLINE: Duration = Duration::from_secs(10);
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// The device token rides in the upgrade request's `Authorization` header;
+/// the server accepts no query-string form.
+fn sync_upgrade_request(
+    ws_url: &str,
+    device_token: &str,
+) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = ws_url
+        .into_client_request()
+        .expect("websocket url is a valid client request");
+    request.headers_mut().insert(
+        reqwest::header::AUTHORIZATION,
+        format!("Bearer {device_token}")
+            .parse()
+            .expect("bearer header value"),
+    );
+    request
+}
+
 #[tokio::test]
 async fn smoke_in_process_server() {
     let tmp = tempfile::tempdir().unwrap();
@@ -222,16 +241,20 @@ async fn run_smoke(base_url: &str, admin_token: &str) {
             base_url.strip_prefix("http://").unwrap_or(base_url)
         )
     };
-    let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("{ws_base}/api/v1/sync?token={device_token}"))
-            .await
-            .expect("sync websocket connect");
+    let (mut ws, _) = tokio_tungstenite::connect_async(sync_upgrade_request(
+        &format!("{ws_base}/api/v1/sync"),
+        &device_token,
+    ))
+    .await
+    .expect("sync websocket connect");
     let hello = next_ws_envelope(&mut ws, |envelope| envelope["kind"] == "hello").await;
     assert_eq!(hello["payload"]["device_id"], device_id.as_str(), "{hello}");
-    let (mut watcher_ws, _) =
-        tokio_tungstenite::connect_async(format!("{ws_base}/api/v1/sync?token={watcher_token}"))
-            .await
-            .expect("watcher sync websocket connect");
+    let (mut watcher_ws, _) = tokio_tungstenite::connect_async(sync_upgrade_request(
+        &format!("{ws_base}/api/v1/sync"),
+        &watcher_token,
+    ))
+    .await
+    .expect("watcher sync websocket connect");
     let watcher_hello =
         next_ws_envelope(&mut watcher_ws, |envelope| envelope["kind"] == "hello").await;
     assert_eq!(

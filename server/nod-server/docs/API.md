@@ -59,6 +59,14 @@ Enroll a device with a decision signing key:
 }
 ```
 
+`signing_key` is required: enrollment without one returns 400 and leaves the
+code unused. Every device decision must carry a signature verified under the
+key registered at enrollment; there is no unsigned path, and a device row that
+lacks a key cannot decide. The enrollment response and `/api/v1/users/me/devices`
+return `signing_key_id` and `signing_public_key` for each device, and so does the
+admin device list — public material, meant to be pinned by agents (see
+[Verifying a decision](#verifying-a-decision)).
+
 `attestation` is optional. When Apple App Attest is configured, the server
 verifies it in report-only mode during enrollment and stores only a sanitized
 summary: provider, status, key id, app identity, verification time, future
@@ -99,6 +107,21 @@ WebSocket `hello` envelope include required notification delivery metadata:
 has a usable token and a matching configured APNs provider/bundle route. `websocket` means clients should present `created` WebSocket sync
 events as local notifications while connected. APNs routing is transparent to
 device clients.
+
+### Sync WebSocket
+
+`GET /api/v1/sync` upgrades to the device sync stream. The device token is sent
+in the upgrade request's `Authorization: Bearer <device token>` header, the
+same way as every other device call. A URL query parameter is not accepted: a
+missing or invalid header is a `401` before the upgrade, so the long-lived device
+credential never appears in proxy, access, or browser-history logs.
+
+```bash
+websocat -H "Authorization: Bearer $NOD_DEVICE_TOKEN" ws://127.0.0.1:8767/api/v1/sync
+```
+
+The first frame is the `hello` envelope above. Clients that cannot set upgrade
+headers must be updated; there is no fallback.
 
 ## Requests
 

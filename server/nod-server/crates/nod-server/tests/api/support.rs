@@ -328,6 +328,25 @@ impl TestApp {
     }
 }
 
+/// Build the sync WebSocket upgrade request the way clients must: the device
+/// token rides in `Authorization: Bearer`, never in the URL.
+pub(crate) fn sync_upgrade_request(
+    ws_url: &str,
+    device_token: &str,
+) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = ws_url
+        .into_client_request()
+        .expect("websocket url is a valid client request");
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {device_token}")
+            .parse()
+            .expect("bearer header value"),
+    );
+    request
+}
+
 /// A fresh in-test software key in the `signing_key` enrollment shape.
 pub(crate) fn test_signing_key_json() -> Value {
     let key = nod_proto::generate_signing_key();

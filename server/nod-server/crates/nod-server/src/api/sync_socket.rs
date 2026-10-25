@@ -1,10 +1,10 @@
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
-    extract::{Query, State, WebSocketUpgrade},
+    extract::{State, WebSocketUpgrade},
     response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::time::{interval, timeout, Duration};
 
@@ -12,18 +12,17 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 use crate::{auth, error::ApiError, state::AppState, sync};
 
-#[derive(Debug, Deserialize)]
-pub(super) struct SyncQuery {
-    token: String,
-}
-
+/// The device token travels only in the upgrade request's `Authorization:
+/// Bearer` header, never in the URL: proxies and browsers log request lines,
+/// and a device token is a long-lived credential. There is no query-string
+/// fallback.
 pub(super) async fn sync_socket(
     State(state): State<AppState>,
-    Query(query): Query<SyncQuery>,
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    let hash = auth::hash_secret(&query.token);
+    let token = auth::bearer_token(&headers)?;
+    let hash = auth::hash_secret(token);
     let device = auth::find_device_by_hash(&state.pool, &hash)
         .await?
         .ok_or(ApiError::Unauthorized)?;
