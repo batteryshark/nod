@@ -83,11 +83,10 @@ async fn shared_answers_and_cancel_race_only_one_terminal_commit() {
     let (_, b) = app.enroll_device("B", "ios").await;
     let created = create(&app, json!({"title":"race answers"})).await;
     let id = created["request_id"].as_str().unwrap();
-    let answer = format!("/api/v1/requests/{id}/options/dismiss");
     let cancel = format!("/api/v1/requests/{id}/cancel");
     let (a, b, c) = tokio::join!(
-        app.request(Method::POST, &answer, Some(&a), Some(json!({}))),
-        app.request(Method::POST, &answer, Some(&b), Some(json!({}))),
+        app.decide(&a, id, "dismiss", json!({})),
+        app.decide(&b, id, "dismiss", json!({})),
         app.request(Method::POST, &cancel, ADMIN, None)
     );
     let statuses = [a.0, b.0, c.0];
@@ -185,11 +184,8 @@ async fn callback_insert_failure_rolls_back_answer_and_revision() {
     .await;
     let id = created["request_id"].as_str().unwrap();
     sqlx::raw_sql("CREATE TRIGGER fail_callback BEFORE INSERT ON callback_deliveries BEGIN SELECT RAISE(ABORT,'injected'); END;").execute(&app.pool).await.unwrap();
-    let uri = format!("/api/v1/requests/{id}/options/dismiss");
     assert_eq!(
-        app.request(Method::POST, &uri, Some(&token), Some(json!({})))
-            .await
-            .0,
+        app.decide(&token, id, "dismiss", json!({})).await.0,
         StatusCode::INTERNAL_SERVER_ERROR
     );
     let state: (String, i64) = sqlx::query_as("SELECT status,revision FROM requests WHERE id=?")
@@ -210,9 +206,7 @@ async fn callback_insert_failure_rolls_back_answer_and_revision() {
         .await
         .unwrap();
     assert_eq!(
-        app.request(Method::POST, &uri, Some(&token), Some(json!({})))
-            .await
-            .0,
+        app.decide(&token, id, "dismiss", json!({})).await.0,
         StatusCode::OK
     );
 }
@@ -311,17 +305,12 @@ async fn individual_answers_and_frozen_callbacks_survive_pruning() {
     let (_, b) = app.enroll_device_for_user("B", "ios", Some("second")).await;
     let created = create(&app,json!({"title":"private","recipients":["owner","second"],"decision_resolution":"per_user","callback_url":"http://127.0.0.1:9/callback"})).await;
     let id = created["request_id"].as_str().unwrap();
-    let uri = format!("/api/v1/requests/{id}/options/dismiss");
     for (token, text) in [(&a, "first"), (&b, "second")] {
-        let (status, body) = app
-            .request(Method::POST, &uri, Some(token), Some(json!({"text":text})))
-            .await;
+        let (status, body) = app.decide(token, id, "dismiss", json!({"text":text})).await;
         assert_eq!(status, StatusCode::OK, "{body}");
     }
     assert_eq!(
-        app.request(Method::POST, &uri, Some(&a), Some(json!({})))
-            .await
-            .0,
+        app.decide(&a, id, "dismiss", json!({})).await.0,
         StatusCode::CONFLICT
     );
     let details: Vec<String> = sqlx::query_scalar("SELECT private_detail_json FROM lifecycle_events WHERE kind='nod.answer.recorded' ORDER BY revision").fetch_all(&app.pool).await.unwrap();

@@ -59,6 +59,14 @@ Enroll a device with a decision signing key:
 }
 ```
 
+`signing_key` is required: enrollment without one returns 400 and leaves the
+code unused. Every device decision must carry a signature verified under the
+key registered at enrollment; there is no unsigned path, and a device row that
+lacks a key cannot decide. The enrollment response and `/api/v1/users/me/devices`
+return `signing_key_id` and `signing_public_key` for each device, and so does the
+admin device list — public material, meant to be pinned by agents (see
+[Verifying a decision](#verifying-a-decision)).
+
 `attestation` is optional. When Apple App Attest is configured, the server
 verifies it in report-only mode during enrollment and stores only a sanitized
 summary: provider, status, key id, app identity, verification time, future
@@ -99,6 +107,21 @@ WebSocket `hello` envelope include required notification delivery metadata:
 has a usable token and a matching configured APNs provider/bundle route. `websocket` means clients should present `created` WebSocket sync
 events as local notifications while connected. APNs routing is transparent to
 device clients.
+
+### Sync WebSocket
+
+`GET /api/v1/sync` upgrades to the device sync stream. The device token is sent
+in the upgrade request's `Authorization: Bearer <device token>` header, the
+same way as every other device call. A URL query parameter is not accepted: a
+missing or invalid header is a `401` before the upgrade, so the long-lived device
+credential never appears in proxy, access, or browser-history logs.
+
+```bash
+websocat -H "Authorization: Bearer $NOD_DEVICE_TOKEN" ws://127.0.0.1:8767/api/v1/sync
+```
+
+The first frame is the `hello` envelope above. Clients that cannot set upgrade
+headers must be updated; there is no fallback.
 
 ## Requests
 
@@ -172,8 +195,9 @@ Both fields are accepted by `/api/v1/admin/test-requests`.
 
 Requests may include `callback_url`; accepted answers atomically queue an unsigned,
 retryable wake-up with a frozen legacy cumulative payload. Do not treat the callback
-payload as proof of approval; use the authenticated read or wait endpoint before
-acting.
+payload as proof of approval; read or wait through the authenticated endpoint,
+then run the decision through [`nod-verify`](#verifying-a-decision) with your
+pinned keys before acting.
 The unchanged body contains `request_id`, `channel_id`, `status`, `decision`,
 `decisions`, and `decision_resolution`. `Nod-Delivery-Id`, `Nod-Event-Id`, and
 `Nod-Request-Revision` headers remain stable across retries; receivers must
@@ -305,7 +329,42 @@ text_sha256:<sha256 hex of trimmed response text>
 ```
 
 The server verifies the P-256 ECDSA/SHA-256 signature, rejects nonce reuse per
-device key, and stores the signature metadata on the decision record.
+device key, and stores the signature metadata on the decision record. A
+signature is mandatory: an unsigned submission, or one from a device row
+without a registered key, is rejected with 400, so a recorded decision from a
+device always carries a `signature` record. `signature: null` on a decision view
+is therefore a verification failure, not a weaker form of approval.
+
+### Verifying a decision
+
+Reading `/decision` or `/wait` tells you what the server recorded. To know a
+pinned device actually signed it, verify the receipt yourself with
+`nod-verify` (shipped next to `nod-server`) or `nod_proto::verify_decision_receipt`:
+
+```bash
+nod-verify --request created.json --decision decision.json --keys keys.json \
+  --expect-user owner --expect-option approve
+```
+
+- `created.json` is the `POST /api/v1/requests` response body (or its
+  `request` object). The digest is recomputed from it — `request_digest`
+  (`nod-request-v1`) and `signing.request_digest` (`nod-request-v2`/`v3` via
+  `signing.recipients_commitment`) — and must equal `signature.request_digest`.
+- `decision.json` is the `/decision` or `/wait` body, the callback body, or a
+  bare decision record. For `per_user` responses `--expect-user` picks the entry.
+- `keys.json` is `{"keys":[{"user_id":"owner","key_id":"…","public_key":"…"}]}`
+  with values copied from the admin devices list (`signing_key_id`,
+  `signing_public_key`) at enrollment time. The `public_key` the server embeds
+  in a receipt is ignored.
+
+The verifier refuses `signature: null`, requires `algorithm` to be
+`p256_ecdsa_sha256`, rebuilds `signing_payload` from the decision's fields
+(`nod-decision-v1`, or `nod-decision-v2` with `answer_value`) and requires byte
+equality with the recorded payload, checks the option id and kind against the
+created request's options (or the implicit `dismiss` of an optionless request),
+and verifies the signature under the pinned key. Exit `0` is a full pass, `1` a
+verification failure, `2` an input error; stdout is one JSON line naming the
+verified user, device, key and option. Act only on exit 0.
 
 
 Text-capable options (`requires_text` and `*_with_text` kinds) display a text

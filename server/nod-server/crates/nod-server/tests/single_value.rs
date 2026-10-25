@@ -8,6 +8,20 @@ use serde_json::{json, Value};
 use sqlx::Row;
 
 struct Server(tokio::task::JoinHandle<()>);
+
+/// The device token rides in the upgrade request's `Authorization` header.
+fn sync_upgrade_request(
+    ws_url: &str,
+    device_token: &str,
+) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = ws_url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        reqwest::header::AUTHORIZATION,
+        format!("Bearer {device_token}").parse().unwrap(),
+    );
+    request
+}
 impl Drop for Server {
     fn drop(&mut self) {
         self.0.abort();
@@ -101,9 +115,9 @@ async fn run() {
     let key = StoredSigningKey::generate();
     let enrolled: Value = http.post(format!("{base}/api/v1/enroll")).json(&json!({"code":code["code"],"device_name":"Value fixture","platform":"linux","signing_key":key.device_signing_key().unwrap()})).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
     let token = enrolled["token"].as_str().unwrap();
-    let (mut legacy_socket, _) = tokio_tungstenite::connect_async(format!(
-        "{}/api/v1/sync?token={token}",
-        base.replace("http://", "ws://")
+    let (mut legacy_socket, _) = tokio_tungstenite::connect_async(sync_upgrade_request(
+        &format!("{}/api/v1/sync", base.replace("http://", "ws://")),
+        token,
     ))
     .await
     .unwrap();

@@ -119,9 +119,9 @@ pub async fn enroll_device(
     .bind(hash_secret(&token))
     .bind(push.provider)
     .bind(push.token)
-    .bind(signing_key.as_ref().map(|key| key.key_id.as_str()))
-    .bind(signing_key.as_ref().map(|key| key.algorithm.as_str()))
-    .bind(signing_key.as_ref().map(|key| key.public_key.as_str()))
+    .bind(&signing_key.key_id)
+    .bind(&signing_key.algorithm)
+    .bind(&signing_key.public_key)
     .bind(&now_text)
     .bind(&now_text)
     .execute(&mut *transaction)
@@ -141,11 +141,16 @@ pub async fn enroll_device(
     })
 }
 
+/// Every device enrolls with a signing key: only device keys authorize
+/// decisions, so a keyless enrollment would create a device whose decisions
+/// could never carry a verifiable receipt.
 fn normalized_signing_key(
     signing_key: Option<&DeviceSigningKeyRequest>,
-) -> Result<Option<DeviceSigningKeyRequest>, ApiError> {
+) -> Result<DeviceSigningKeyRequest, ApiError> {
     let Some(signing_key) = signing_key else {
-        return Ok(None);
+        return Err(ApiError::BadRequest(
+            "signing_key is required to enroll a device".to_string(),
+        ));
     };
     validate_id(signing_key.key_id.trim(), "signing key id")?;
     if signing_key.algorithm != signing::DEFAULT_ALGORITHM {
@@ -160,11 +165,11 @@ fn normalized_signing_key(
         ));
     }
     signing::validate_device_public_key(public_key)?;
-    Ok(Some(DeviceSigningKeyRequest {
+    Ok(DeviceSigningKeyRequest {
         key_id: signing_key.key_id.trim().to_string(),
         algorithm: signing_key.algorithm.clone(),
         public_key: public_key.to_string(),
-    }))
+    })
 }
 
 struct PushRegistration {

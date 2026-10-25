@@ -71,6 +71,10 @@ pub struct AdminDevice {
     pub push_provider: Option<String>,
     pub has_push_token: bool,
     pub has_signing_key: bool,
+    /// Public key material is not secret: it is what an agent pins to verify
+    /// receipts out of band (see `nod-verify`).
+    pub signing_key_id: Option<String>,
+    pub signing_public_key: Option<String>,
     pub notification_sound: String,
     pub notification_preferences: nod_proto::DeviceNotificationPreferences,
     pub attestation: Option<DeviceAttestationSummary>,
@@ -89,6 +93,8 @@ pub struct UserDevice {
     pub push_provider: Option<String>,
     pub has_push_token: bool,
     pub has_signing_key: bool,
+    pub signing_key_id: Option<String>,
+    pub signing_public_key: Option<String>,
     pub notification_sound: String,
     pub notification_preferences: nod_proto::DeviceNotificationPreferences,
     pub attestation: Option<DeviceAttestationSummary>,

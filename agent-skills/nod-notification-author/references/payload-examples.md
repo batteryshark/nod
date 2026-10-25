@@ -162,8 +162,10 @@ issuer count acceptable decisions.
 Issuer-side rule:
 
 ```text
-Read or wait for the decision view before acting.
-Count decisions where decision.option_kind is "approve".
+Read or wait for the decision view.
+For each entry in decisions, run
+  nod-verify --request created.json --decision decision.json --keys keys.json --expect-user <user_id>
+and count it only when nod-verify exits 0 and reports option_kind "approve".
 If approvals >= 2, proceed.
 If any decision.option_kind is "reject" or "reject_with_text", stop.
 If expires_at passes before quorum, stop or escalate.

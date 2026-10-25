@@ -701,6 +701,7 @@
                   <th>User</th>
                   <th>Platform</th>
                   <th>Push</th>
+                  <th>Signing key</th>
                   <th>Attestation</th>
                   <th>Sound</th>
                   <th>Last seen</th>
@@ -1240,6 +1241,7 @@
       state.users = users.users || [];
       state.channels = channels.channels || [];
       state.devices = devices.devices || [];
+      await attachSigningKeyFingerprints(state.devices);
       state.tokens = tokens.tokens || [];
       state.settings = settings;
       state.activity = activity;
@@ -1359,6 +1361,34 @@
       `).join("") || `<tr><td colspan="5" class="muted">No channels</td></tr>`;
     }
 
+    // Short SHA-256 fingerprint of the raw public key bytes so an operator can
+    // compare the admin list against a pinned keys.json at a glance. The full
+    // base64url key is exposed on hover; it is public material, not a secret.
+    async function attachSigningKeyFingerprints(devices) {
+      const subtle = globalThis.crypto && globalThis.crypto.subtle;
+      for (const device of devices) {
+        device.signing_key_fingerprint = "";
+        if (!subtle || !device.signing_public_key) continue;
+        try {
+          const b64 = String(device.signing_public_key).replace(/-/g, "+").replace(/_/g, "/");
+          const raw = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+          const bytes = Uint8Array.from(raw, (ch) => ch.charCodeAt(0));
+          const digest = new Uint8Array(await subtle.digest("SHA-256", bytes));
+          device.signing_key_fingerprint = Array.from(digest.slice(0, 8), (b) => b.toString(16).padStart(2, "0")).join("");
+        } catch (_) {
+          device.signing_key_fingerprint = "";
+        }
+      }
+    }
+
+    function deviceSigningKeyLabel(device) {
+      if (!device.has_signing_key || !device.signing_public_key) return `<span class="muted">none</span>`;
+      const fingerprint = device.signing_key_fingerprint
+        ? `<br><code title="${esc(device.signing_public_key)}">sha256:${esc(device.signing_key_fingerprint)}…</code>`
+        : `<br><code title="${esc(device.signing_public_key)}">${esc(String(device.signing_public_key).slice(0, 12))}…</code>`;
+      return `<code>${esc(device.signing_key_id || "")}</code>${fingerprint}`;
+    }
+
     function renderDevices() {
       $("devicesBody").innerHTML = state.devices.map((device) => `
           <tr>
@@ -1366,12 +1396,13 @@
             <td>${esc(device.user_name)}<br><code>${esc(device.user_id)}</code></td>
             <td>${esc(device.platform)}</td>
             <td class="${device.has_push_token ? "ok" : "muted"}">${device.has_push_token ? `${esc(device.push_provider || "configured")}<br><code>${esc(device.native_app_id || "missing app id")}</code>` : "none"}</td>
+            <td>${deviceSigningKeyLabel(device)}</td>
             <td>${deviceAttestationLabel(device.attestation)}</td>
             <td>${esc(device.notification_sound || "default")}</td>
             <td>${esc(formatDate(device.last_seen_at))}</td>
             <td><button class="danger" data-revoke-device="${esc(device.id)}">Revoke</button></td>
           </tr>
-      `).join("") || `<tr><td colspan="8" class="muted">No registered devices</td></tr>`;
+      `).join("") || `<tr><td colspan="9" class="muted">No registered devices</td></tr>`;
     }
 
     function renderDeviceEnrollmentUsers() {

@@ -1,7 +1,7 @@
 use axum::http::HeaderMap;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::Utc;
-use rand::{distributions::Alphanumeric, rngs::OsRng, Rng, RngCore};
+use rand::{rngs::OsRng, Rng, RngCore};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
@@ -32,11 +32,19 @@ pub fn generate_token(prefix: &str) -> String {
     format!("{prefix}_{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
+/// Symbols an enrollment code is drawn from: uppercase alphanumerics, sampled
+/// uniformly (≈41 bits for 8 characters). Uppercasing a mixed-case sample
+/// would double the weight of letters versus digits.
+pub const ENROLLMENT_CODE_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+pub const ENROLLMENT_CODE_LENGTH: usize = 8;
+
 pub fn generate_enrollment_code() -> String {
     let mut rng = OsRng;
-    (0..8)
-        .map(|_| rng.sample(Alphanumeric) as char)
-        .map(|c| c.to_ascii_uppercase())
+    (0..ENROLLMENT_CODE_LENGTH)
+        .map(|_| {
+            let index = rng.gen_range(0..ENROLLMENT_CODE_ALPHABET.len());
+            ENROLLMENT_CODE_ALPHABET[index] as char
+        })
         .collect()
 }
 
@@ -52,12 +60,30 @@ pub fn admin_token_matches(token: &str, admin_token: &str) -> bool {
     constant_time_eq(token.as_bytes(), admin_token.as_bytes())
 }
 
-pub fn create_admin_session_cookie(admin_token: &str) -> String {
+/// `secure` adds the `Secure` attribute. It is set when the login arrived over
+/// TLS (directly or via `X-Forwarded-Proto: https`); plain-HTTP LAN installs
+/// would otherwise never see the cookie again.
+pub fn create_admin_session_cookie(admin_token: &str, secure: bool) -> String {
     let expires_at = Utc::now().timestamp() + ADMIN_SESSION_SECONDS;
     let value = admin_session_value(expires_at, admin_token);
+    let secure = if secure { "; Secure" } else { "" };
     format!(
-        "{ADMIN_SESSION_COOKIE}={value}; Path=/; Max-Age={ADMIN_SESSION_SECONDS}; HttpOnly; SameSite=Lax"
+        "{ADMIN_SESSION_COOKIE}={value}; Path=/; Max-Age={ADMIN_SESSION_SECONDS}; HttpOnly; SameSite=Lax{secure}"
     )
+}
+
+/// Whether the request reached us over TLS: either the URI itself is `https`
+/// (rare behind axum) or a terminating proxy said so in `X-Forwarded-Proto`.
+pub fn request_over_tls(headers: &HeaderMap, uri: &axum::http::Uri) -> bool {
+    if uri.scheme_str() == Some("https") {
+        return true;
+    }
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
 }
 
 pub fn expired_admin_session_cookie() -> String {
@@ -295,4 +321,38 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         diff |= usize::from(left_byte ^ right_byte);
     }
     diff == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enrollment_codes_use_the_uppercase_alphanumeric_alphabet() {
+        for _ in 0..256 {
+            let code = generate_enrollment_code();
+            assert_eq!(code.len(), ENROLLMENT_CODE_LENGTH);
+            assert!(
+                code.bytes().all(|b| ENROLLMENT_CODE_ALPHABET.contains(&b)),
+                "{code}"
+            );
+        }
+        assert_eq!(ENROLLMENT_CODE_ALPHABET.len(), 36);
+    }
+
+    #[test]
+    fn request_over_tls_reads_forwarded_proto_or_scheme() {
+        let mut headers = HeaderMap::new();
+        let plain: axum::http::Uri = "/admin/session".parse().unwrap();
+        assert!(!request_over_tls(&headers, &plain));
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        assert!(request_over_tls(&headers, &plain));
+        headers.insert("x-forwarded-proto", "http, https".parse().unwrap());
+        assert!(!request_over_tls(&headers, &plain));
+        headers.clear();
+        let https: axum::http::Uri = "https://nod.example/admin/session".parse().unwrap();
+        assert!(request_over_tls(&headers, &https));
+        assert!(create_admin_session_cookie("t", true).ends_with("; Secure"));
+        assert!(!create_admin_session_cookie("t", false).contains("Secure"));
+    }
 }

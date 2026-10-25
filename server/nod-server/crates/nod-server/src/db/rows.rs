@@ -54,6 +54,8 @@ pub(super) fn row_to_user_device(
         push_provider: row.get("push_provider"),
         has_push_token: row.get::<Option<String>, _>("push_token").is_some(),
         has_signing_key: row.get::<Option<String>, _>("signing_public_key").is_some(),
+        signing_key_id: row.get("signing_key_id"),
+        signing_public_key: row.get("signing_public_key"),
         notification_sound: row.get("notification_sound"),
         notification_preferences: serde_json::from_str(
             &row.get::<String, _>("notification_preferences_json"),

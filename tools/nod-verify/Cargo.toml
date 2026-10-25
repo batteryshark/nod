@@ -1,0 +1,20 @@
+[package]
+name = "nod-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Offline verifier for Nod decision receipts against pinned device keys"
+
+# A thin CLI over nod_proto::receipt::verify_decision_receipt. It deliberately
+# has no network and no server dependency: the inputs are the create response,
+# the decision view, and the operator's pinned keys.
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+nod-proto = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3.14"

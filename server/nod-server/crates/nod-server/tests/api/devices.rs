@@ -67,6 +67,9 @@ async fn enroll_endpoint_returns_account_shape() {
         .await;
     assert_eq!(status, StatusCode::OK, "{enrollment}");
     let code = enrollment["code"].as_str().unwrap();
+    let signing_key = test_signing_key_json();
+    let key_id = signing_key["key_id"].clone();
+    let public_key = signing_key["public_key"].clone();
 
     let (status, enrolled) = app
         .request(
@@ -76,7 +79,8 @@ async fn enroll_endpoint_returns_account_shape() {
             Some(json!({
                 "code": code,
                 "device_name": "Surface",
-                "platform": "windows"
+                "platform": "windows",
+                "signing_key": signing_key
             })),
         )
         .await;
@@ -85,6 +89,9 @@ async fn enroll_endpoint_returns_account_shape() {
     assert_eq!(enrolled["user_name"], "Owner");
     assert_eq!(enrolled["devices"][0]["platform"], "windows");
     assert_eq!(enrolled["devices"][0]["is_current"], true);
+    assert_eq!(enrolled["devices"][0]["has_signing_key"], true);
+    assert_eq!(enrolled["devices"][0]["signing_key_id"], key_id);
+    assert_eq!(enrolled["devices"][0]["signing_public_key"], public_key);
     assert!(
         enrolled["devices"][0]["attestation"].is_null(),
         "{enrolled}"
@@ -93,6 +100,136 @@ async fn enroll_endpoint_returns_account_shape() {
         .as_str()
         .unwrap()
         .starts_with("nod_device"));
+}
+
+#[tokio::test]
+async fn enrollment_without_signing_key_is_rejected_without_consuming_code() {
+    let app = TestApp::new().await;
+    let (status, enrollment) = app
+        .request(
+            Method::POST,
+            "/api/v1/admin/users/owner/enrollment-codes",
+            Some("admin-test-token"),
+            Some(json!({ "expires_in_seconds": 600 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{enrollment}");
+    let code = enrollment["code"].as_str().unwrap();
+
+    let (status, rejected) = app
+        .request(
+            Method::POST,
+            "/api/v1/enroll",
+            None,
+            Some(json!({
+                "code": code,
+                "device_name": "Keyless",
+                "platform": "linux"
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{rejected}");
+    assert!(
+        rejected["message"]
+            .as_str()
+            .unwrap()
+            .contains("signing_key"),
+        "{rejected}"
+    );
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+
+    let (status, enrolled) = app
+        .request(
+            Method::POST,
+            "/api/v1/enroll",
+            None,
+            Some(json!({
+                "code": code,
+                "device_name": "Keyed",
+                "platform": "linux",
+                "signing_key": test_signing_key_json()
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+}
+
+#[tokio::test]
+async fn legacy_keyless_device_cannot_decide_without_a_key() {
+    let app = TestApp::new().await;
+    let (device_id, device_token) = app.enroll_device("Legacy", "linux").await;
+    sqlx::query(
+        "UPDATE devices SET signing_key_id=NULL, signing_key_algorithm=NULL, signing_public_key=NULL WHERE id=?",
+    )
+    .bind(&device_id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let issuer_token = app.issuer_token().await;
+    let (status, created) = app
+        .request(
+            Method::POST,
+            "/api/v1/requests",
+            Some(&issuer_token),
+            Some(json!({
+                "channel_id": "default",
+                "title": "Legacy device",
+                "options": [{ "id": "approve", "label": "Approve", "kind": "approve" }]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let request_id = created["request_id"].as_str().unwrap();
+
+    let (status, rejected) = app
+        .request(
+            Method::POST,
+            &format!("/api/v1/requests/{request_id}/options/approve"),
+            Some(&device_token),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{rejected}");
+    let (status, view) = app
+        .request(
+            Method::GET,
+            &format!("/api/v1/requests/{request_id}"),
+            Some(&issuer_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["request"]["status"], "pending");
+}
+
+#[tokio::test]
+async fn keyed_device_cannot_decide_without_a_signature() {
+    let app = TestApp::new().await;
+    let (_device_id, device_token) = app.enroll_device("Phone", "ios").await;
+    let issuer_token = app.issuer_token().await;
+    let (status, created) = app
+        .request(
+            Method::POST,
+            "/api/v1/requests",
+            Some(&issuer_token),
+            Some(json!({ "channel_id": "default", "title": "Unsigned" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let request_id = created["request_id"].as_str().unwrap();
+    let (status, rejected) = app
+        .request(
+            Method::POST,
+            &format!("/api/v1/requests/{request_id}/options/dismiss"),
+            Some(&device_token),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{rejected}");
 }
 
 #[tokio::test]
@@ -119,7 +256,8 @@ async fn push_registration_requires_native_app_id() {
                 "device_name": "iPhone",
                 "platform": "ios",
                 "push_provider": "apple_apns",
-                "push_token": "provider-token"
+                "push_token": "provider-token",
+                "signing_key": test_signing_key_json()
             })),
         )
         .await;
@@ -163,6 +301,7 @@ async fn malformed_attestation_is_recorded_without_blocking_enrollment() {
                 "code": code,
                 "device_name": "Phone",
                 "platform": "ios",
+                "signing_key": test_signing_key_json(),
                 "attestation": {
                     "provider": "apple_app_attest",
                     "key_id": "test-key-id",
