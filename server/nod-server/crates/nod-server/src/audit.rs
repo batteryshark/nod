@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use chrono::Utc;
 use serde::Serialize;
@@ -34,13 +37,9 @@ impl AuditLogger {
 
     async fn with_rotation_limit(data_dir: PathBuf, rotate_after: u64) -> anyhow::Result<Self> {
         let audit_dir = data_dir.join("audit");
-        tokio::fs::create_dir_all(&audit_dir).await?;
+        crate::db::create_private_dir_all(&audit_dir)?;
         let path = audit_dir.join("nod.audit.jsonl");
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await?;
+        let file = open_private_append(&path).await?;
         let bytes = file.metadata().await?.len();
         Ok(Self {
             inner: Arc::new(Mutex::new(AuditFile {
@@ -90,6 +89,16 @@ impl AuditLogger {
     }
 }
 
+/// Open the audit log for append, creating it owner-only (0600) on Unix. The
+/// mode only applies at creation; an existing file keeps its permissions.
+async fn open_private_append(path: &Path) -> std::io::Result<tokio::fs::File> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path).await
+}
+
 impl AuditFile {
     async fn append(&mut self, raw: &[u8]) -> anyhow::Result<()> {
         if self.bytes > 0 && self.bytes.saturating_add(raw.len() as u64) > self.rotate_after {
@@ -100,11 +109,7 @@ impl AuditFile {
                 uuid::Uuid::new_v4()
             ));
             tokio::fs::rename(&self.path, archive).await?;
-            self.file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)
-                .await?;
+            self.file = open_private_append(&self.path).await?;
             self.bytes = 0;
         }
         self.file.write_all(raw).await?;
@@ -149,6 +154,34 @@ mod tests {
         assert_eq!(indices, (0..8).collect::<Vec<_>>());
         assert!(count > 1);
         assert!(logger.health().await.healthy);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn audit_directory_and_file_are_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let data_dir = directory.path().join("nested").join("data");
+        let logger = AuditLogger::with_rotation_limit(data_dir.clone(), 64)
+            .await
+            .unwrap();
+        for index in 0..4 {
+            logger.record("entry", &json!({ "index": index })).await;
+        }
+        let dir_mode = std::fs::metadata(data_dir.join("audit"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        let mut files = tokio::fs::read_dir(data_dir.join("audit")).await.unwrap();
+        let mut seen = 0;
+        while let Some(file) = files.next_entry().await.unwrap() {
+            seen += 1;
+            let mode = file.metadata().await.unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{}", file.path().display());
+        }
+        assert!(seen > 1, "rotation should have produced an archive");
     }
 
     #[tokio::test]

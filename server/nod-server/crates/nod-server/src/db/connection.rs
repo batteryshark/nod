@@ -9,7 +9,7 @@ use url::Url;
 use crate::config::Config;
 
 pub async fn connect(config: &Config) -> anyhow::Result<SqlitePool> {
-    tokio::fs::create_dir_all(&config.data_dir).await?;
+    create_private_dir_all(&config.data_dir)?;
     ensure_sqlite_parent(&config.database_url)?;
 
     let options = SqliteConnectOptions::from_str(&config.database_url)?
@@ -124,7 +124,7 @@ fn ensure_sqlite_parent(database_url: &str) -> anyhow::Result<()> {
         let path = path.split('?').next().unwrap_or(path);
         if let Some(parent) = Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
+                create_private_dir_all(parent)?;
             }
         }
     } else if let Ok(url) = Url::parse(database_url) {
@@ -132,13 +132,32 @@ fn ensure_sqlite_parent(database_url: &str) -> anyhow::Result<()> {
             if let Some(path) = url.path().strip_prefix('/') {
                 if let Some(parent) = Path::new(path).parent() {
                     if !parent.as_os_str().is_empty() {
-                        std::fs::create_dir_all(parent)?;
+                        create_private_dir_all(parent)?;
                     }
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Create a directory (and missing parents) readable only by the server's
+/// user. The database, its WAL, and the audit log live under it, so the
+/// process umask must not decide who can read enrolled device records.
+/// Existing directories are left as they are.
+pub(crate) fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
 }
 
 #[cfg(test)]
