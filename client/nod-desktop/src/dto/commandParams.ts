@@ -8,6 +8,12 @@ export interface EnrollParams {
 export interface SubmitOptionParams {
   request_id: string;
   option_id: string;
+  /**
+   * Digest of the request as rendered on screen (`signing.request_digest`,
+   * or `request_digest` without a signing context). The Rust backend binds
+   * the decision signature to it and refuses a submit without it.
+   */
+  expected_request_digest: string;
   text?: string | null;
 }
 
