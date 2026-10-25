@@ -51,12 +51,14 @@ and nonce. The server checks eligibility and state and records the verified
 receipt with the decision. Revoking a device removes authorization while
 retaining historical verification material.
 
-Projected requests carry a versioned `signing` context: `nod-request-v2` binds
-visible content to an opaque salted recipient commitment. The client recomputes
-that digest before signing. The original `request_digest` and v1 verification
-vectors remain supported for compatibility. Multi-recipient device projections omit the
-legacy digest to avoid revealing a guessable recipient set; single-recipient and
-issuer/admin views retain it. Callers must not simply sign a
+Projected requests carry a versioned `signing` context that binds visible
+content to an opaque salted recipient commitment. Ordinary cards use
+`nod-request-v1` with `nod-decision-v1`; cards with an `answer_field` use
+`nod-request-v2` with `nod-decision-v2`. The client recomputes that digest
+before signing. Older encoders (the unsalted line-snapshot `nod-request-v1`,
+the structured `nod-request-v2`, and the value `nod-request-v3` tags) are
+never issued now but stay frozen so stored signatures keep verifying; see
+[the signing note](signing.md). Callers must not simply sign a
 supplied digest without checking the displayed content. Apple supplies a
 Secure Enclave signer callback; software P-256 keys are used by desktop/TUI.
 
