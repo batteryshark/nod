@@ -227,9 +227,6 @@ public final class NodStore: ObservableObject {
       NodNotificationController.shared.configure(
         onOpen: { [weak self] target in
           Task { @MainActor in await self?.openNotification(target) }
-        },
-        onOption: { [weak self] target, optionId, text in
-          await self?.handleNotificationOption(target: target, optionId: optionId, text: text) ?? false
         }
       )
     }
@@ -491,17 +488,23 @@ public final class NodStore: ObservableObject {
     Task { try? await runtime.disconnectSync() }
   }
 
+  /// A request can only be answered from the copy that was rendered: its
+  /// `signing.request_digest` travels with every submit so the runtime refuses
+  /// to sign anything else the server hands back at submit time.
+  public static func isAnswerable(_ request: NodRequest) -> Bool {
+    request.signing?.requestDigest != nil
+  }
+
   @discardableResult
   public func submit(request: NodRequest, option: NodRequestOption, text: String? = nil, serverId: String? = nil, answerValue: NodAnswerValue? = nil) async -> Bool {
     guard let serverId = serverId ?? selectedServer?.id else { return false }
-    return await submitNotificationOption(target: NodNotificationTarget(serverId: serverId, requestId: request.id, channelId: request.channelId), optionId: option.id, text: text, answerValue: answerValue, expectedRequestDigest: request.answerField == nil ? nil : request.signing?.requestDigest)
+    return await submitRenderedRequest(request, serverId: serverId, optionId: option.id, text: text, answerValue: answerValue)
   }
 
   @discardableResult
   public func dismissIfInformational(request: NodRequest, serverId: String? = nil) async -> Bool {
     guard !request.isValueRequest, request.status == .pending, request.options.isEmpty, let serverId = serverId ?? selectedServer?.id else { return false }
-    let target = NodNotificationTarget(serverId: serverId, requestId: request.id, channelId: request.channelId)
-    return await submitNotificationOption(target: target, optionId: "dismiss", text: nil)
+    return await submitRenderedRequest(request, serverId: serverId, optionId: "dismiss", text: nil)
   }
 
   #if os(macOS)
@@ -823,13 +826,19 @@ public final class NodStore: ObservableObject {
     ]
   }
 
-  func submitNotificationOption(target: NodNotificationTarget, optionId: String, text: String?, answerValue: NodAnswerValue? = nil, expectedRequestDigest: String? = nil) async -> Bool {
-    guard let requestId = target.requestId else { return false }
+  /// The one runtime write path. `request` is the instance the user saw; its
+  /// rendered digest is always forwarded as `expected_request_digest`.
+  private func submitRenderedRequest(_ request: NodRequest, serverId: String, optionId: String, text: String?, answerValue: NodAnswerValue? = nil) async -> Bool {
+    guard let expectedRequestDigest = request.signing?.requestDigest else {
+      lastError = "Request changed. Review it again before answering."
+      return false
+    }
+    let requestId = request.id
     do {
       try await ensureRuntimeStarted()
       // Read the directly applied runtime state; the UI mirror may still be queued after cold start.
       let profiles = runtime.state?.servers.map { NodServerProfile(id: $0.id, name: $0.name, baseURLString: $0.baseUrlString, deviceName: $0.deviceName, deviceId: $0.deviceId) } ?? servers
-      guard let serverId = NodNotificationPolicy.serverId(for: target, servers: profiles) else {
+      guard profiles.contains(where: { $0.id == serverId }) else {
         throw NodStoreError.ambiguousNotificationServer
       }
       let key = serverId + ":" + requestId
@@ -837,7 +846,7 @@ public final class NodStore: ObservableObject {
       defer { pendingActions.remove(key) }
       try await runtime.submitRequestOption(serverId: serverId, requestId: requestId, optionId: optionId, text: text, answerValue: answerValue, expectedRequestDigest: expectedRequestDigest)
       if notificationControllerEnabled {
-        await NodNotificationController.shared.removeNotifications(for: NodNotificationTarget(serverId: serverId, deviceId: target.deviceId ?? profiles.first { $0.id == serverId }?.deviceId, requestId: requestId))
+        await NodNotificationController.shared.removeNotifications(for: NodNotificationTarget(serverId: serverId, deviceId: profiles.first { $0.id == serverId }?.deviceId, requestId: requestId))
       }
       lastError = nil
       return true

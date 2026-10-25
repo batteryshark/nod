@@ -14,6 +14,10 @@ pub(crate) fn install_tray(app: &mut App) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("main")
         .icon(nod_tray_icon()?)
+        // macOS renders the tray as a template image (black plus alpha, tinted
+        // by AppKit), so it gets no colour of its own. Windows and Linux draw
+        // the PNG unchanged, which is why they load the light twin below.
+        .icon_as_template(true)
         .tooltip("Nod")
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -37,5 +41,14 @@ pub(crate) fn install_tray(app: &mut App) -> tauri::Result<()> {
 }
 
 fn nod_tray_icon() -> tauri::Result<Image<'static>> {
-    Image::from_bytes(include_bytes!("../icons/tray-nod.png"))
+    // Same 64 px mascot glyph, two inks. macOS tints the black master through
+    // `icon_as_template`, so it keeps `tray-nod.png`. Everywhere else the PNG is
+    // drawn as it is, and a dark taskbar needs light ink, so Windows and Linux
+    // load `tray-nod-light.png` — identical geometry and alpha, white ink.
+    #[cfg(target_os = "macos")]
+    let bytes = include_bytes!("../icons/tray-nod.png");
+    #[cfg(not(target_os = "macos"))]
+    let bytes = include_bytes!("../icons/tray-nod-light.png");
+
+    Image::from_bytes(bytes)
 }

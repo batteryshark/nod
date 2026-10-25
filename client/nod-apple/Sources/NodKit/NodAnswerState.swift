@@ -105,9 +105,12 @@ extension NodStore {
   @discardableResult
   public func answerFromUI(request: NodRequest, option: NodRequestOption, text: String? = nil, serverId: String? = nil, answerValue: NodAnswerValue? = nil) async -> Bool {
     guard let serverId = serverId ?? selectedServerId else { return false }
+    guard NodStore.isAnswerable(request) else {
+      lastError = "Request changed. Review it again before answering."
+      return false
+    }
     if request.isValueRequest {
       guard let field = request.answerField, let answerValue, field.isValid(answerValue),
-        request.signing?.requestDigest != nil,
         (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).utf8.count <= 16384 else {
         lastError = "Review the answer value and notes before sending."
         return false

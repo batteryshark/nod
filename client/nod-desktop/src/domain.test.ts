@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   decisionActions,
+  isValueUnsupported,
   parseEnrollmentLink,
+  REQUEST_SIGNING_VERSIONS,
   safeWebUrl,
   replaceRequest,
   submittableOptions,
@@ -13,6 +15,7 @@ import {
   selectedRequest,
   channelColor,
   totalPendingCount,
+  renderedRequestDigest,
 } from "./domain";
 import type { Channel, ClientState, RequestOption, NodRequest } from "./types";
 
@@ -302,6 +305,31 @@ describe("replaceRequest", () => {
   });
 });
 
+describe("renderedRequestDigest", () => {
+  it("uses the signing context digest over the legacy one", () => {
+    expect(renderedRequestDigest(baseRequest)).toBe("digest");
+    expect(
+      renderedRequestDigest({
+        ...baseRequest,
+        signing: {
+          version: REQUEST_SIGNING_VERSIONS.ordinary,
+          recipients_commitment: "c",
+          request_digest: "private-digest",
+        },
+      }),
+    ).toBe("private-digest");
+  });
+
+  it("yields null when the request carries no digest at all", () => {
+    expect(
+      renderedRequestDigest({ ...baseRequest, request_digest: null }),
+    ).toBeNull();
+    expect(
+      renderedRequestDigest({ ...baseRequest, request_digest: "" }),
+    ).toBeNull();
+  });
+});
+
 describe("decisionActions", () => {
   const approveWithText: RequestOption = {
     ...baseOption,
@@ -346,6 +374,39 @@ describe("decisionActions", () => {
     expect(actions[0].option.id).toBe("approve_notes");
     expect(actions[0].withTextOption).toBeUndefined();
     expect(actions[1].option.id).toBe("later");
+  });
+});
+
+describe("request signing versions", () => {
+  it("treats current and legacy value tags as value and legacy ordinary as ordinary", () => {
+    const signing = (version: string) => ({
+      version,
+      recipients_commitment: "a".repeat(64),
+      request_digest: "b".repeat(64),
+    });
+    expect(
+      isValueUnsupported({
+        ...baseRequest,
+        signing: signing(REQUEST_SIGNING_VERSIONS.value),
+        answer_field: {
+          kind: "number",
+          label: "Count",
+          default: { kind: "number", decimal: "4" },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isValueUnsupported({
+        ...baseRequest,
+        signing: signing(REQUEST_SIGNING_VERSIONS.legacyValue),
+      }),
+    ).toBe(true);
+    expect(
+      isValueUnsupported({
+        ...baseRequest,
+        signing: signing(REQUEST_SIGNING_VERSIONS.legacyOrdinary),
+      }),
+    ).toBe(false);
   });
 });
 

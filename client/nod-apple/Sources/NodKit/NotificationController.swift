@@ -61,16 +61,15 @@ public enum NodNotificationAlertSetting: Sendable {
 public final class NodNotificationController: NSObject, UNUserNotificationCenterDelegate {
     public static let shared = NodNotificationController()
 
-    private var openHandler: (@MainActor (NodNotificationTarget) -> Void)?
-    private var localCategories: [String: UNNotificationCategory] = [:]
-    private var optionHandler: (@Sendable (NodNotificationTarget, String, String?) async -> Bool)?
+    /// Category identifiers a server push may carry. Every one offers only the
+    /// foreground `open` action: an alert's text is relay-controlled and never
+    /// shows verified request content, so no decision is signed from a notification.
+    nonisolated public static let categoryIdentifiers = ["NOD_DEFAULT", "NOD_APPROVAL", "NOD_APPROVAL_TEXT"]
 
-    public func configure(
-        onOpen: @escaping @MainActor (NodNotificationTarget) -> Void = { _ in },
-        onOption: @escaping @Sendable (NodNotificationTarget, String, String?) async -> Bool = { _, _, _ in false }
-    ) {
+    private var openHandler: (@MainActor (NodNotificationTarget) -> Void)?
+
+    public func configure(onOpen: @escaping @MainActor (NodNotificationTarget) -> Void = { _ in }) {
         self.openHandler = onOpen
-        self.optionHandler = onOption
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         registerCategories()
@@ -91,40 +90,19 @@ public final class NodNotificationController: NSObject, UNUserNotificationCenter
     }
 
     public func registerCategories() {
-        let approve = UNNotificationAction(identifier: "approve", title: "Approve", options: [.authenticationRequired])
-        let reject = UNNotificationAction(identifier: "reject", title: "Reject", options: [.destructive, .authenticationRequired])
-        let approveNotes = UNTextInputNotificationAction(
-            identifier: "approve_notes",
-            title: "Approve with Notes",
-            options: [.authenticationRequired],
-            textInputButtonTitle: "Approve",
-            textInputPlaceholder: "Notes"
-        )
-        let rejectReason = UNTextInputNotificationAction(
-            identifier: "reject_reason",
-            title: "Reject with Reason",
-            options: [.destructive, .authenticationRequired],
-            textInputButtonTitle: "Reject",
-            textInputPlaceholder: "Reason"
-        )
-        let open = UNNotificationAction(identifier: "open", title: "Open", options: [.foreground])
+        UNUserNotificationCenter.current().setNotificationCategories(Set(Self.categories()))
+    }
 
-        let defaultCategory = UNNotificationCategory(
-            identifier: "NOD_DEFAULT",
-            actions: [open],
-            intentIdentifiers: []
-        )
-        let approvalCategory = UNNotificationCategory(
-            identifier: "NOD_APPROVAL",
-            actions: [approve, reject, open],
-            intentIdentifiers: []
-        )
-        let approvalTextCategory = UNNotificationCategory(
-            identifier: "NOD_APPROVAL_TEXT",
-            actions: [approve, approveNotes, reject, rejectReason, open],
-            intentIdentifiers: []
-        )
-        UNUserNotificationCenter.current().setNotificationCategories(Set([defaultCategory, approvalCategory, approvalTextCategory] + Array(localCategories.values)))
+    /// Older servers still push `NOD_APPROVAL`/`NOD_APPROVAL_TEXT`; keep those
+    /// identifiers registered so the alert shows, but with the open action only.
+    nonisolated static func categories() -> [UNNotificationCategory] {
+        categoryIdentifiers.map { identifier in
+            UNNotificationCategory(identifier: identifier, actions: [openAction()], intentIdentifiers: [])
+        }
+    }
+
+    nonisolated static func openAction() -> UNNotificationAction {
+        UNNotificationAction(identifier: "open", title: "Open Nod", options: [.foreground])
     }
 
     public func presentLocalNotification(for candidate: NodNotificationCandidate, soundName: String, hidePreviews: Bool = false) async throws {
@@ -136,38 +114,11 @@ public final class NodNotificationController: NSObject, UNUserNotificationCenter
         content.body = preview.body
         content.sound = notificationSound(named: soundName)
         content.threadIdentifier = [target.serverId, request.channelId].compactMap { $0 }.joined(separator: ":")
-        content.categoryIdentifier = hidePreviews || request.notification.redact ? "NOD_DEFAULT" : localCategory(for: request, target: target)
+        content.categoryIdentifier = "NOD_DEFAULT"
         content.userInfo = ["request_id": request.id, "channel_id": request.channelId]
         if let serverId = target.serverId { content.userInfo["server_id"] = serverId }
         // Alerts must not wait on issuer-controlled media or expose images hidden by preview policy.
         try await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: target.notificationId, content: content, trigger: nil))
-    }
-
-    private func localCategory(for request: NodRequest, target: NodNotificationTarget) -> String {
-        let actions = Self.actions(for: request)
-        guard actions.count > 1 else { return "NOD_DEFAULT" }
-        let identifier = "NOD_LOCAL_" + target.notificationId
-        // Keep categories for delivered alerts. A missing older category safely falls back to opening the app.
-        if localCategories.count >= 64, let expiredCategory = localCategories.keys.sorted().first { localCategories.removeValue(forKey: expiredCategory) }
-        localCategories[identifier] = UNNotificationCategory(identifier: identifier, actions: actions, intentIdentifiers: [])
-        registerCategories()
-        return identifier
-    }
-
-    nonisolated static func actions(for request: NodRequest) -> [UNNotificationAction] {
-        let open = UNNotificationAction(identifier: "open", title: "Open Nod", options: [.foreground])
-        guard !request.isValueRequest, !request.notification.redact, !request.options.isEmpty, request.options.count <= 3 else { return [open] }
-        let actions: [UNNotificationAction] = request.options.map { option in
-            var flags: UNNotificationActionOptions = [.authenticationRequired]
-            if option.destructive { flags.insert(.destructive) }
-            if option.foreground || option.requiresText { flags.insert(.foreground) }
-            let actionId = "nod.option." + option.id
-            if option.requiresText {
-                return UNTextInputNotificationAction(identifier: actionId, title: option.label, options: flags, textInputButtonTitle: "Submit", textInputPlaceholder: option.textPlaceholder ?? "Notes")
-            }
-            return UNNotificationAction(identifier: actionId, title: option.label, options: flags)
-        }
-        return actions + [open]
     }
 
     public func removeNotifications(for target: NodNotificationTarget) async {
@@ -210,24 +161,12 @@ public final class NodNotificationController: NSObject, UNUserNotificationCenter
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
+        // Any action other than dismiss only opens the request in the app. An
+        // alert delivered under an older category may still name an approve or
+        // reject action; those also open the card and never submit.
+        guard response.actionIdentifier != UNNotificationDismissActionIdentifier else { return }
         let target = NodNotificationTarget.decode(response.notification.request.content.userInfo)
-        if response.actionIdentifier == UNNotificationDefaultActionIdentifier || response.actionIdentifier == "open" {
-            await MainActor.run { self.openHandler?(target) }
-            return
-        }
-        guard response.actionIdentifier != UNNotificationDismissActionIdentifier, target.requestId != nil else { return }
-        let prefix = "nod.option."
-        let optionId = response.actionIdentifier.hasPrefix(prefix) ? String(response.actionIdentifier.dropFirst(prefix.count)) : response.actionIdentifier
-        let text = (response as? UNTextInputNotificationResponse)?.userText
-        let handler = await MainActor.run { self.optionHandler }
-        if await handler?(target, optionId, text) != true {
-            let content = UNMutableNotificationContent()
-            content.title = "Nod response was not sent"
-            content.body = "Open Nod to review the request and retry."
-            content.userInfo = response.notification.request.content.userInfo
-            content.categoryIdentifier = "NOD_DEFAULT"
-            try? await center.add(UNNotificationRequest(identifier: response.notification.request.identifier, content: content, trigger: nil))
-        }
+        await MainActor.run { self.openHandler?(target) }
     }
 
     nonisolated private func notificationSound(named sound: String?) -> UNNotificationSound? {

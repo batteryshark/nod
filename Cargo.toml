@@ -13,10 +13,11 @@ members = [
     "client/nod-client-core",
     "client/nod-tui",
     "client/nod-desktop/src-tauri",
+    "tools/nod-verify",
 ]
 
 [workspace.package]
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 license = "AGPL-3.0-only"
 repository = "https://github.com/batteryshark/nod"

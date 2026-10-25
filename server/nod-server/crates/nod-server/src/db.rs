@@ -38,6 +38,7 @@ pub use users::{
 
 use crate::{error::ApiError, models::AdminCounts};
 pub use connection::connect;
+pub(crate) use connection::create_private_dir_all;
 pub use requests::{
     cancel_request, create_request, expire_due_requests, get_request, list_requests_for_device,
     prune_retention, recent_requests, record_decision, request_created_by_issuer_token_id,

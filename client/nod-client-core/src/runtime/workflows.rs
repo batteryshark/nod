@@ -9,7 +9,7 @@ use crate::{
         ClientState, DevicePlatform, DeviceSigningKey, Request, RequestStatus, ServerProfile,
         UserDevice,
     },
-    signing::{DeviceSigner, StoredSigningKey},
+    signing::{asserted_request_digest, DeviceSigner, StoredSigningKey, REQUEST_CHANGED_ERROR},
 };
 
 use super::{
@@ -219,7 +219,15 @@ impl NodClientRuntime {
         params: SubmitRequestOptionParams,
     ) -> Result<Request> {
         let profile = self.server_profile(&params.server_id).await?;
+        // The digest of the copy the UI rendered. The signature is bound to it;
+        // without it there is nothing to prove the user saw what gets signed.
+        let rendered_digest = params.expected_request_digest.trim().to_string();
+        if rendered_digest.is_empty() {
+            return Err(anyhow!(REQUEST_CHANGED_ERROR));
+        }
         let api = self.api_for_profile(&profile).await?;
+        // The re-fetch decides only whether the request is still pending. It is
+        // never what gets signed.
         let authoritative = api.get_request(&params.request_id).await?;
         if authoritative.status != RequestStatus::Pending {
             self.apply_targeted_request(&profile.id, authoritative)
@@ -228,9 +236,19 @@ impl NodClientRuntime {
                 "This request has already been handled. Refresh to see its outcome."
             ));
         }
+        if asserted_request_digest(&authoritative) != Some(rendered_digest.as_str()) {
+            return Err(anyhow!(REQUEST_CHANGED_ERROR));
+        }
+        // Sign the locally held copy (the one the UI rendered) when the request
+        // belongs to the selected server. Otherwise the fetched copy is the only
+        // one available; the rendered digest still binds it to what was shown.
+        let rendered = self
+            .rendered_request(&profile.id, &params.request_id)
+            .await
+            .unwrap_or(authoritative);
         let option = SubmitOptionParams {
             answer_value: params.answer_value,
-            expected_request_digest: params.expected_request_digest,
+            expected_request_digest: rendered_digest,
             request_id: params.request_id,
             option_id: params.option_id,
             text: params
@@ -240,7 +258,7 @@ impl NodClientRuntime {
                 .map(str::to_string),
         };
         let signature = self
-            .decision_signature(&profile, &authoritative, &option)
+            .decision_signature(&profile, &rendered, &option)
             .await?;
         let result = api
             .submit_option(SubmitOptionRequest {
@@ -266,6 +284,14 @@ impl NodClientRuntime {
                 Err(error)
             }
         }
+    }
+
+    async fn rendered_request(&self, server_id: &str, request_id: &str) -> Option<Request> {
+        let reducer = self.reducer.lock().await;
+        if reducer.state.selected_server_id.as_deref() != Some(server_id) {
+            return None;
+        }
+        reducer.request(request_id).cloned()
     }
 
     async fn apply_targeted_request(&self, server_id: &str, request: Request) {

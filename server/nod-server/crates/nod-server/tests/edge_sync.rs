@@ -4,9 +4,65 @@
 mod support;
 
 use futures_util::StreamExt;
-use support::TestApp;
+use support::{sync_upgrade_request, TestApp};
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+#[tokio::test]
+async fn sync_socket_accepts_only_the_authorization_header() {
+    let app = TestApp::new().await;
+    let (_device_id, token) = app.enroll_device("Header", "linux").await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = app.router.clone();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    // The former query-string form is gone, not merely deprecated.
+    let rejected = connect_async(format!("ws://{address}/api/v1/sync?token={token}")).await;
+    assert!(
+        matches!(
+            rejected,
+            Err(tokio_tungstenite::tungstenite::Error::Http(ref response))
+                if response.status() == 401
+        ),
+        "{rejected:?}"
+    );
+    let rejected = connect_async(format!("ws://{address}/api/v1/sync")).await;
+    assert!(
+        matches!(
+            rejected,
+            Err(tokio_tungstenite::tungstenite::Error::Http(ref response))
+                if response.status() == 401
+        ),
+        "{rejected:?}"
+    );
+    let rejected = connect_async(sync_upgrade_request(
+        &format!("ws://{address}/api/v1/sync"),
+        "nod_device_not-a-real-token",
+    ))
+    .await;
+    assert!(
+        matches!(
+            rejected,
+            Err(tokio_tungstenite::tungstenite::Error::Http(ref response))
+                if response.status() == 401
+        ),
+        "{rejected:?}"
+    );
+
+    let (mut socket, _) = connect_async(sync_upgrade_request(
+        &format!("ws://{address}/api/v1/sync"),
+        &token,
+    ))
+    .await
+    .unwrap();
+    let hello = socket.next().await.unwrap().unwrap().into_text().unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&hello).unwrap()["kind"],
+        "hello"
+    );
+    server.abort();
+}
 
 #[tokio::test]
 async fn quiet_socket_resyncs_and_revocation_without_broadcast_closes_it() {
@@ -16,9 +72,12 @@ async fn quiet_socket_resyncs_and_revocation_without_broadcast_closes_it() {
     let address = listener.local_addr().unwrap();
     let router = app.router.clone();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let (mut socket, _) = connect_async(format!("ws://{address}/api/v1/sync?token={token}"))
-        .await
-        .unwrap();
+    let (mut socket, _) = connect_async(sync_upgrade_request(
+        &format!("ws://{address}/api/v1/sync"),
+        &token,
+    ))
+    .await
+    .unwrap();
     let hello = socket.next().await.unwrap().unwrap().into_text().unwrap();
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&hello).unwrap()["kind"],

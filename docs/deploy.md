@@ -9,13 +9,17 @@ machine, or any Linux box. No database server, no Docker required.
 Download the server archive for your machine from the
 [latest release](https://github.com/batteryshark/nod/releases/latest):
 
-| Machine | Archive |
+| Machine | Archive (`<version>` is the release tag, e.g. `v1.2.0`) |
 | --- | --- |
-| Mac (Apple Silicon) | `nod-server-v1.0.0-aarch64-apple-darwin.tar.gz` |
-| Mac (Intel) | `nod-server-v1.0.0-x86_64-apple-darwin.tar.gz` |
-| Linux (x86_64) | `nod-server-v1.0.0-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux (ARM64) | `nod-server-v1.0.0-aarch64-unknown-linux-gnu.tar.gz` |
-| Windows | `nod-server-v1.0.0-x86_64-pc-windows-msvc.zip` |
+| Mac (Apple Silicon) | `nod-server-<version>-aarch64-apple-darwin.tar.gz` |
+| Mac (Intel) | `nod-server-<version>-x86_64-apple-darwin.tar.gz` |
+| Linux (x86_64) | `nod-server-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (ARM64) | `nod-server-<version>-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows | `nod-server-<version>-x86_64-pc-windows-msvc.zip` |
+
+The matching `nod-verify-<version>-<target>` archive on the same release page
+is the offline receipt verifier described under
+[Verifying a decision](#verifying-a-decision).
 
 ### macOS / Linux
 
@@ -159,7 +163,10 @@ expose it directly to the internet.
   an HTTPS URL like `https://your-machine.your-tailnet.ts.net/nod`. Use that
   URL when enrolling clients.
 - **Reverse proxy**: terminate TLS in nginx/Caddy/Traefik and proxy to
-  `127.0.0.1:8767` (WebSocket upgrade required for `/api/v1/sync`).
+  `127.0.0.1:8767` (WebSocket upgrade required for `/api/v1/sync`). Clients
+  send the device token in the `Authorization` header of the upgrade request,
+  so the proxy must forward that header; there is no query-string form. Pass
+  `X-Forwarded-Proto: https` so the admin session cookie is marked `Secure`.
 
 ## Verifying a deployment
 
@@ -189,6 +196,59 @@ For migration rehearsal, use a consistent copy of the database with APNs
 omitted and `NOD_CALLBACK_ALLOWED_ORIGINS` set to an empty value, and expose
 that instance only to the verifier. Disable NATS and isolate APNs/callback/NATS
 network egress as well: copied queues must not reach real destinations.
+
+## Verifying a decision
+
+The server records every decision with the device's P-256 signature, but an
+agent that only reads `/decision` is trusting the server to have checked it. A
+compromised or malicious server can say `"verified": true` about anything.
+`nod-verify` closes that gap: it recomputes the request digest from the create
+response the agent itself received, rebuilds the canonical signing payload from
+the decision fields, and checks the signature against keys the operator pinned
+out of band. It needs no network and never consults the `public_key` the server
+attaches to a receipt.
+
+1. **Pin the device keys once.** Open the admin page's Devices table (or
+   `GET /api/v1/admin/devices`) and record each device's `signing_key_id` and
+   `signing_public_key` into a file the agent can read but the server cannot
+   write:
+
+   ```json
+   {
+     "keys": [
+       { "user_id": "owner", "device_id": "01J…", "key_id": "device-key-id", "public_key": "BC…" }
+     ]
+   }
+   ```
+
+   `device_id` is optional but recommended. Keys are fixed at enrollment and
+   never rotate; re-pin only when a device is re-enrolled, and remove revoked
+   devices.
+
+2. **Keep the create response.** Save the body of `POST /api/v1/requests` as
+   `created.json`. That is the content the principal was asked to approve; the
+   digest is recomputed from it, not from anything fetched later.
+
+3. **Verify before acting.** Save the `/decision` or `/wait` body (or the
+   callback body) as `decision.json` and run:
+
+   ```bash
+   nod-verify --request created.json --decision decision.json --keys keys.json \
+     --expect-user owner --expect-option approve
+   ```
+
+   It prints one JSON line and exits `0` only on a full pass, `1` when the
+   receipt does not verify or an expectation fails, `2` when an input could not
+   be read. Act only on exit 0. `--strict-time` turns a `signed_at` outside the
+   clock-skew tolerance (`--max-clock-skew`, default 600 s) from a warning into a
+   failure; `--expect-user` also selects the entry from a `per_user` response.
+
+`nod-verify` ships next to `nod-server` in every release and builds from
+`tools/nod-verify` (`cargo build --release -p nod-verify`). The underlying
+function is `nod_proto::verify_decision_receipt`, for issuers written in Rust.
+A pass proves the pinned device signed exactly this option on exactly this
+request; it does not prove the nonce was fresh (the server enforces replay) or
+that the device is still enrolled.
 
 ## Reliable-edge upgrade and rollback
 
@@ -316,11 +376,13 @@ direct and relay options.
 
 ## Privacy model in v1
 
-Nod v1.0.0 is a self-hostable ownership release: it gives you the server,
+Nod is a self-hostable ownership release: it gives you the server,
 clients, and release artifacts needed to own the decision loop today. It is
 not yet a privacy-preserving hosted-service design. The server operator can
 see request content, options, recipients, decisions, timestamps, delivery
-state, callback URLs, callback audit logs, and server logs.
+state, callback URLs, callback audit logs, and server logs. What the operator
+cannot do is forge an approval that survives [`nod-verify`](#verifying-a-decision)
+against pinned device keys.
 
 Future private-push-relay and content-private-server modes could make limited
 centralization safer for families, companies, and friend groups that do not

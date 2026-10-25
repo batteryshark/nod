@@ -23,7 +23,13 @@ import {
   submitRequestOption as submitScopedOption,
 } from "../commands";
 import { listenForRuntimeMessages } from "../events";
-import { replaceRequest, selectedChannel, selectedRequest } from "../domain";
+import {
+  REQUEST_CHANGED_MESSAGE,
+  renderedRequestDigest,
+  replaceRequest,
+  selectedChannel,
+  selectedRequest,
+} from "../domain";
 import type {
   Channel,
   ClientState,
@@ -204,11 +210,19 @@ export function useDesktopClient(): DesktopClient {
   ): Promise<boolean> {
     try {
       setError(null);
+      // Bind the decision to the copy on screen: the backend signs only a
+      // request whose digest matches this one.
+      const expectedRequestDigest = renderedRequestDigest(request);
+      if (!expectedRequestDigest) {
+        setError(REQUEST_CHANGED_MESSAGE);
+        return false;
+      }
       const revision = stateEvents.current;
       const updated = await submitScopedOption({
         server_id: state.selected_server_id ?? "",
         request_id: request.id,
         option_id: option.id,
+        expected_request_digest: expectedRequestDigest,
         text,
       });
       if (stateEvents.current === revision)

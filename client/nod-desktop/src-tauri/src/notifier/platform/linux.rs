@@ -5,9 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use super::notification_registry::NotificationRegistry;
 use tokio::sync::mpsc;
 
-use crate::notifier::{
-    options::desktop_notification_options, NotificationActivation, NotificationContext,
-};
+use crate::notifier::{NotificationActivation, NotificationContext};
 
 pub(crate) async fn show_notification(
     request: &Request,
@@ -15,7 +13,6 @@ pub(crate) async fn show_notification(
     activations: mpsc::Sender<NotificationActivation>,
 ) -> anyhow::Result<()> {
     let preview = nod_proto::notification_preview(request);
-    let options = desktop_notification_options(&context.server_id, request);
     let key = format!("{}:{}", context.server_id, request.id);
     let mut notification = Notification::new();
     notification
@@ -33,10 +30,10 @@ pub(crate) async fn show_notification(
     if matches!(context.sound.as_str(), "silent" | "none") {
         notification.hint(Hint::SuppressSound(true));
     }
+    // The only action is the click on the notification itself. Decision
+    // buttons are never offered here; the app window is where a request is
+    // reviewed and signed.
     notification.action("default", "Open Nod");
-    for option in &options {
-        notification.action(&format!("action:{}", option.id), &option.label);
-    }
     let handle = notification.show_async().await?;
     let identity = notification_ids()
         .lock()
@@ -50,7 +47,7 @@ pub(crate) async fn show_notification(
         let mut activation = None;
         handle
             .wait_for_action_async(|response| {
-                let ActionResponse::Custom(option_id) = response else {
+                let ActionResponse::Custom(_) = response else {
                     return;
                 };
                 let is_current = notification_ids()
@@ -61,18 +58,10 @@ pub(crate) async fn show_notification(
                 if !is_current {
                     return;
                 }
-                activation = Some(
-                    options
-                        .iter()
-                        .find(|option| {
-                            Some(option.id.as_str()) == option_id.strip_prefix("action:")
-                        })
-                        .map(|option| option.activation.clone())
-                        .unwrap_or(NotificationActivation::Open {
-                            server_id: server_id.clone(),
-                            request_id: Some(request_id.clone()),
-                        }),
-                );
+                activation = Some(NotificationActivation {
+                    server_id: server_id.clone(),
+                    request_id: request_id.clone(),
+                });
             })
             .await;
         notification_ids()

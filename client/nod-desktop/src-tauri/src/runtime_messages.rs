@@ -5,7 +5,7 @@ use std::sync::Arc;
 use nod_client_core::models::ClientState;
 use nod_client_core::NodClientMessage;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use nod_client_core::{NodClientRuntime, OpenRequestParams, SubmitRequestOptionParams};
+use nod_client_core::{NodClientRuntime, OpenRequestParams};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
@@ -100,32 +100,22 @@ fn set_pending_badge(window: &tauri::WebviewWindow, pending: usize) -> tauri::Re
     })
 }
 
+// A notification click only brings the request into the window; nothing is
+// submitted from here. The user decides on the rendered request in the app.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 async fn handle_activation(
     runtime: &Arc<Mutex<NodClientRuntime>>,
     activation: NotificationActivation,
 ) -> Option<NodClientMessage> {
     let mut runtime = runtime.lock().await;
-    crate::notifier::activation::activate(&mut *runtime, activation)
+    runtime
+        .open_request(OpenRequestParams {
+            server_id: activation.server_id,
+            request_id: activation.request_id,
+        })
         .await
         .err()
-        .map(|error| transient_desktop_error("activate notification", error))
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-impl crate::notifier::activation::ActivationRuntime for NodClientRuntime {
-    async fn read(
-        &mut self,
-        params: OpenRequestParams,
-    ) -> anyhow::Result<nod_client_core::models::Request> {
-        self.get_request(params).await
-    }
-    async fn open(&mut self, params: OpenRequestParams) -> anyhow::Result<()> {
-        self.open_request(params).await.map(|_| ())
-    }
-    async fn submit(&mut self, params: SubmitRequestOptionParams) -> anyhow::Result<()> {
-        self.submit_request_option(params).await.map(|_| ())
-    }
+        .map(|error| transient_desktop_error("open notification", error))
 }
 
 pub(crate) fn emit_transient_error(app: &AppHandle, context: &str, error: impl Display) {

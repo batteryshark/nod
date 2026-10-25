@@ -181,6 +181,51 @@ async fn admin_can_delete_channel_and_related_request_history() {
 }
 
 #[tokio::test]
+async fn request_rejects_non_http_urls_and_control_characters() {
+    let app = TestApp::new().await;
+    let issuer_token = app.issuer_token().await;
+    let rejected = [
+        json!({ "title": "Bad image", "image_url": "javascript:alert(1)" }),
+        json!({ "title": "Relative image", "image_url": "/canary.png" }),
+        json!({ "title": "Newline image", "image_url": "https://example.com/a.png\nrequest_id:x" }),
+        json!({ "title": "Newline dedupe", "dedupe_key": "deploy\n42" }),
+        json!({ "title": "Bad link", "links": [{ "label": "Diff", "url": "file:///etc/passwd" }] }),
+        json!({ "title": "Relative link", "links": [{ "label": "Diff", "url": "diff/42" }] }),
+    ];
+    for body in rejected {
+        let (status, response) = app
+            .request(
+                Method::POST,
+                "/api/v1/requests",
+                Some(&issuer_token),
+                Some(body.clone()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body} -> {response}");
+    }
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM requests")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+
+    let (status, created) = app
+        .request(
+            Method::POST,
+            "/api/v1/requests",
+            Some(&issuer_token),
+            Some(json!({
+                "title": "Fine",
+                "image_url": "https://example.com/canary.png",
+                "dedupe_key": "deploy:42 (canary)",
+                "links": [{ "label": "Diff", "url": "http://git.internal/diff/42" }]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+}
+
+#[tokio::test]
 async fn deleting_missing_channel_returns_not_found() {
     let app = TestApp::new().await;
 
@@ -270,18 +315,17 @@ async fn enrollment_request_option_flow_updates_decision() {
     assert_eq!(listed["requests"].as_array().unwrap().len(), 1);
 
     let (status, resolved) = app
-        .request(
-            Method::POST,
-            &format!("/api/v1/requests/{request_id}/options/approve"),
-            Some(&device_token),
-            Some(json!({})),
-        )
+        .decide(&device_token, request_id, "approve", json!({}))
         .await;
     assert_eq!(status, StatusCode::OK, "{resolved}");
     assert_eq!(resolved["request"]["status"], "resolved");
     assert_eq!(
         resolved["request"]["decision"]["actor_device_id"],
         device_id
+    );
+    assert_eq!(
+        resolved["request"]["decision"]["signature"]["verified"],
+        true
     );
 
     let (status, decision) = app
@@ -328,11 +372,11 @@ async fn text_capable_options_accept_empty_text() {
     let request_id = created["request_id"].as_str().unwrap();
 
     let (status, resolved) = app
-        .request(
-            Method::POST,
-            &format!("/api/v1/requests/{request_id}/options/reject_reason"),
-            Some(&device_token),
-            Some(json!({ "text": "" })),
+        .decide(
+            &device_token,
+            request_id,
+            "reject_reason",
+            json!({ "text": "" }),
         )
         .await;
 
@@ -447,6 +491,80 @@ async fn v1_signed_decision_records_verified_signature() {
     assert_eq!(decision["signature"]["verified"], true);
     assert_eq!(decision["signature"]["request_digest"], request_digest);
     assert_eq!(decision["actor_device_id"], device_id);
+
+    // Structured digests issued under the pre-collapse nod-request-v2 tag must
+    // still verify for cards already in flight.
+    let (status, created) = app
+        .request(
+            Method::POST,
+            "/api/v1/requests",
+            Some(&issuer_token),
+            Some(json!({
+                "channel_id": "default",
+                "title": "Approve legacy structured deploy",
+                "summary": "Issued under nod-request-v2",
+                "options": [{ "id": "approve", "label": "Approve", "kind": "approve" }]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let legacy_request_id = created["request_id"].as_str().unwrap();
+    let legacy_wire: nod_proto::Request =
+        serde_json::from_value(created["request"].clone()).unwrap();
+    let legacy_commitment = legacy_wire
+        .signing
+        .as_ref()
+        .unwrap()
+        .recipients_commitment
+        .clone();
+    let legacy_digest =
+        nod_proto::request_digest_legacy_structured_v2(&legacy_wire, &legacy_commitment).unwrap();
+    assert_ne!(
+        legacy_digest,
+        legacy_wire.signing.as_ref().unwrap().request_digest
+    );
+    let legacy_nonce = "nonce-legacy-structured";
+    let legacy_payload = decision_payload(DecisionPayload {
+        request_id: legacy_request_id,
+        request_digest: &legacy_digest,
+        option_id: "approve",
+        option_kind: "approve",
+        user_id: "owner",
+        device_id,
+        key_id,
+        nonce: legacy_nonce,
+        signed_at,
+        text,
+    });
+    let legacy_signature =
+        URL_SAFE_NO_PAD.encode(key_pair.sign(&rng, legacy_payload.as_bytes()).unwrap());
+    let (status, legacy_resolved) = app
+        .request(
+            Method::POST,
+            &format!("/api/v1/requests/{legacy_request_id}/options/approve"),
+            Some(device_token),
+            Some(json!({
+                "text": text,
+                "signature": {
+                    "key_id": key_id,
+                    "algorithm": "p256_ecdsa_sha256",
+                    "nonce": legacy_nonce,
+                    "signed_at": signed_at,
+                    "request_digest": legacy_digest,
+                    "signature": legacy_signature
+                }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{legacy_resolved}");
+    assert_eq!(
+        legacy_resolved["request"]["decision"]["signature"]["verified"],
+        true
+    );
+    assert_eq!(
+        legacy_resolved["request"]["decision"]["signature"]["request_digest"],
+        json!(legacy_digest)
+    );
 }
 
 #[tokio::test]
@@ -484,12 +602,7 @@ async fn per_user_decision_resolution_tracks_each_user_independently() {
     let request_id = created["request_id"].as_str().unwrap();
 
     let (status, paul_resolved) = app
-        .request(
-            Method::POST,
-            &format!("/api/v1/requests/{request_id}/options/approve"),
-            Some(&paul_token),
-            Some(json!({})),
-        )
+        .decide(&paul_token, request_id, "approve", json!({}))
         .await;
     assert_eq!(status, StatusCode::OK, "{paul_resolved}");
     assert_eq!(paul_resolved["request"]["status"], "resolved");
@@ -524,12 +637,7 @@ async fn per_user_decision_resolution_tracks_each_user_independently() {
     assert_eq!(aggregate["pending_recipients"], json!(["maya"]));
 
     let (status, maya_resolved) = app
-        .request(
-            Method::POST,
-            &format!("/api/v1/requests/{request_id}/options/reject"),
-            Some(&maya_token),
-            Some(json!({})),
-        )
+        .decide(&maya_token, request_id, "reject", json!({}))
         .await;
     assert_eq!(status, StatusCode::OK, "{maya_resolved}");
     assert_eq!(
@@ -575,12 +683,7 @@ async fn device_can_dismiss_request_without_options() {
     let request_id = created["request_id"].as_str().unwrap();
 
     let (status, resolved) = app
-        .request(
-            Method::POST,
-            &format!("/api/v1/requests/{request_id}/options/dismiss"),
-            Some(&device_token),
-            Some(json!({})),
-        )
+        .decide(&device_token, request_id, "dismiss", json!({}))
         .await;
     assert_eq!(status, StatusCode::OK, "{resolved}");
     assert_eq!(resolved["request"]["status"], "resolved");
@@ -645,7 +748,9 @@ async fn device_can_sign_dismiss_for_request_without_options() {
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
     let request_id = created["request_id"].as_str().unwrap();
-    let request_digest = created["request"]["request_digest"].as_str().unwrap();
+    let request_digest = created["request"]["signing"]["request_digest"]
+        .as_str()
+        .unwrap();
     let nonce = "dismiss-nonce-1";
     let signed_at = "2026-05-31T12:00:00.000Z";
     let payload = decision_payload(DecisionPayload {
@@ -770,12 +875,7 @@ async fn request_list_limit_caps_handled_but_keeps_all_pending() {
         assert_eq!(status, StatusCode::OK, "{created}");
         let request_id = created["request_id"].as_str().unwrap();
         let (status, resolved) = app
-            .request(
-                Method::POST,
-                &format!("/api/v1/requests/{request_id}/options/dismiss"),
-                Some(&device_token),
-                Some(json!({})),
-            )
+            .decide(&device_token, request_id, "dismiss", json!({}))
             .await;
         assert_eq!(status, StatusCode::OK, "{resolved}");
     }

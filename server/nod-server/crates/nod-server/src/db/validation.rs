@@ -44,16 +44,42 @@ pub(super) fn validate_request(req: &CreateDecisionRequest) -> Result<(), ApiErr
     validate_notification_text(req.notification.title.as_deref(), "notification title", 200)?;
     validate_notification_text(req.notification.body.as_deref(), "notification body", 500)?;
     if let Some(callback_url) = req.callback_url.as_deref() {
-        let url = Url::parse(callback_url).map_err(|_| {
-            ApiError::BadRequest("callback_url must be an absolute URL".to_string())
-        })?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(ApiError::BadRequest(
-                "callback_url must use http or https".to_string(),
-            ));
-        }
+        validate_http_url(callback_url, "callback_url")?;
+    }
+    // image_url and dedupe_key enter the v1 digest as raw lines, so a control
+    // character in either could shift field boundaries. Links are opened by
+    // clients and must be http(s) like everything else that leaves the card.
+    if let Some(image_url) = req.image_url.as_deref() {
+        reject_control_characters(image_url, "image_url")?;
+        validate_http_url(image_url, "image_url")?;
+    }
+    if let Some(dedupe_key) = req.dedupe_key.as_deref() {
+        reject_control_characters(dedupe_key, "dedupe_key")?;
+    }
+    for link in &req.links {
+        validate_http_url(&link.url, "links[].url")?;
     }
     validate_id(&req.channel_id, "channel id")
+}
+
+fn reject_control_characters(value: &str, label: &str) -> Result<(), ApiError> {
+    if value.chars().any(char::is_control) {
+        return Err(ApiError::BadRequest(format!(
+            "{label} must not contain control characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_http_url(value: &str, label: &str) -> Result<(), ApiError> {
+    let url = Url::parse(value)
+        .map_err(|_| ApiError::BadRequest(format!("{label} must be an absolute URL")))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(ApiError::BadRequest(format!(
+            "{label} must use http or https"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_notification_text(

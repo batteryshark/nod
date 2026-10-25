@@ -7,6 +7,9 @@ mod file;
 mod integrations;
 pub use integrations::{IntegrationsConfig, NatsConfig};
 
+/// Shorter admin tokens are accepted but warned about at startup.
+pub const MIN_RECOMMENDED_ADMIN_TOKEN_LEN: usize = 24;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub integrations: IntegrationsConfig,
@@ -59,6 +62,14 @@ impl Config {
     fn validate(&self) -> anyhow::Result<()> {
         if self.admin_token().trim().is_empty() {
             bail!("NOD_ADMIN_TOKEN or NOD_ADMIN_TOKEN_FILE is required");
+        }
+        // Not enforced: existing installs may run with a short token, and
+        // the login path throttles failures. Make it visible at startup.
+        if self.admin_token().trim().len() < MIN_RECOMMENDED_ADMIN_TOKEN_LEN {
+            tracing::warn!(
+                minimum = MIN_RECOMMENDED_ADMIN_TOKEN_LEN,
+                "admin token is shorter than recommended; generate one with `openssl rand -base64 32`"
+            );
         }
         if self.retention_days < 1 {
             bail!("retention_days must be at least 1");

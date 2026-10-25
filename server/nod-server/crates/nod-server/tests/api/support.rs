@@ -9,14 +9,35 @@ pub(crate) use ring::{
 };
 pub(crate) use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
+};
 use tempfile::TempDir;
 use tower::ServiceExt;
+
+static NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct TestApp {
     pub(crate) router: Router,
     pub(crate) pool: sqlx::SqlitePool,
     pub(crate) data_dir: std::path::PathBuf,
+    /// Signing keys of devices enrolled through the helpers, by device token.
+    signers: Mutex<HashMap<String, TestSigner>>,
     _tmp: TempDir,
+}
+
+/// A device's enrollment identity plus the in-test software key it signs with.
+#[derive(Clone)]
+pub(crate) struct TestSigner {
+    pub(crate) device_id: String,
+    pub(crate) user_id: String,
+    pub(crate) key_id: String,
+    pub(crate) private_key: String,
+    pub(crate) public_key: String,
 }
 
 impl TestApp {
@@ -40,8 +61,99 @@ impl TestApp {
             router: router(state),
             pool,
             data_dir,
+            signers: Mutex::new(HashMap::new()),
             _tmp: tmp,
         }
+    }
+
+    /// The signing identity recorded for a device token enrolled via the helpers.
+    pub(crate) fn signer_for(&self, device_token: &str) -> TestSigner {
+        self.signers
+            .lock()
+            .unwrap()
+            .get(device_token)
+            .cloned()
+            .expect("device token was enrolled through TestApp::enroll_device")
+    }
+
+    /// Submit a signed decision the way a first-party client does: fetch the
+    /// request as this device sees it, sign the canonical payload with the
+    /// device key, and POST it. `extra` merges into the body (e.g. `text`).
+    pub(crate) async fn decide(
+        &self,
+        device_token: &str,
+        request_id: &str,
+        option_id: &str,
+        extra: Value,
+    ) -> (StatusCode, Value) {
+        let signer = self.signer_for(device_token);
+        let (status, view) = self
+            .request(
+                Method::GET,
+                &format!("/api/v1/requests/{request_id}"),
+                Some(device_token),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        let request: nod_proto::Request =
+            serde_json::from_value(view["request"].clone()).expect("device request view");
+        let option_kind = request
+            .options
+            .iter()
+            .find(|option| option.id == option_id)
+            .map(|option| option.kind.clone())
+            .unwrap_or(nod_proto::OptionKind::Dismiss);
+        let request_digest = request
+            .request_digest
+            .clone()
+            .or_else(|| request.signing.as_ref().map(|s| s.request_digest.clone()))
+            .expect("request digest in device view");
+        let text = extra
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
+        let nonce = format!(
+            "test-nonce-{}",
+            NONCE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let signed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let payload = nod_proto::decision_signing_payload(nod_proto::DecisionSigningInput {
+            request_id,
+            request_digest: &request_digest,
+            option_id,
+            option_kind: &option_kind,
+            user_id: &signer.user_id,
+            device_id: &signer.device_id,
+            key_id: &signer.key_id,
+            nonce: &nonce,
+            signed_at: &signed_at,
+            text,
+        });
+        let signature = nod_proto::sign_payload(&signer.private_key, payload.as_bytes()).unwrap();
+        let mut body = match extra {
+            Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
+        body.insert(
+            "signature".to_string(),
+            json!({
+                "key_id": signer.key_id,
+                "algorithm": "p256_ecdsa_sha256",
+                "nonce": nonce,
+                "signed_at": signed_at,
+                "request_digest": request_digest,
+                "signature": signature
+            }),
+        );
+        self.request(
+            Method::POST,
+            &format!("/api/v1/requests/{request_id}/options/{option_id}"),
+            Some(device_token),
+            Some(Value::Object(body)),
+        )
+        .await
     }
 
     pub(crate) async fn request(
@@ -143,6 +255,8 @@ impl TestApp {
             .await;
         assert_eq!(status, StatusCode::OK, "{enrollment}");
         let code = enrollment["code"].as_str().unwrap();
+        let key = nod_proto::generate_signing_key();
+        let key_id = format!("test-key-{}", NONCE_COUNTER.fetch_add(1, Ordering::Relaxed));
         let (status, enrolled) = self
             .request(
                 Method::POST,
@@ -151,16 +265,30 @@ impl TestApp {
                 Some(json!({
                     "code": code,
                     "device_name": name,
-                    "platform": platform
+                    "platform": platform,
+                    "signing_key": {
+                        "key_id": key_id,
+                        "algorithm": "p256_ecdsa_sha256",
+                        "public_key": key.public_key
+                    }
                 })),
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{enrolled}");
         assert_eq!(enrolled["user_id"], user_id);
-        (
-            enrolled["device_id"].as_str().unwrap().to_string(),
-            enrolled["token"].as_str().unwrap().to_string(),
-        )
+        let device_id = enrolled["device_id"].as_str().unwrap().to_string();
+        let token = enrolled["token"].as_str().unwrap().to_string();
+        self.signers.lock().unwrap().insert(
+            token.clone(),
+            TestSigner {
+                device_id: device_id.clone(),
+                user_id: user_id.to_string(),
+                key_id,
+                private_key: key.private_key,
+                public_key: key.public_key,
+            },
+        );
+        (device_id, token)
     }
 
     pub(crate) async fn create_user(&self, id: &str, name: &str) {
@@ -198,6 +326,35 @@ impl TestApp {
         assert_eq!(status, StatusCode::OK, "{value}");
         value["token"].as_str().unwrap().to_string()
     }
+}
+
+/// Build the sync WebSocket upgrade request the way clients must: the device
+/// token rides in `Authorization: Bearer`, never in the URL.
+pub(crate) fn sync_upgrade_request(
+    ws_url: &str,
+    device_token: &str,
+) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = ws_url
+        .into_client_request()
+        .expect("websocket url is a valid client request");
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {device_token}")
+            .parse()
+            .expect("bearer header value"),
+    );
+    request
+}
+
+/// A fresh in-test software key in the `signing_key` enrollment shape.
+pub(crate) fn test_signing_key_json() -> Value {
+    let key = nod_proto::generate_signing_key();
+    json!({
+        "key_id": format!("test-key-{}", NONCE_COUNTER.fetch_add(1, Ordering::Relaxed)),
+        "algorithm": "p256_ecdsa_sha256",
+        "public_key": key.public_key
+    })
 }
 
 pub(crate) struct DecisionPayload<'a> {

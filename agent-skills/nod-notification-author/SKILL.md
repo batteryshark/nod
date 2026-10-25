@@ -34,11 +34,24 @@ payload for a human-facing automation.
    - `dedupe_key` for retry-safe automations.
    - `expires_at` for stale decisions.
    - issuer-side wait/read when the automation needs the result.
-   - `callback_url` only as an unauthenticated wake-up hint; the issuer must
-     read or wait before acting.
+   - `callback_url` only as an unauthenticated wake-up hint; it is never
+     evidence of a decision.
 7. Protect privacy. Put sensitive details in the request body, fields, or links;
    use `notification.redact` for push-safe lock-screen text.
 8. Validate against the request contract before sending.
+9. Keep the create response. Before acting on any outcome, pipe that create
+   response and the decision (from read, wait, or the callback body) through
+   `nod-verify` with your pinned device keys, and act only on exit 0. The
+   server's `verified: true` is not your evidence; the verifier's exit code is.
+
+## Final Authority
+
+The server is not the root of trust for "approved". `nod-verify` recomputes the
+request digest from the create response you hold, rebuilds the canonical signing
+payload from the decision, and checks the device signature against keys you
+pinned out of band from the admin devices list. A decision with
+`"signature": null`, an unknown key, a mismatched digest, or any non-zero exit
+is not an approval, whatever the response body says.
 
 ## References
 
@@ -46,7 +59,8 @@ payload for a human-facing automation.
   reviewing field names.
 - Read `references/payload-examples.md` for copyable JSON patterns.
 - Read `references/validation-and-privacy.md` before testing a sender, handling
-  secrets, callback wake-ups, APNs, or local client smoke checks.
+  secrets, callback wake-ups, APNs, local client smoke checks, or verifying a
+  decision with `nod-verify`.
 
 ## Output Standard
 
@@ -55,4 +69,6 @@ When authoring a request, produce:
 - The final JSON payload.
 - A short note naming the audience and decision mode.
 - Any issuer-side follow-up needed, especially for quorum.
+- The `nod-verify` invocation the issuer runs before acting, with the expected
+  user and option.
 - A privacy note if push notifications may be shown on a lock screen.

@@ -33,6 +33,11 @@ struct Fixture {
     snapshot_gets: Arc<AtomicUsize>,
     lost_submit_response: Arc<AtomicBool>,
     preferences: Arc<Mutex<crate::models::DeviceNotificationPreferences>>,
+    sync_query_rejections: Arc<AtomicUsize>,
+    /// When set, a targeted GET returns this request (with a valid digest of
+    /// its own) instead of the stored one: a server swapping content between
+    /// display and submit.
+    swapped_request: Arc<Mutex<Option<Request>>>,
 }
 
 struct TestServer {
@@ -62,6 +67,8 @@ impl TestServer {
             snapshot_gets: Arc::new(AtomicUsize::new(0)),
             lost_submit_response: Arc::new(AtomicBool::new(false)),
             preferences: Arc::new(Mutex::new(Default::default())),
+            sync_query_rejections: Arc::new(AtomicUsize::new(0)),
+            swapped_request: Arc::new(Mutex::new(None)),
         };
         let app = Router::new()
             .route("/api/v1/enroll", axum::routing::post(||async {Json(json!({"device_id":"device","user_id":"owner","user_name":"Owner","token":"target-token","channels":[],"devices":[]}))}))
@@ -104,6 +111,15 @@ async fn get_request(
             .and_then(|v| v.to_str().ok()),
         Some("single-value-v1")
     );
+    if let Some(swapped) = state
+        .swapped_request
+        .lock()
+        .await
+        .as_ref()
+        .filter(|swapped| swapped.id == id)
+    {
+        return Ok(Json(json!({"request":swapped})));
+    }
     let request = requests
         .iter()
         .find(|request| request.id == id)
@@ -130,7 +146,25 @@ async fn submit(
     Json(json!({"request":request})).into_response()
 }
 
-async fn socket(State(state): State<Fixture>, upgrade: WebSocketUpgrade) -> impl IntoResponse {
+async fn socket(
+    State(state): State<Fixture>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    upgrade: WebSocketUpgrade,
+) -> axum::response::Response {
+    // The server contract: the device token arrives only as a bearer header on
+    // the upgrade request, never as a query parameter.
+    if headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        != Some("Bearer target-token")
+    {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if uri.query().is_some_and(|query| !query.is_empty()) {
+        state.sync_query_rejections.fetch_add(1, Ordering::SeqCst);
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     upgrade.on_upgrade(move |mut socket| async move {
         let mut messages = state.messages.subscribe();
         state.connections.fetch_add(1, Ordering::SeqCst);
@@ -148,6 +182,7 @@ async fn socket(State(state): State<Fixture>, upgrade: WebSocketUpgrade) -> impl
             }
         }
     })
+    .into_response()
 }
 
 async fn device_with_preferences(state: &Fixture) -> Value {
@@ -190,7 +225,8 @@ fn request(id: &str) -> Request {
         request_digest: None,
         signing: None,
     };
-    request.request_digest = Some(nod_proto::request_digest(&request).unwrap());
+    request.request_digest =
+        Some(nod_proto::request_digest_legacy_line_snapshot(&request).unwrap());
     request
 }
 
@@ -390,15 +426,24 @@ async fn committed_enrollment_succeeds_when_initial_inbox_fetch_fails() {
     runtime.disconnect_sync().await;
 }
 
+async fn stored_digest(server: &TestServer, id: &str) -> String {
+    let requests = server.fixture.requests.lock().await;
+    let request = requests.iter().find(|request| request.id == id).unwrap();
+    crate::signing::asserted_request_digest(request)
+        .unwrap()
+        .to_string()
+}
+
 #[tokio::test]
 async fn notification_submission_fetches_and_signs_on_its_own_server_without_switching() {
     let server = TestServer::start().await;
     let (mut runtime, _directory, _messages) = runtime(&server, true).await;
     let selected_before = runtime.state().await.selected_server_id;
+    let rendered = stored_digest(&server, "initial").await;
     let result = runtime
         .submit_request_option(SubmitRequestOptionParams {
             answer_value: None,
-            expected_request_digest: None,
+            expected_request_digest: rendered.clone(),
             server_id: profile_id_for(&server.url),
             request_id: "initial".into(),
             option_id: "dismiss".into(),
@@ -408,11 +453,120 @@ async fn notification_submission_fetches_and_signs_on_its_own_server_without_swi
         .unwrap();
     assert_eq!(result.status, RequestStatus::Resolved);
     assert_eq!(runtime.state().await.selected_server_id, selected_before);
-    assert!(
-        server.fixture.posts.lock().await[0]["signature"]["signature"]
-            .as_str()
-            .is_some()
+    let posts = server.fixture.posts.lock().await;
+    assert!(posts[0]["signature"]["signature"].as_str().is_some());
+    assert_eq!(posts[0]["signature"]["request_digest"], rendered);
+}
+
+#[tokio::test]
+async fn ordinary_submission_without_the_rendered_digest_is_refused_before_any_post() {
+    let server = TestServer::start().await;
+    let (mut runtime, _directory, _messages) = runtime(&server, false).await;
+    runtime.refresh().await.unwrap();
+    for expected in ["", "   ", "not-the-rendered-digest"] {
+        let error = runtime
+            .submit_request_option(SubmitRequestOptionParams {
+                answer_value: None,
+                expected_request_digest: expected.into(),
+                server_id: profile_id_for(&server.url),
+                request_id: "initial".into(),
+                option_id: "dismiss".into(),
+                text: None,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, crate::signing::REQUEST_CHANGED_ERROR);
+    }
+    let missing_field = runtime
+        .handle_method(
+            "submit_option",
+            json!({"request_id": "initial", "option_id": "dismiss"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(missing_field.contains("expected_request_digest"));
+    assert!(server.fixture.posts.lock().await.is_empty());
+    assert_eq!(
+        runtime.state().await.requests[0].status,
+        RequestStatus::Pending
     );
+}
+
+#[tokio::test]
+async fn server_swapping_content_at_submit_time_is_refused_before_any_post() {
+    let server = TestServer::start().await;
+    let (mut runtime, _directory, _messages) = runtime(&server, false).await;
+    runtime.refresh().await.unwrap();
+    let rendered = stored_digest(&server, "initial").await;
+    // The server serves a different, self-consistent request for the same id
+    // once the device comes back to submit.
+    let mut swapped = request("initial");
+    swapped.title = "Transfer the production signing key".into();
+    swapped.request_digest =
+        Some(nod_proto::request_digest_legacy_line_snapshot(&swapped).unwrap());
+    assert_ne!(swapped.request_digest.as_deref(), Some(rendered.as_str()));
+    *server.fixture.swapped_request.lock().await = Some(swapped);
+    let error = runtime
+        .submit_request_option(SubmitRequestOptionParams {
+            answer_value: None,
+            expected_request_digest: rendered,
+            server_id: profile_id_for(&server.url),
+            request_id: "initial".into(),
+            option_id: "dismiss".into(),
+            text: None,
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, crate::signing::REQUEST_CHANGED_ERROR);
+    assert!(server.fixture.posts.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn submission_signs_the_locally_rendered_copy() {
+    let server = TestServer::start().await;
+    let (mut runtime, _directory, _messages) = runtime(&server, false).await;
+    runtime.refresh().await.unwrap();
+    let rendered = stored_digest(&server, "initial").await;
+    // The submit-time fetch asserts the rendered digest but carries content
+    // that does not hash to it. The local copy is what gets signed and the
+    // fetched content never reaches the signer, so the digest recompute
+    // over the rendered copy still passes and the post carries that digest.
+    let mut lying = request("initial");
+    lying.title = "Transfer the production signing key".into();
+    lying.request_digest = Some(rendered.clone());
+    *server.fixture.swapped_request.lock().await = Some(lying);
+    let result = runtime
+        .submit_request_option(SubmitRequestOptionParams {
+            answer_value: None,
+            expected_request_digest: rendered.clone(),
+            server_id: profile_id_for(&server.url),
+            request_id: "initial".into(),
+            option_id: "dismiss".into(),
+            text: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.status, RequestStatus::Resolved);
+    let posts = server.fixture.posts.lock().await;
+    assert_eq!(posts.len(), 1);
+    assert_eq!(posts[0]["signature"]["request_digest"], rendered);
+}
+
+#[tokio::test]
+async fn sync_upgrade_sends_the_device_token_as_a_bearer_header_only() {
+    let server = TestServer::start().await;
+    let (mut runtime, _directory, _messages) = runtime(&server, false).await;
+    runtime.connect_sync().await.unwrap();
+    until(&runtime, |state| state.sync_phase == SyncPhase::Current).await;
+    assert_eq!(server.fixture.connections.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        server.fixture.sync_query_rejections.load(Ordering::SeqCst),
+        0
+    );
+    runtime.disconnect_sync().await;
 }
 
 #[tokio::test]
@@ -517,10 +671,11 @@ async fn lost_decision_response_posts_once_and_reconciles_with_get() {
         .fixture
         .lost_submit_response
         .store(true, Ordering::SeqCst);
+    let rendered = stored_digest(&server, "initial").await;
     let error = runtime
         .submit_request_option(SubmitRequestOptionParams {
             answer_value: None,
-            expected_request_digest: None,
+            expected_request_digest: rendered,
             server_id: profile_id_for(&server.url),
             request_id: "initial".into(),
             option_id: "dismiss".into(),
@@ -562,14 +717,14 @@ async fn lost_value_response_keeps_one_post_and_reconciles_read_only() {
             destructive: false,
             foreground: false,
         });
-        digest = nod_proto::value_signing::request_digest_v3(
+        digest = nod_proto::value_signing::value_request_digest(
             card,
             &"a".repeat(64),
             card.answer_field.as_ref().unwrap(),
         )
         .unwrap();
         card.signing = Some(nod_proto::RequestSigningContext {
-            version: "nod-request-v3".into(),
+            version: nod_proto::value_signing::VALUE_REQUEST_DIGEST_VERSION.into(),
             recipients_commitment: "a".repeat(64),
             request_digest: digest.clone(),
         });
@@ -589,7 +744,7 @@ async fn lost_value_response_keeps_one_post_and_reconciles_read_only() {
             answer_value: Some(nod_proto::AnswerValue::Number {
                 decimal: "5".into(),
             }),
-            expected_request_digest: Some(digest),
+            expected_request_digest: digest,
         })
         .await;
     assert!(result.is_err());

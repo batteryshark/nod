@@ -266,6 +266,8 @@ async fn verified_decision_signature(
     provided: Option<&crate::models::SubmitDecisionSignature>,
     answer_value: Option<&nod_proto::AnswerValue>,
 ) -> Result<Option<DecisionSignatureRecord>, ApiError> {
+    // Only internal transitions (expiry, implicit resolution) run without a
+    // device actor; they never carry a signature.
     let Some(actor_device) = actor_device else {
         if provided.is_some() {
             return Err(ApiError::BadRequest(
@@ -275,17 +277,25 @@ async fn verified_decision_signature(
         return Ok(None);
     };
 
+    // A device decision is only ever recorded with a verified signature. Rows
+    // enrolled before keys were mandatory stay readable but cannot decide.
     let device_has_key = actor_device
         .signing_public_key
         .as_deref()
-        .is_some_and(|key| !key.trim().is_empty());
+        .is_some_and(|key| !key.trim().is_empty())
+        && actor_device
+            .signing_key_id
+            .as_deref()
+            .is_some_and(|key_id| !key_id.trim().is_empty());
+    if !device_has_key {
+        return Err(ApiError::BadRequest(
+            "device does not have a registered signing key".to_string(),
+        ));
+    }
     let Some(provided) = provided else {
-        if device_has_key {
-            return Err(ApiError::BadRequest(
-                "signed decision payload is required for this device".to_string(),
-            ));
-        }
-        return Ok(None);
+        return Err(ApiError::BadRequest(
+            "signed decision payload is required".to_string(),
+        ));
     };
 
     let (request_digest, signing_payload) = signing::verify_value_decision_signature(

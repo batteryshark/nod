@@ -1,4 +1,5 @@
 import Foundation
+import NodClientFFI
 
 public enum NodDevicePlatform: String, Codable, Sendable {
   case ios
@@ -397,7 +398,10 @@ public struct NodRequestSigning: Codable, Hashable, Sendable {
 
 public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
   public let answerField: NodAnswerField?
-  public var isValueRequest: Bool { answerField != nil || signing?.version == "nod-request-v3" || options.contains { $0.id == "__nod_value_open" } }
+  public var isValueRequest: Bool {
+    isValueRequestCard(answerFieldPresent: answerField != nil, signingVersion: signing?.version)
+      || options.contains { $0.id == "__nod_value_open" }
+  }
   public let id: String
   public let requestId: String
   public let channelId: String

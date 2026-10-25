@@ -10,9 +10,10 @@ use std::{cell::Cell, time::Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nod_client_core::{
+    asserted_request_digest,
     models::{ClientState, OptionKind, Request, UserDevice},
     ChannelParams, NodClientMessage, RevokeDeviceParams, SelectRequestParams, SelectServerParams,
-    SubmitOptionParams,
+    SubmitOptionParams, REQUEST_CHANGED_ERROR,
 };
 
 pub(crate) use enrollment::{EnrollmentField, EnrollmentForm};
@@ -559,10 +560,17 @@ impl AppState {
                         ) && request.status
                             == nod_client_core::models::RequestStatus::Pending =>
                     {
+                        let Some(rendered_digest) =
+                            asserted_request_digest(&request).map(str::to_string)
+                        else {
+                            self.set_error(REQUEST_CHANGED_ERROR.into());
+                            return Vec::new();
+                        };
                         if let Some(option) = options.get(selected) {
                             let mut form = OptionTextForm::from_choice(
                                 &request,
                                 domain::OptionChoice::from_option(option),
+                                rendered_digest,
                             );
                             form.set_answer(self.answer_value(&request));
                             self.modal = Some(Modal::OptionText(form));
@@ -772,11 +780,10 @@ impl AppState {
             .answer_field
             .as_ref()
             .is_some_and(|f| !matches!(f, nod_proto::AnswerField::Choice { .. }))
-            || (option.id == "__nod_value_open"
-                && request
-                    .signing
-                    .as_ref()
-                    .is_some_and(|c| c.version == "nod-request-v3"))
+            || request
+                .options
+                .iter()
+                .any(|option| option.id == "__nod_value_open")
         {
             self.set_error(
                 "Open in an updated iOS or macOS Nod app to answer this request.".into(),
@@ -787,18 +794,20 @@ impl AppState {
             self.set_error("This request has already been handled.".into());
             return Vec::new();
         }
+        // The signature is bound to the digest of the copy on screen.
+        let Some(rendered_digest) = asserted_request_digest(request).map(str::to_string) else {
+            self.set_error(REQUEST_CHANGED_ERROR.into());
+            return Vec::new();
+        };
         if option.requires_text {
-            let mut form = OptionTextForm::from_choice(request, option);
+            let mut form = OptionTextForm::from_choice(request, option, rendered_digest);
             form.set_answer(self.answer_value(request));
             self.modal = Some(Modal::OptionText(form));
             Vec::new()
         } else {
             vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
                 answer_value: self.answer_value(request),
-                expected_request_digest: request
-                    .answer_field
-                    .as_ref()
-                    .and_then(|_| request.signing.as_ref().map(|c| c.request_digest.clone())),
+                expected_request_digest: rendered_digest,
                 request_id: request.id.clone(),
                 option_id: option.id.to_string(),
                 text: None,
@@ -825,6 +834,11 @@ impl AppState {
                 );
                 return Vec::new();
             }
+            let Some(rendered_digest) = asserted_request_digest(&request).map(str::to_string)
+            else {
+                self.set_error(REQUEST_CHANGED_ERROR.into());
+                return Vec::new();
+            };
             if let Some(option) = request.options.first() {
                 let mut form = OptionTextForm::from_choice(
                     &request,
@@ -834,6 +848,7 @@ impl AppState {
                         placeholder: Some("Notes (optional)"),
                         requires_text: false,
                     },
+                    rendered_digest,
                 );
                 form.set_answer(self.answer_value(&request));
                 self.modal = Some(Modal::OptionText(form));
@@ -844,9 +859,15 @@ impl AppState {
             self.set_error("Selected request has no text option.".to_string());
             return Vec::new();
         };
+        let Some(rendered_digest) = asserted_request_digest(&request).map(str::to_string) else {
+            self.set_error(REQUEST_CHANGED_ERROR.into());
+            return Vec::new();
+        };
 
         self.modal = Some(Modal::OptionText(OptionTextForm::from_choice(
-            &request, option,
+            &request,
+            option,
+            rendered_digest,
         )));
         Vec::new()
     }
@@ -1007,7 +1028,7 @@ mod tests {
             foreground: false,
         }];
         card.signing = Some(nod_proto::RequestSigningContext {
-            version: "nod-request-v3".into(),
+            version: nod_proto::value_signing::VALUE_REQUEST_DIGEST_VERSION.into(),
             recipients_commitment: "a".repeat(64),
             request_digest: "b".repeat(64),
         });
@@ -1055,10 +1076,84 @@ mod tests {
         };
         assert_eq!(params.answer_value, selected);
         assert_eq!(params.text.as_deref(), Some("ok"));
+        assert_eq!(params.expected_request_digest, "b".repeat(64));
+    }
+
+    #[test]
+    fn legacy_value_tag_is_still_answerable() {
+        let field = nod_proto::AnswerField::Choice {
+            label: "Batch".into(),
+            choices: vec![
+                nod_proto::AnswerChoice {
+                    id: "small".into(),
+                    label: "Small".into(),
+                },
+                nod_proto::AnswerChoice {
+                    id: "large".into(),
+                    label: "Large".into(),
+                },
+            ],
+            default: nod_proto::AnswerValue::Choice {
+                choice_id: "small".into(),
+            },
+        };
+        let mut app = value_app(field);
+        app.client_state.requests[0]
+            .signing
+            .as_mut()
+            .unwrap()
+            .version = nod_proto::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION.into();
+        assert!(app.handle_key(key(KeyCode::Char('v'))).is_empty());
+        app.handle_key(key(KeyCode::Char('n')));
+        app.handle_key(key(KeyCode::Char('o')));
+        app.handle_key(key(KeyCode::Char('k')));
+        let commands = app.handle_key(key(KeyCode::Enter));
+        let [RuntimeCommand::SubmitOption(params)] = commands.as_slice() else {
+            panic!("expected explicit submit for a legacy value tag");
+        };
         assert_eq!(
-            params.expected_request_digest.as_deref(),
-            Some("b".repeat(64).as_str())
+            params.answer_value,
+            Some(nod_proto::AnswerValue::Choice {
+                choice_id: "large".into()
+            })
         );
+    }
+
+    #[test]
+    fn value_placeholder_is_never_answerable() {
+        let field = nod_proto::AnswerField::Choice {
+            label: "Batch".into(),
+            choices: vec![
+                nod_proto::AnswerChoice {
+                    id: "small".into(),
+                    label: "Small".into(),
+                },
+                nod_proto::AnswerChoice {
+                    id: "large".into(),
+                    label: "Large".into(),
+                },
+            ],
+            default: nod_proto::AnswerValue::Choice {
+                choice_id: "small".into(),
+            },
+        };
+        let mut app = value_app(field);
+        let card = &mut app.client_state.requests[0];
+        card.answer_field = None;
+        card.options = vec![RequestOption {
+            id: "__nod_value_open".into(),
+            label: "Open in app".into(),
+            kind: OptionKind::Custom,
+            style: "default".into(),
+            requires_text: false,
+            text_placeholder: None,
+            destructive: false,
+            foreground: true,
+        }];
+        card.signing.as_mut().unwrap().version =
+            nod_proto::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION.into();
+        assert!(app.handle_key(key(KeyCode::Char('a'))).is_empty());
+        assert!(app.handle_key(key(KeyCode::Enter)).is_empty());
     }
 
     #[test]
@@ -1151,7 +1246,7 @@ mod tests {
             vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
                 request_id: "deploy".to_string(),
                 answer_value: None,
-                expected_request_digest: None,
+                expected_request_digest: "digest".to_string(),
                 option_id: "approve_notes".to_string(),
                 text: Some("ok".to_string())
             })]
@@ -1247,11 +1342,50 @@ mod tests {
             vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
                 request_id: "deploy".into(),
                 answer_value: None,
-                expected_request_digest: None,
+                expected_request_digest: "digest".into(),
                 option_id: "restart".into(),
                 text: None
             })]
         );
+    }
+
+    #[test]
+    fn ordinary_submits_carry_the_rendered_digest_and_refuse_without_one() {
+        let mut state = client_state();
+        state.requests[0].options = vec![RequestOption {
+            id: "approve".into(),
+            label: "Approve".into(),
+            kind: OptionKind::Approve,
+            style: "default".into(),
+            requires_text: false,
+            text_placeholder: None,
+            destructive: false,
+            foreground: false,
+        }];
+        let mut app = AppState::new(state);
+        let commands = app.handle_key(key(KeyCode::Char('a')));
+        let [RuntimeCommand::SubmitOption(params)] = commands.as_slice() else {
+            panic!("expected an approve submit");
+        };
+        assert_eq!(params.expected_request_digest, "digest");
+
+        // A private signing context is what the screen shows; it wins over
+        // the legacy top-level digest.
+        app.client_state.requests[0].signing = Some(nod_proto::RequestSigningContext {
+            version: nod_proto::REQUEST_DIGEST_VERSION.into(),
+            recipients_commitment: "a".repeat(64),
+            request_digest: "c".repeat(64),
+        });
+        let commands = app.handle_key(key(KeyCode::Char('a')));
+        let [RuntimeCommand::SubmitOption(params)] = commands.as_slice() else {
+            panic!("expected an approve submit");
+        };
+        assert_eq!(params.expected_request_digest, "c".repeat(64));
+
+        app.client_state.requests[0].signing = None;
+        app.client_state.requests[0].request_digest = None;
+        assert!(app.handle_key(key(KeyCode::Char('a'))).is_empty());
+        assert_eq!(app.error(), Some(REQUEST_CHANGED_ERROR));
     }
 
     #[test]

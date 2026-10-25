@@ -113,19 +113,20 @@ fn request_from_rows(row: SqliteRow, related: RelatedRows) -> Result<DecisionReq
         private_recipients: false,
         signing: None,
     };
-    let digest = if let Some(field) = &request.answer_field {
-        nod_proto::value_signing::request_digest_v3(&request.to_wire(), &commitment, field)
+    let (version, digest) = if let Some(field) = &request.answer_field {
+        (
+            nod_proto::value_signing::VALUE_REQUEST_DIGEST_VERSION,
+            nod_proto::value_signing::value_request_digest(&request.to_wire(), &commitment, field),
+        )
     } else {
-        nod_proto::request_digest_v2(&request.to_wire(), &commitment)
-    }
-    .map_err(|err| ApiError::Internal(err.to_string()))?;
+        (
+            nod_proto::REQUEST_DIGEST_VERSION,
+            nod_proto::request_digest_v1(&request.to_wire(), &commitment),
+        )
+    };
+    let digest = digest.map_err(|err| ApiError::Internal(err.to_string()))?;
     request.signing = Some(nod_proto::RequestSigningContext {
-        version: if request.answer_field.is_some() {
-            nod_proto::value_signing::VALUE_REQUEST_DIGEST_VERSION
-        } else {
-            nod_proto::PRIVATE_REQUEST_DIGEST_VERSION
-        }
-        .to_string(),
+        version: version.to_string(),
         recipients_commitment: commitment,
         request_digest: digest,
     });

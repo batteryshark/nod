@@ -108,48 +108,22 @@ struct NodMacApp: App {
 }
 
 private enum NodMenuBarIcon {
+    /// The menu-bar glyph is the Nod mascot line art, shipped as a template
+    /// image set in the shared asset catalog: an 18 pt bitmap (18px @1x,
+    /// 36px @2x) whose shape lives in alpha, so macOS tints it for light and
+    /// dark menu bars and for the selected (inverted) state.
+    ///
+    /// Asset catalog wiring matches how the app icons already ship: the mac
+    /// and iOS targets both compile `Shared/Assets.xcassets`. The bare SwiftPM
+    /// executable excludes the catalog (see `Package.swift`), so a missing
+    /// image is reported instead of crashing; it is only used as a compile check.
     // NSImage is not Sendable; the only consumer is the main-actor view body.
     @MainActor static let image: NSImage = {
-        let image = NSImage(size: NSSize(width: 18, height: 18))
-        image.lockFocus()
-
-        NSColor.black.setFill()
-        let headPath = NSBezierPath()
-        headPath.move(to: CGPoint(x: 2.2, y: 7.2))
-        headPath.curve(
-            to: CGPoint(x: 8.8, y: 15.0),
-            controlPoint1: CGPoint(x: 1.7, y: 12.0),
-            controlPoint2: CGPoint(x: 4.6, y: 15.5)
-        )
-        headPath.curve(
-            to: CGPoint(x: 16.4, y: 7.8),
-            controlPoint1: CGPoint(x: 13.1, y: 14.5),
-            controlPoint2: CGPoint(x: 17.0, y: 12.3)
-        )
-        headPath.curve(
-            to: CGPoint(x: 12.5, y: 1.7),
-            controlPoint1: CGPoint(x: 15.8, y: 3.9),
-            controlPoint2: CGPoint(x: 14.4, y: 2.1)
-        )
-        headPath.curve(
-            to: CGPoint(x: 5.0, y: 2.3),
-            controlPoint1: CGPoint(x: 9.0, y: 1.1),
-            controlPoint2: CGPoint(x: 6.2, y: 1.4)
-        )
-        headPath.curve(
-            to: CGPoint(x: 2.2, y: 7.2),
-            controlPoint1: CGPoint(x: 3.0, y: 3.7),
-            controlPoint2: CGPoint(x: 2.3, y: 5.4)
-        )
-        headPath.close()
-        headPath.fill()
-
-        NSGraphicsContext.current?.compositingOperation = .clear
-        NSBezierPath(roundedRect: NSRect(x: 6.8, y: 6.0, width: 2.0, height: 4.2), xRadius: 1.0, yRadius: 1.0).fill()
-        NSBezierPath(roundedRect: NSRect(x: 11.6, y: 5.5, width: 2.0, height: 4.2), xRadius: 1.0, yRadius: 1.0).fill()
-        NSGraphicsContext.current?.compositingOperation = .sourceOver
-
-        image.unlockFocus()
+        guard let image = NSImage(named: "NodMenuBarIcon") else {
+            NSLog("Nod menu bar icon missing: NodMenuBarIcon is not in the asset catalog")
+            return NSImage(size: NSSize(width: 18, height: 18))
+        }
+        image.size = NSSize(width: 18, height: 18)
         image.isTemplate = true
         return image
     }()

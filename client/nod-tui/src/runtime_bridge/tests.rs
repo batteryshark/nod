@@ -67,7 +67,7 @@ async fn submit_option_surfaces_runtime_errors() {
         &mut runtime,
         RuntimeCommand::SubmitOption(SubmitOptionParams {
             answer_value: None,
-            expected_request_digest: None,
+            expected_request_digest: "digest".to_string(),
             request_id: "missing".to_string(),
             option_id: "approve".to_string(),
             text: None,

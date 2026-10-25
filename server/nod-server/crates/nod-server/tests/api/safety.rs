@@ -98,10 +98,9 @@ async fn cancellation_and_last_per_user_decision_have_one_winner() {
             .await;
         let id = created["request_id"].as_str().unwrap();
         let cancel = format!("/api/v1/requests/{id}/cancel");
-        let decide = format!("/api/v1/requests/{id}/options/approve");
         let (cancelled, decided) = tokio::join!(
             app.request(Method::POST, &cancel, ADMIN, None),
-            app.request(Method::POST, &decide, Some(&token), Some(json!({}))),
+            app.decide(&token, id, "approve", json!({})),
         );
         assert!(
             matches!(
@@ -122,9 +121,12 @@ async fn client_signer_accepts_private_http_and_websocket_projections() {
     let address = listener.local_addr().unwrap();
     let router = app.router.clone();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let (mut socket, _) = connect_async(format!("ws://{address}/api/v1/sync?token={token}"))
-        .await
-        .unwrap();
+    let (mut socket, _) = connect_async(sync_upgrade_request(
+        &format!("ws://{address}/api/v1/sync"),
+        &token,
+    ))
+    .await
+    .unwrap();
     socket.next().await.unwrap().unwrap();
     for resolution in ["shared", "per_user"] {
         for transport in ["http", "websocket"] {
@@ -221,9 +223,12 @@ async fn revocation_closes_a_socket_without_client_cooperation() {
     let address = listener.local_addr().unwrap();
     let router = app.router.clone();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let (mut socket, _) = connect_async(format!("ws://{address}/api/v1/sync?token={token}"))
-        .await
-        .unwrap();
+    let (mut socket, _) = connect_async(sync_upgrade_request(
+        &format!("ws://{address}/api/v1/sync"),
+        &token,
+    ))
+    .await
+    .unwrap();
     socket.next().await.unwrap().unwrap();
     let (status, _) = app
         .request(

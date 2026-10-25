@@ -68,6 +68,9 @@ struct RequestDetail: View {
         } else if request.isValueRequest && request.answerField == nil {
           Text("Open in an updated Nod app to answer this request.")
         }
+        if store.needsAnswer(request) && !NodStore.isAnswerable(request) {
+          Text("Request changed. Review it again before answering.").foregroundStyle(.red)
+        }
         if let expiresAt = request.expiresAt, request.status == .pending {
           Label { Text("Expires ") + Text(expiresAt, style: .relative) } icon: { Image(systemName: "clock") }
             .font(.callout)
@@ -79,6 +82,7 @@ struct RequestDetail: View {
           }) { option in
             Button("Resume \(option.label)") { perform(option) }
               .frame(minHeight: 44)
+              .disabled(!canAnswer)
           }
         }
         if request.bodyMarkdown.isEmpty, !request.summary.isEmpty { Text(request.summary).textSelection(.enabled) }
@@ -123,7 +127,7 @@ struct RequestDetail: View {
         #if os(iOS)
         if !request.isValueRequest && !store.acknowledgeOnOpen && request.status == .pending && request.options.isEmpty {
           Button("Acknowledge") { Task { await store.dismissIfInformational(request: request, serverId: serverId) } }
-            .disabled(store.isSubmitting(request.id))
+            .disabled(store.isSubmitting(request.id) || !NodStore.isAnswerable(request))
         }
         #endif
       }
@@ -266,9 +270,9 @@ struct RequestDetail: View {
     return Binding(get: { store.responseDrafts[key, default: ""] }, set: { store.responseDrafts[key] = $0 })
   }
   private var canAnswer: Bool {
-    guard store.needsAnswer(request), !store.isSubmitting(request.id), store.answerAttempt(requestId: request.id, serverId: serverId) == nil else { return false }
+    guard store.needsAnswer(request), NodStore.isAnswerable(request), !store.isSubmitting(request.id), store.answerAttempt(requestId: request.id, serverId: serverId) == nil else { return false }
     guard request.isValueRequest else { return true }
-    guard let field = request.answerField, request.signing?.requestDigest != nil else { return false }
+    guard let field = request.answerField else { return false }
     return field.isValid(valueBinding.wrappedValue) && valueNotes.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).utf8.count <= 16384
   }
 

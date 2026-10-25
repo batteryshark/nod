@@ -47,17 +47,24 @@ impl NodApi {
         })
     }
 
+    /// The sync socket URL. The device token is never part of it; it travels
+    /// in the upgrade request's `Authorization` header (`websocket_authorization`).
     pub fn websocket_url(&self) -> Result<Url> {
-        let token = self
-            .token
-            .as_deref()
-            .ok_or_else(|| anyhow!("device token is missing"))?;
         let mut url = self.base_url.clone();
         url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
             .map_err(|_| anyhow!("could not set websocket scheme"))?;
         url.set_path(&join_path(self.base_url.path(), "/api/v1/sync"));
-        url.query_pairs_mut().clear().append_pair("token", token);
+        url.set_query(None);
         Ok(url)
+    }
+
+    /// The `Authorization: Bearer <device token>` value for the sync upgrade.
+    pub fn websocket_authorization(&self) -> Result<String> {
+        let token = self
+            .token
+            .as_deref()
+            .ok_or_else(|| anyhow!("device token is missing"))?;
+        Ok(format!("Bearer {token}"))
     }
 
     pub async fn enroll(&self, request: EnrollDeviceRequest<'_>) -> Result<EnrollDeviceResponse> {
@@ -579,6 +586,28 @@ mod tests {
         assert!(error.contains("GET /api/v1/sync failed with 502"));
         assert!(!error.contains("secret"));
         assert!(!error.contains('?'));
+    }
+
+    #[test]
+    fn websocket_url_carries_no_token_and_authorization_is_a_bearer_header() {
+        let api = NodApi::new(
+            "https://nod.example.com/base/",
+            Some("nod_device_secret".into()),
+        )
+        .unwrap();
+        let url = api.websocket_url().unwrap();
+        assert_eq!(url.as_str(), "wss://nod.example.com/base/api/v1/sync");
+        assert!(url.query().is_none());
+        assert_eq!(
+            api.websocket_authorization().unwrap(),
+            "Bearer nod_device_secret"
+        );
+        let anonymous = NodApi::new("http://localhost:8767", None).unwrap();
+        assert_eq!(
+            anonymous.websocket_url().unwrap().as_str(),
+            "ws://localhost:8767/api/v1/sync"
+        );
+        assert!(anonymous.websocket_authorization().is_err());
     }
 
     #[test]

@@ -56,32 +56,17 @@ final class NodNotificationPolicyTests: XCTestCase {
     }
   }
 
-  func testNativeActionsKeepCustomLabelsIdsAndForegroundRequirements() throws {
-    let request = try makeRequest(notification: [:], options: [
-      ["id": "deploy_staging", "label": "Deploy to staging", "kind": "approve", "style": "default", "requires_text": false, "destructive": false, "foreground": true]
-    ])
-    let action = try XCTUnwrap(NodNotificationController.actions(for: request).first)
-    XCTAssertEqual(action.identifier, "nod.option.deploy_staging")
-    XCTAssertEqual(action.title, "Deploy to staging")
-    XCTAssertTrue(action.options.contains(.foreground))
-    XCTAssertTrue(action.options.contains(.authenticationRequired))
-  }
-
-  func testNativeTextActionOffersOptionalInputAndOpensForeground() throws {
-    let request = try makeRequest(notification: [:], options: [
-      ["id": "notes", "label": "Add notes", "kind": "custom", "style": "default", "requires_text": true, "destructive": false, "foreground": false]
-    ])
-    let action = try XCTUnwrap(NodNotificationController.actions(for: request).first as? UNTextInputNotificationAction)
-    XCTAssertEqual(action.identifier, "nod.option.notes")
-    XCTAssertTrue(action.options.contains(.foreground))
-  }
-
-  func testLongOrRedactedOptionSetsOfferOnlyOpen() throws {
-    let option: [String: Any] = ["id": "custom", "label": "Private label", "kind": "custom", "style": "default", "requires_text": false, "destructive": false, "foreground": false]
-    let redacted = try makeRequest(notification: ["redact": true], options: [option])
-    let long = try makeRequest(notification: [:], options: Array(repeating: option, count: 4))
-    for request in [redacted, long] {
-      XCTAssertEqual(NodNotificationController.actions(for: request).map(\.identifier), ["open"])
+  func testEveryNotificationCategoryOffersOnlyForegroundOpen() {
+    // Push text is relay-controlled; an alert must route to the app and never
+    // offer an approve, reject or text action that would sign unseen content.
+    let categories = NodNotificationController.categories()
+    XCTAssertEqual(Set(categories.map(\.identifier)), ["NOD_DEFAULT", "NOD_APPROVAL", "NOD_APPROVAL_TEXT"])
+    for category in categories {
+      XCTAssertEqual(category.actions.map(\.identifier), ["open"], category.identifier)
+      for action in category.actions {
+        XCTAssertTrue(action.options.contains(.foreground), category.identifier)
+        XCTAssertFalse(action is UNTextInputNotificationAction, category.identifier)
+      }
     }
   }
 

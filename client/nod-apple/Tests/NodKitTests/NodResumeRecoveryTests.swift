@@ -54,6 +54,7 @@ private actor ResumeFixture {
         "id": "info", "request_id": "info", "channel_id": "a", "recipients": [], "decision_resolution": "shared",
         "title": "Fixture", "summary": "", "body_markdown": "", "fields": [], "links": [], "notification": ["redact": false],
         "status": status, "created_at": "2026-10-21T00:00:00Z", "updated_at": "2026-10-21T00:00:00Z", "options": actionable ? [["id": "approve", "label": "Approve"]] : [], "decisions": [],
+        "signing": ["version": "nod-request-v1", "recipients_commitment": "fixture", "request_digest": "rendered-digest"],
       ]] as [[String: Any]]
       if otherRow {
         var rows = state["requests"] as! [[String: Any]]

@@ -68,7 +68,8 @@ Quorum:
 - Implement quorum in the issuer:
   1. Send a `per_user` request.
   2. Poll or wait on `/api/v1/requests/{request_id}/decision`.
-  3. Count acceptable entries in `decisions`.
+  3. Run each entry in `decisions` through `nod-verify --expect-user <user>`
+     with your pinned keys; count only entries that exit 0.
   4. Act when the external quorum rule is satisfied.
   5. Optionally ignore late responses or cancel pending work in the issuer.
 
@@ -108,14 +109,16 @@ are omitted, Nod uses generic safe defaults.
 
 Requests do not set notification sound. Sound comes from device/server
 notification preferences. APNs delivery is best effort; WebSocket sync and
-decision reads are the source of truth.
+decision reads are the source of truth for state, and `nod-verify` against
+pinned device keys is the final authority on whether a decision counts.
 
 ## Callback Behavior
 
 When `callback_url` is set, Nod sends an unsigned, best-effort POST after a
 decision is recorded. Treat it as a wake-up hint only: authenticate the receiver
-route yourself, ignore forged or duplicate deliveries, and read or wait for the
-decision through Nod's authenticated API before acting.
+route yourself, ignore forged or duplicate deliveries, and verify the decision
+with `nod-verify` against your pinned keys before acting (see
+`validation-and-privacy.md`, "Verify Before Acting").
 
 The payload contains:
 
@@ -132,7 +135,17 @@ The payload contains:
     "text": "ship it",
     "actor_user_id": "owner",
     "actor_device_id": "device_123",
-    "signature": null,
+    "signature": {
+      "key_id": "device-key-id",
+      "algorithm": "p256_ecdsa_sha256",
+      "nonce": "unique-device-nonce",
+      "signed_at": "2026-06-10T16:29:59.000Z",
+      "request_digest": "<64 hex chars: digest of the created request>",
+      "signing_payload": "nod-decision-v1\nrequest_id:req_123\n…",
+      "signature": "<base64url DER ECDSA signature>",
+      "verified": true,
+      "public_key": "<base64url P-256 public key the server attached>"
+    },
     "resolved_at": "2026-06-10T16:30:00.000Z"
   },
   "decisions": [],
@@ -140,6 +153,12 @@ The payload contains:
 }
 ```
 
+Every device decision carries a `signature` record. `"signature": null` is a
+verification failure, not an unsigned-but-valid decision: `nod-verify` exits 1
+on it, and so should you. Do not trust `verified` or `public_key` from the
+server either; the verifier recomputes everything from your create response and
+your pinned keys.
+
 Callback failures are logged and audited, but they do not undo the recorded
 decision. Issuers that need a durable or security-sensitive result must read or
-wait for the decision.
+wait for the decision and pass it through `nod-verify`.

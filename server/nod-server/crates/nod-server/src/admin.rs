@@ -1,6 +1,8 @@
+use std::time::Duration;
+
 use axum::{
     extract::State,
-    http::header,
+    http::{header, HeaderMap, Uri},
     response::{Html, IntoResponse, Response},
     Json,
 };
@@ -100,15 +102,23 @@ fn admin_html_response(html: String) -> Response {
         .into_response()
 }
 
+/// Flat delay on a failed login so online guessing of the admin token is
+/// bounded per connection without any per-IP state.
+const FAILED_LOGIN_DELAY: Duration = Duration::from_millis(500);
+
 pub(crate) async fn create_admin_session(
     State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
     Json(req): Json<AdminSessionRequest>,
 ) -> Result<Response, ApiError> {
     if !auth::admin_token_matches(req.token.trim(), state.config.admin_token()) {
+        tokio::time::sleep(FAILED_LOGIN_DELAY).await;
         return Err(ApiError::Forbidden);
     }
 
-    let cookie = auth::create_admin_session_cookie(state.config.admin_token());
+    let secure = auth::request_over_tls(&headers, &uri);
+    let cookie = auth::create_admin_session_cookie(state.config.admin_token(), secure);
     Ok((
         [(header::SET_COOKIE, cookie)],
         Json(AdminSessionResponse::ok()),

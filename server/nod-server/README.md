@@ -14,9 +14,9 @@ This service lives under `server/nod-server` in the Nod monorepo. The native App
 - Admin-created users/channels, short-lived enrollment codes, device tokens, and issuer tokens
 - Request payloads with rendered message snapshots, fields, links, optional image URL, shared notification redaction metadata, idempotency/dedupe keys, and structured options
 - Agent-friendly decision API, wait API, and optional callback wake-up URL
-- Signed device decisions using P-256 ECDSA/SHA-256 keys registered during enrollment
+- Signed device decisions using P-256 ECDSA/SHA-256 keys registered during enrollment; a signing key is mandatory, and `nod-verify` checks receipts offline against pinned keys
 - User-targeted delivery with shared or per-user decision resolution
-- WebSocket sync for `created` / `resolved` / `expired` / `cancelled` / `cleared` / subscription / channel-update events
+- WebSocket sync for `created` / `resolved` / `expired` / `cancelled` / `cleared` / subscription / channel-update events, authenticated by the device token in the upgrade request's `Authorization` header
 - Notification delivery over either remote push or WebSocket/local notifications, with the APNs relay as an optional remote-push route
 - Server-hosted admin panel at `/admin` for users, channels, devices, enrollment codes, issuer tokens, and health
 - Docker Compose for one-command deploys
@@ -280,10 +280,11 @@ revoked `smoke-` row remains per run).
 Request lists batch their related data and support channel/search filters plus
 opaque history cursors. Pending requests survive terminal retention. Clearing a
 channel hides handled history and preserves pending work; explicit targeting
-overrides subscriptions. Current clients verify the recipient-private v2
-signing context while original v1 signatures and single-recipient compatibility
-remain supported. Device revocation and user deletion retain evidence and
-verification keys.
+overrides subscriptions. Clients recompute and sign the salted `signing`
+context of the card they rendered (`nod-request-v1` for ordinary cards,
+`nod-request-v2` for value cards); decisions recorded under the older encoders
+stay verifiable (see [docs/signing.md](../../docs/signing.md)). Device
+revocation and user deletion retain evidence and verification keys.
 
 Device notification preferences synchronize mute, snooze, and hidden previews
 through the server; they affect APNs as well as current clients' local alerts,
