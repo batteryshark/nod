@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.2.1 - 2026-10-25
+
+- See [docs/release-notes/v1.2.1.md](docs/release-notes/v1.2.1.md).
+
 ## Unreleased
 
 - iOS: the connection status is a navigation-bar indicator instead of a bottom
