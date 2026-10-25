@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/nod-icon.png" width="180" alt="Nod">
+  <img src="assets/nod-banner.jpg" width="100%" alt="Nod — Agentic Approvals">
 </p>
 
 # Nod
