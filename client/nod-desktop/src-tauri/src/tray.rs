@@ -14,6 +14,10 @@ pub(crate) fn install_tray(app: &mut App) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("main")
         .icon(nod_tray_icon()?)
+        // The tray art is the Nod mascot glyph as a black-plus-alpha template.
+        // macOS only: let AppKit tint it for light/dark menu bars and the
+        // selected state. Windows and Linux ignore this and draw the PNG as-is.
+        .icon_as_template(true)
         .tooltip("Nod")
         .menu(&menu)
         .show_menu_on_left_click(true)
