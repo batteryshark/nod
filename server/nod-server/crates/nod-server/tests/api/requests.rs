@@ -412,7 +412,7 @@ async fn v1_signed_decision_records_verified_signature() {
     let text = "ship it";
     let payload = decision_payload(DecisionPayload {
         request_id,
-        request_digest: &request_digest,
+        request_digest,
         option_id: "approve",
         option_kind: "approve",
         user_id: "owner",
