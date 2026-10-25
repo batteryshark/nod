@@ -117,30 +117,13 @@ pub enum PushCategory {
 }
 
 impl PushCategory {
-    pub fn for_request(request: &DecisionRequest) -> Self {
-        if request.answer_field.is_some() {
-            return Self::Default;
-        }
-        let standard = [
-            ("approve", "Approve", crate::models::OptionKind::Approve),
-            ("reject", "Reject", crate::models::OptionKind::Reject),
-        ];
-        let matches = request.options.len() == standard.len()
-            && standard.iter().all(|(id, label, kind)| {
-                request.options.iter().any(|option| {
-                    option.id == *id
-                        && option.label == *label
-                        && option.kind == *kind
-                        && !option.requires_text
-                        && !option.foreground
-                        && !(option.destructive && *id == "approve")
-                })
-            });
-        if matches {
-            Self::Approval
-        } else {
-            Self::Default
-        }
+    /// Every push is `NOD_DEFAULT`: open the app and review. Lock-screen
+    /// approve/reject actions would let a device sign a request whose real
+    /// content the user never saw, because the push text is relay-controlled
+    /// and is not bound to the request digest. The `Approval` variants remain
+    /// only so older clients' category registrations still deserialize.
+    pub fn for_request(_request: &DecisionRequest) -> Self {
+        Self::Default
     }
 
     pub fn as_str(self) -> &'static str {

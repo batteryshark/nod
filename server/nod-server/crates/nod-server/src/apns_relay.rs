@@ -456,6 +456,19 @@ mod tests {
         ApnsRelayProvider::new(config).unwrap();
     }
     #[test]
+    fn standard_approve_reject_pair_no_longer_requests_lock_screen_actions() {
+        let mut request = apns_request();
+        request.options = serde_json::from_value(serde_json::json!([
+            {"id":"approve","kind":"approve","label":"Approve"},
+            {"id":"reject","kind":"reject","label":"Reject"}
+        ]))
+        .unwrap();
+        assert_eq!(PushCategory::for_request(&request), PushCategory::Default);
+        let relay = build_relay_request(&apns_device(), &request).unwrap();
+        assert_eq!(relay.notification.category, "NOD_DEFAULT");
+    }
+
+    #[test]
     fn title_only_request_has_a_safe_body_and_custom_options_use_open_fallback() {
         let mut request = apns_request();
         request.summary.clear();
