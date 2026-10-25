@@ -568,7 +568,7 @@ mod tests {
         let signer = new_signer("owner", "device-1", "key-1");
         let digest = request.request_digest.clone().unwrap();
         let decision = sign_decision(&signer, &request, &digest, "approve", Some("ship it"), None);
-        let verified = verify(&request, &decision, &[signer.pinned.clone()]).unwrap();
+        let verified = verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap();
         assert_eq!(verified.user_id, "owner");
         assert_eq!(verified.device_id, "device-1");
         assert_eq!(verified.key_id, "key-1");
@@ -584,7 +584,7 @@ mod tests {
         let signer = new_signer("platform", "device-2", "key-2");
         let digest = request.signing.as_ref().unwrap().request_digest.clone();
         let decision = sign_decision(&signer, &request, &digest, "reject", None, None);
-        let verified = verify(&request, &decision, &[signer.pinned.clone()]).unwrap();
+        let verified = verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap();
         assert_eq!(verified.digest_version, DigestVersion::V2);
         assert_eq!(verified.option_kind, OptionKind::Reject);
     }
@@ -605,7 +605,7 @@ mod tests {
             decimal: "5".to_string(),
         };
         let decision = sign_decision(&signer, &request, &digest, "approve", None, Some(&answer));
-        let verified = verify(&request, &decision, &[signer.pinned.clone()]).unwrap();
+        let verified = verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap();
         assert_eq!(verified.digest_version, DigestVersion::V3);
 
         let mut tampered = decision.clone();
@@ -613,7 +613,7 @@ mod tests {
             decimal: "50".to_string(),
         });
         assert!(matches!(
-            verify(&request, &tampered, &[signer.pinned.clone()]).unwrap_err(),
+            verify(&request, &tampered, std::slice::from_ref(&signer.pinned)).unwrap_err(),
             ReceiptError::SigningPayloadMismatch
         ));
     }
@@ -626,7 +626,7 @@ mod tests {
         let signer = new_signer("owner", "device-1", "key-1");
         let digest = request.request_digest.clone().unwrap();
         let decision = sign_decision(&signer, &request, &digest, "dismiss", None, None);
-        let verified = verify(&request, &decision, &[signer.pinned.clone()]).unwrap();
+        let verified = verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap();
         assert_eq!(verified.option_kind, OptionKind::Dismiss);
     }
 
@@ -638,7 +638,7 @@ mod tests {
         let mut decision = sign_decision(&signer, &request, &digest, "approve", None, None);
         decision.signature = None;
         assert!(matches!(
-            verify(&request, &decision, &[signer.pinned.clone()]).unwrap_err(),
+            verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap_err(),
             ReceiptError::MissingSignature
         ));
     }
@@ -654,7 +654,7 @@ mod tests {
         let mut other = new_signer("owner", "device-1", "key-1");
         other.pinned.public_key = generate_signing_key().public_key;
         assert!(matches!(
-            verify(&request, &decision, &[other.pinned.clone()]).unwrap_err(),
+            verify(&request, &decision, std::slice::from_ref(&other.pinned)).unwrap_err(),
             ReceiptError::SignatureInvalid(SigningError::SignatureMismatch)
         ));
 
@@ -664,14 +664,14 @@ mod tests {
         let mut forged = sign_decision(&attacker, &request, &digest, "approve", None, None);
         forged.signature.as_mut().unwrap().public_key = Some(attacker.pinned.public_key.clone());
         assert!(matches!(
-            verify(&request, &forged, &[signer.pinned.clone()]).unwrap_err(),
+            verify(&request, &forged, std::slice::from_ref(&signer.pinned)).unwrap_err(),
             ReceiptError::SignatureInvalid(SigningError::SignatureMismatch)
         ));
 
         // Unknown (user, key_id) is reported as such.
         let unrelated = new_signer("someone-else", "device-9", "key-9");
         assert!(matches!(
-            verify(&request, &decision, &[unrelated.pinned.clone()]).unwrap_err(),
+            verify(&request, &decision, std::slice::from_ref(&unrelated.pinned)).unwrap_err(),
             ReceiptError::UnknownKey { .. }
         ));
 
@@ -693,7 +693,7 @@ mod tests {
         let mut shown = request.clone();
         shown.title = "Approve production deploy (and delete the database)".to_string();
         assert!(matches!(
-            verify(&shown, &decision, &[signer.pinned.clone()]).unwrap_err(),
+            verify(&shown, &decision, std::slice::from_ref(&signer.pinned)).unwrap_err(),
             ReceiptError::RequestDigestMismatch { .. }
         ));
     }
@@ -710,7 +710,7 @@ mod tests {
         flipped.option_id = "approve".to_string();
         flipped.option_kind = OptionKind::Approve;
         assert!(matches!(
-            verify(&request, &flipped, &[signer.pinned.clone()]).unwrap_err(),
+            verify(&request, &flipped, std::slice::from_ref(&signer.pinned)).unwrap_err(),
             ReceiptError::SigningPayloadMismatch
         ));
 
@@ -718,7 +718,7 @@ mod tests {
         let mut kind_only = decision.clone();
         kind_only.option_kind = OptionKind::Approve;
         assert!(matches!(
-            verify(&request, &kind_only, &[signer.pinned.clone()]).unwrap_err(),
+            verify(&request, &kind_only, std::slice::from_ref(&signer.pinned)).unwrap_err(),
             ReceiptError::OptionKindMismatch { .. }
         ));
 
@@ -726,7 +726,7 @@ mod tests {
         let mut unknown = decision.clone();
         unknown.option_id = "deploy_everything".to_string();
         assert!(matches!(
-            verify(&request, &unknown, &[signer.pinned.clone()]).unwrap_err(),
+            verify(&request, &unknown, std::slice::from_ref(&signer.pinned)).unwrap_err(),
             ReceiptError::UnknownOption(_)
         ));
     }
@@ -741,7 +741,7 @@ mod tests {
         let mut text = decision.clone();
         text.text = Some("yes, and also rm -rf".to_string());
         assert!(matches!(
-            verify(&request, &text, &[signer.pinned.clone()]).unwrap_err(),
+            verify(&request, &text, std::slice::from_ref(&signer.pinned)).unwrap_err(),
             ReceiptError::SigningPayloadMismatch
         ));
 
@@ -758,21 +758,26 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            verify(&request, &unsigned, &[signer.pinned.clone()]).unwrap_err(),
+            verify(&request, &unsigned, std::slice::from_ref(&signer.pinned)).unwrap_err(),
             ReceiptError::SignatureInvalid(_)
         ));
 
         let mut algorithm = decision.clone();
         algorithm.signature.as_mut().unwrap().algorithm = "ed25519".to_string();
         assert!(matches!(
-            verify(&request, &algorithm, &[signer.pinned.clone()]).unwrap_err(),
+            verify(&request, &algorithm, std::slice::from_ref(&signer.pinned)).unwrap_err(),
             ReceiptError::UnsupportedAlgorithm(_)
         ));
 
         let mut other_request = decision.clone();
         other_request.request_id = "req-2".to_string();
         assert!(matches!(
-            verify(&request, &other_request, &[signer.pinned.clone()]).unwrap_err(),
+            verify(
+                &request,
+                &other_request,
+                std::slice::from_ref(&signer.pinned)
+            )
+            .unwrap_err(),
             ReceiptError::RequestIdMismatch { .. }
         ));
     }
@@ -787,7 +792,7 @@ mod tests {
         let lenient = verify_decision_receipt(ReceiptVerificationInput {
             request: &request,
             decision: &decision,
-            pinned_keys: &[signer.pinned.clone()],
+            pinned_keys: std::slice::from_ref(&signer.pinned),
             now: later,
             max_clock_skew: None,
             strict_time: false,
@@ -798,7 +803,7 @@ mod tests {
             verify_decision_receipt(ReceiptVerificationInput {
                 request: &request,
                 decision: &decision,
-                pinned_keys: &[signer.pinned.clone()],
+                pinned_keys: std::slice::from_ref(&signer.pinned),
                 now: later,
                 max_clock_skew: Some(Duration::hours(1)),
                 strict_time: true,
@@ -817,6 +822,6 @@ mod tests {
         // Same instant, different spelling: the server records what the client
         // sent but signs over the millisecond-UTC form.
         decision.signature.as_mut().unwrap().signed_at = "2026-05-28T14:05:00+02:00".to_string();
-        verify(&request, &decision, &[signer.pinned.clone()]).unwrap();
+        verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap();
     }
 }

@@ -56,14 +56,14 @@ jobs:
       # vendored-openssl statically builds appattest's OpenSSL so the release
       # binaries run without a system libssl on any of the five targets.
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }} -p nod-server -p nod-tui --features nod-server/vendored-openssl
+        run: cargo build --release --locked --target ${{ matrix.target }} -p nod-server -p nod-tui -p nod-verify --features nod-server/vendored-openssl
       - name: Package
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME}"
           [ "${GITHUB_REF_TYPE}" = "tag" ] || VERSION="dev-${GITHUB_SHA::7}"
           mkdir -p dist
-          for bin in nod-server nod-tui; do
+          for bin in nod-server nod-tui nod-verify; do
             if [ "${{ runner.os }}" = "Windows" ]; then
               7z a "dist/${bin}-${VERSION}-${{ matrix.target }}.zip" "./target/${{ matrix.target }}/release/${bin}.exe" > /dev/null
             else

@@ -13,6 +13,7 @@ members = [
     "client/nod-client-core",
     "client/nod-tui",
     "client/nod-desktop/src-tauri",
+    "tools/nod-verify",
 ]
 
 [workspace.package]
