@@ -19,10 +19,9 @@ struct NodRootView: View {
         if store.isRegistered { ConnectionStatusView() }
       }
       #else
+      // iOS shows connection state as a navigation-bar indicator: a bottom
+      // inset covers the tab bar and the detail's final controls.
       inboxContent
-        .safeAreaInset(edge: .bottom) {
-          if store.isRegistered { ConnectionStatusView() }
-        }
       #endif
     }
     .task {
@@ -95,6 +94,7 @@ struct NodPhoneInbox: View {
                 }
               }
             }
+            ToolbarItem(placement: .topBarLeading) { ConnectionStatusIndicator() }
           }
           .navigationDestination(for: InboxRoute.self) { route in
             switch route {
@@ -440,28 +440,63 @@ struct ConnectionStatusView: View {
         }
       }
       Spacer()
-      #if os(iOS)
-      Button { Task { await store.refresh(); store.connectSync() } } label: {
-        if store.isRefreshing { ProgressView().controlSize(.small) }
-        else { Label("Refresh", systemImage: "arrow.clockwise") }
-      }
-      .disabled(store.isRefreshing)
-      .labelStyle(.iconOnly)
-      .help("Refresh requests and retry connection")
-      #endif
     }
     .padding(.horizontal).padding(.vertical, 8)
     .background(.bar)
     .accessibilityElement(children: .contain)
   }
 
-  private var statusLabel: String {
+  private var statusLabel: String { connectionStatusLabel(store.syncPhase) }
+}
+
+private func connectionStatusLabel(_ phase: String) -> String {
+  switch phase {
+  case "current": return "Connected"
+  case "connecting": return "Connecting…"
+  case "reconciling": return "Updating requests…"
+  case "revoked": return "Device access revoked"
+  default: return "Offline — requests may be out of date"
+  }
+}
+
+#if os(iOS)
+/// Compact connection state for the iOS navigation bar; the menu carries the
+/// full status, last update and a refresh that also retries the sync socket.
+struct ConnectionStatusIndicator: View {
+  @EnvironmentObject private var store: NodStore
+
+  var body: some View {
+    Menu {
+      Section {
+        Text(connectionStatusLabel(store.syncPhase))
+        if !store.isSyncConnected, let date = store.lastSyncedAt {
+          Text("Last updated \(date.formatted(.relative(presentation: .named)))")
+        }
+      }
+      Button {
+        Task { await store.refresh(); store.connectSync() }
+      } label: {
+        Label("Refresh", systemImage: "arrow.clockwise")
+      }
+      .disabled(store.isRefreshing)
+    } label: {
+      icon
+    }
+    .accessibilityLabel("Connection")
+    .accessibilityValue(connectionStatusLabel(store.syncPhase))
+  }
+
+  @ViewBuilder private var icon: some View {
     switch store.syncPhase {
-    case "current": return "Connected"
-    case "connecting": return "Connecting…"
-    case "reconciling": return "Updating requests…"
-    case "revoked": return "Device access revoked"
-    default: return "Offline — requests may be out of date"
+    case "current":
+      Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+    case "connecting", "reconciling":
+      Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.secondary)
+    case "revoked":
+      Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+    default:
+      Image(systemName: "wifi.slash").foregroundStyle(.orange)
     }
   }
 }
+#endif

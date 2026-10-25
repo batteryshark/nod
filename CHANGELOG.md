@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- iOS: the connection status is a navigation-bar indicator instead of a bottom
+  bar that covered the tab bar and request controls.
+
 ## v1.2.0
 
 - Security: every client signs the digest of the request the user saw; a
