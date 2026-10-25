@@ -78,10 +78,14 @@ pub fn verify_value_decision_signature(
                 .map_err(|err| ApiError::BadRequest(err.to_string()))?,
         );
     } else {
-        candidates.push(
-            nod_proto::request_digest_legacy_line_snapshot(&wire)
+        // Prefer the digest actually stamped on the wire (the v1.1.0 shape),
+        // then fall back to recomputing the same encoder.
+        let legacy = match wire.request_digest.clone() {
+            Some(stamped) => stamped,
+            None => nod_proto::request_digest_legacy_line_snapshot(&wire)
                 .map_err(|err| ApiError::BadRequest(err.to_string()))?,
-        );
+        };
+        candidates.push(legacy);
         if let Some(context) = &wire.signing {
             candidates.push(
                 nod_proto::request_digest_v1(&wire, &context.recipients_commitment)

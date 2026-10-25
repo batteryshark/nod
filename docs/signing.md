@@ -31,6 +31,10 @@ None of these is issued for new cards, and none may be used to sign. A decision
 is accepted when its `request_digest` matches the output of any known encoder
 for that card's immutable content.
 
+`request.request_digest` at the top level of a full or single-recipient view
+stays for backward compatibility only: it is the frozen legacy line-snapshot
+value, while `signing.request_digest` carries the collapsed version.
+
 ## Client dispatch rule (follow-up client job)
 
 A received signing context is the value variant when the card carries an

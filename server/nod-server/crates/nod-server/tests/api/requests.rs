@@ -406,11 +406,7 @@ async fn v1_signed_decision_records_verified_signature() {
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
     let request_id = created["request_id"].as_str().unwrap();
-    // Old receipts bound the unsalted line-snapshot digest; the server must
-    // still accept it even though cards no longer carry it.
-    let created_wire: nod_proto::Request =
-        serde_json::from_value(created["request"].clone()).unwrap();
-    let request_digest = nod_proto::request_digest_legacy_line_snapshot(&created_wire).unwrap();
+    let request_digest = created["request"]["request_digest"].as_str().unwrap();
     let nonce = "nonce-1";
     let signed_at = "2026-05-31T12:00:00.000Z";
     let text = "ship it";
@@ -1003,11 +999,7 @@ async fn private_device_views_omit_v1_digest_while_legacy_receipts_still_verify(
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
     let request_id = created["request_id"].as_str().unwrap();
-    // An old receipt may bind the unsalted full-snapshot digest that private
-    // device views never expose.
-    let created_wire: nod_proto::Request =
-        serde_json::from_value(created["request"].clone()).unwrap();
-    let canonical_digest = nod_proto::request_digest_legacy_line_snapshot(&created_wire).unwrap();
+    let canonical_digest = created["request"]["request_digest"].as_str().unwrap();
 
     // Private projections hide unsalted v1 digests to prevent recipient guessing.
     for token in [paul_token, &maya_token] {
@@ -1029,7 +1021,7 @@ async fn private_device_views_omit_v1_digest_while_legacy_receipts_still_verify(
     }
 
     // Existing v1 receipts bound to an issuer's full snapshot remain valid.
-    let device_view_digest = canonical_digest.as_str();
+    let device_view_digest = canonical_digest;
     let nonce = "paul-nonce-1";
     let signed_at = "2026-06-10T12:00:00.000Z";
     let text = "looks good";

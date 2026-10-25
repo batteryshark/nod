@@ -135,9 +135,9 @@ request details are suppressed in redacted native alerts; full content remains
 in the authenticated inbox. Personal device `hide_content` overrides even the
 issuer's supplied preview text.
 
-The `request.signing` context is the only request digest the server issues.
-Ordinary cards pair `nod-request-v1` with `nod-decision-v1`; cards with an
-`answer_field` pair `nod-request-v2` with `nod-decision-v2`:
+The `request.signing` context carries the versioned request digest the server
+issues. Ordinary cards pair `nod-request-v1` with `nod-decision-v1`; cards with
+an `answer_field` pair `nod-request-v2` with `nod-decision-v2`:
 
 ```json
 {
@@ -150,11 +150,14 @@ Ordinary cards pair `nod-request-v1` with `nod-decision-v1`; cards with an
 Clients independently recompute the digest over the visible immutable content
 and salted recipient commitment before signing; they must reject an unknown
 context version or a mismatch. The server's secret per-request salt prevents
-guessing hidden recipient IDs from the commitment. The legacy unsalted
-`request.request_digest` field is no longer issued and is null in every
-projection. Historical receipts that bound it, or the old `nod-request-v2` /
-`nod-request-v3` tags, remain verifiable: the server recomputes the candidate
-digests for the card's content and accepts a matching one. See
+guessing hidden recipient IDs from the commitment. Issuer/admin full responses
+and single-recipient views also retain the top-level
+`request.request_digest` for backward compatibility; it is the frozen legacy
+line-snapshot value, unchanged from v1.1.0. Multi-recipient device projections
+omit it, which otherwise allows guessing hidden recipient IDs. Historical
+receipts that bound it, or the old `nod-request-v2` / `nod-request-v3` tags,
+remain verifiable: the server recomputes the candidate digests for the card's
+content and accepts a matching one. See
 [the signing note](../../../docs/signing.md) and the canonical implementations
 in [`nod-proto/src/signing.rs`](../../../nod-proto/src/signing.rs).
 

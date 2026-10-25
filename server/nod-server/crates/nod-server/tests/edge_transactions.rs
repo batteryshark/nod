@@ -22,9 +22,7 @@ async fn signed_nonce_rolls_back_with_journal_and_exact_retry_succeeds() {
     )
     .await;
     let id = created["request_id"].as_str().unwrap();
-    let digest = created["request"]["signing"]["request_digest"]
-        .as_str()
-        .unwrap();
+    let digest = created["request"]["request_digest"].as_str().unwrap();
     let payload = decision_payload(DecisionPayload {
         request_id: id,
         request_digest: digest,

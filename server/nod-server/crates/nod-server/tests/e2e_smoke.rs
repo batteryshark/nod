@@ -256,7 +256,7 @@ async fn run_smoke(base_url: &str, admin_token: &str) {
         .as_str()
         .expect("request id")
         .to_string();
-    let request_digest = created["request"]["signing"]["request_digest"]
+    let request_digest = created["request"]["request_digest"]
         .as_str()
         .expect("request digest")
         .to_string();
@@ -378,6 +378,10 @@ async fn run_smoke(base_url: &str, admin_token: &str) {
     }
 
     // Sign and submit the decision with the enrolled key.
+    let request_digest = created["request"]["signing"]["request_digest"]
+        .as_str()
+        .unwrap_or(&request_digest)
+        .to_string();
     let nonce = uuid::Uuid::new_v4().to_string();
     let signed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let text = "smoke approved";
