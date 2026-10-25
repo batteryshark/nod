@@ -82,7 +82,9 @@ server/nod-server/scripts/nod-smoke
       candidate in place, preserving the EXACT installed signing identity and
       designated requirement, keys and enrollment;
       no fresh-copy, uninstall, reset or re-enrollment requirement
-- [ ] AFTER install, ONE real many-option card is final Mac acceptance
+- [ ] AFTER install, ONE real many-option card is chief-owned post-install
+      smoke, NOT a release acceptance or publication gate (whole 1.1.0 already
+      principal accepted; no additional signoff)
 - [ ] Public Developer ID-signed, notarized, stapled DMG passes Gatekeeper
       with no override and preserves the bundle identifier; check this PUBLIC
       artifact SEPARATELY. Its certificate and designated requirement differ
@@ -94,8 +96,9 @@ server/nod-server/scripts/nod-smoke
 - [ ] Quit + relaunch → still enrolled
 - [ ] `spctl --assess --type execute -vv Nod.app` reports Notarized Developer ID
 
-Public DMG and tag remain held pending chief Developer ID verification,
-then ONE authorized `release-macos` run.
+Public DMG package verification is complete; tagging and publication follow
+remaining technical rollout gates and clean history scan, with no further
+principal acceptance.
 
 ## iOS — direct ad-hoc 1.1.0 handoff
 
