@@ -205,11 +205,14 @@ The clients register:
 - `NOD_APPROVAL`
 - `NOD_APPROVAL_TEXT`
 
-APNs uses approval categories only when the request has the exact supported
-option IDs and labels; other requests use Open Nod. Local notifications register
-request-specific actions for up to three options; longer or redacted requests
-open the app. Responses require device authentication. Notifications carry the
-originating device/server identity so responding does not depend on the server
+Every category offers a single foreground action, Open Nod. Notification text is
+produced by the server and forwarded by the push relay, so it is never treated
+as verified request content: no approve, reject or text-input action is offered
+from the lock screen or Notification Center, and nothing is signed until the
+request card has been opened and rendered in the app. `NOD_APPROVAL` and
+`NOD_APPROVAL_TEXT` stay registered so a push from an older server still shows.
+Local notifications always use `NOD_DEFAULT`. Notifications carry the
+originating device/server identity so opening does not depend on the server
 currently selected in the app.
 
 Local alerts use the same safe title/body projection as APNs. In Settings,

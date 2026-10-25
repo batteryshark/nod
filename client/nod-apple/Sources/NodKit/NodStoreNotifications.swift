@@ -1,22 +1,6 @@
 import Foundation
 
 extension NodStore {
-  func handleNotificationOption(target: NodNotificationTarget, optionId: String, text: String?) async -> Bool {
-    do {
-      try await ensureRuntimeStarted()
-      let profiles = runtime.state?.servers.map { NodServerProfile(id: $0.id, name: $0.name, baseURLString: $0.baseUrlString, deviceName: $0.deviceName, deviceId: $0.deviceId) } ?? servers
-      guard let serverId = NodNotificationPolicy.serverId(for: target, servers: profiles), let requestId = target.requestId else {
-        throw NodStoreError.ambiguousNotificationServer
-      }
-      let request = try await runtime.getRequest(serverId: serverId, requestId: requestId)
-      if request.isValueRequest {
-        await openNotification(target)
-        return true // Open only: never submit an unseen default from a notification.
-      }
-      return await submitNotificationOption(target: target, optionId: optionId, text: text)
-    } catch { mapRuntimeError(error); return false }
-  }
-
   public func requestNotifications(reportMissingGrant: Bool = true) async {
     if let issue = notificationRuntimeIssue() {
       notificationPermissionIssue = issue

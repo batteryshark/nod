@@ -137,19 +137,19 @@ public final class NodRuntimeClient: ObservableObject {
     return result.request
   }
 
-  public func submitRequestOption(serverId: String, requestId: String, optionId: String, text: String?, answerValue: NodAnswerValue? = nil, expectedRequestDigest: String? = nil) async throws {
-    var params: [String: Any] = ["server_id": serverId, "request_id": requestId, "option_id": optionId]
+  /// `expectedRequestDigest` is the `signing.request_digest` of the request
+  /// instance that was rendered; the runtime signs only a request matching it.
+  public func submitRequestOption(serverId: String, requestId: String, optionId: String, text: String?, answerValue: NodAnswerValue? = nil, expectedRequestDigest: String) async throws {
+    var params: [String: Any] = ["server_id": serverId, "request_id": requestId, "option_id": optionId, "expected_request_digest": expectedRequestDigest]
     if let text { params["text"] = text }
     if let answerValue { params["answer_value"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(answerValue)) }
-    if let expectedRequestDigest { params["expected_request_digest"] = expectedRequestDigest }
     try await call("submit_request_option", params)
   }
 
-  public func submitOption(requestId: String, optionId: String, text: String?, answerValue: NodAnswerValue? = nil, expectedRequestDigest: String? = nil) async throws {
-    var params: [String: Any] = ["request_id": requestId, "option_id": optionId]
+  public func submitOption(requestId: String, optionId: String, text: String?, answerValue: NodAnswerValue? = nil, expectedRequestDigest: String) async throws {
+    var params: [String: Any] = ["request_id": requestId, "option_id": optionId, "expected_request_digest": expectedRequestDigest]
     if let text { params["text"] = text }
     if let answerValue { params["answer_value"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(answerValue)) }
-    if let expectedRequestDigest { params["expected_request_digest"] = expectedRequestDigest }
     try await call("submit_option", params)
   }
 
