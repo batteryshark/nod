@@ -22,9 +22,24 @@ use sha2::{Digest, Sha256};
 
 use crate::request::{OptionKind, Request};
 
-/// Version tag prefixing the request digest snapshot.
+/// Version tag of the current ordinary (non-value) request digest. This is the
+/// structured encoder, and it pairs with [`DECISION_PAYLOAD_VERSION`]: these two
+/// are the only ordinary scheme the server issues.
 pub const REQUEST_DIGEST_VERSION: &str = "nod-request-v1";
-pub const PRIVATE_REQUEST_DIGEST_VERSION: &str = "nod-request-v2";
+/// Deprecated alias for [`REQUEST_DIGEST_VERSION`]. The constant used to name
+/// the structured encoder under its old `nod-request-v2` tag; it now names the
+/// same encoder under the collapsed `nod-request-v1` tag.
+#[deprecated(
+    note = "the structured ordinary encoder is nod-request-v1; use REQUEST_DIGEST_VERSION"
+)]
+pub const PRIVATE_REQUEST_DIGEST_VERSION: &str = REQUEST_DIGEST_VERSION;
+/// Frozen tag of the historical line-snapshot encoder. It shares the string
+/// with [`REQUEST_DIGEST_VERSION`] (it was the original v1) but not its bytes;
+/// it exists only to verify signatures already recorded.
+pub const LEGACY_LINE_SNAPSHOT_REQUEST_DIGEST_VERSION: &str = "nod-request-v1";
+/// Frozen tag the structured ordinary encoder carried before the two-digest
+/// collapse (`nod-request-v2`). Kept only so already-issued decisions verify.
+pub const LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION: &str = "nod-request-v2";
 /// Version tag prefixing the decision signing payload.
 pub const DECISION_PAYLOAD_VERSION: &str = "nod-decision-v1";
 
@@ -97,15 +112,19 @@ pub fn decision_signing_payload(input: DecisionSigningInput<'_>) -> String {
     .join("\n")
 }
 
-/// The digest over the immutable request snapshot (not delivery state or later
-/// decisions). This is what a client's signature binds to, and what the client
-/// can independently recompute to confirm it is approving the request it saw.
+/// Frozen digest over the original line-snapshot request encoding (recipients
+/// in the clear, tag `nod-request-v1`).
+///
+/// **Verification of stored signatures only, never issuance.** The server no
+/// longer stamps this digest on any card and no new signature binds it. It is
+/// kept byte-for-byte so decisions and audit records written before the digest
+/// collapse still verify.
 ///
 /// The snapshot includes the full recipient list, while per-user views filter
 /// recipients down to the viewing user — so for multi-recipient requests the
-/// digest a device view carries is server-attested (stamped from the full
+/// digest a device view carried was server-attested (stamped from the full
 /// snapshot before projection) rather than recomputable from the view alone.
-pub fn request_digest(request: &Request) -> Result<String, SigningError> {
+pub fn request_digest_legacy_line_snapshot(request: &Request) -> Result<String, SigningError> {
     let options = request
         .options
         .iter()
@@ -175,10 +194,48 @@ pub fn recipients_commitment(recipients: &[String], salt: &str) -> Result<String
     ))
 }
 
-/// Recompute the content digest of a private projection. The visible recipient
-/// list is a delivery view; only the immutable commitment participates in v2.
-/// The v1 content encoding stays frozen for historical signature verification.
+/// Deprecated alias for [`request_digest_legacy_line_snapshot`]. Kept so older
+/// call sites still compile; it must not be used for issuance.
+#[deprecated(note = "verification of stored signatures only, never issuance")]
+pub fn request_digest(request: &Request) -> Result<String, SigningError> {
+    request_digest_legacy_line_snapshot(request)
+}
+
+/// Recompute the content digest of the current ordinary signing context. The
+/// visible recipient list is a delivery view; only the immutable salted
+/// commitment participates. Emits tag [`REQUEST_DIGEST_VERSION`]
+/// (`nod-request-v1`).
+pub fn request_digest_v1(request: &Request, commitment: &str) -> Result<String, SigningError> {
+    structured_request_digest(request, commitment, REQUEST_DIGEST_VERSION)
+}
+
+/// Frozen structured encoding under its pre-collapse tag
+/// ([`LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION`], `nod-request-v2`).
+///
+/// **Verification of stored signatures only, never issuance.**
+pub fn request_digest_legacy_structured_v2(
+    request: &Request,
+    commitment: &str,
+) -> Result<String, SigningError> {
+    structured_request_digest(
+        request,
+        commitment,
+        LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION,
+    )
+}
+
+/// Deprecated alias for [`request_digest_v1`]. The function used to emit the
+/// `nod-request-v2` tag; it now emits the collapsed `nod-request-v1` tag.
+#[deprecated(note = "use request_digest_v1 (nod-request-v1)")]
 pub fn request_digest_v2(request: &Request, commitment: &str) -> Result<String, SigningError> {
+    request_digest_v1(request, commitment)
+}
+
+fn structured_request_digest(
+    request: &Request,
+    commitment: &str,
+    version: &str,
+) -> Result<String, SigningError> {
     if commitment.len() != 64 || !commitment.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(SigningError::InvalidRecipientCommitment);
     }
@@ -203,12 +260,38 @@ pub fn request_digest_v2(request: &Request, commitment: &str) -> Result<String, 
         "options": request.options,
     });
     Ok(sha256_hex(
-        format!(
-            "{PRIVATE_REQUEST_DIGEST_VERSION}\n{}\n",
-            serde_json::to_string(&content)?
-        )
-        .as_bytes(),
+        format!("{version}\n{}\n", serde_json::to_string(&content)?).as_bytes(),
     ))
+}
+
+/// Recompute the ordinary request digest for a received signing-context tag.
+///
+/// `nod-request-v1` selects the current structured encoder, `nod-request-v2`
+/// (when the card has no `answer_field`) selects the pre-collapse structured
+/// encoder. Any other tag returns `Ok(None)` so the caller keeps its existing
+/// unsupported-version error. A context carrying `recipients_commitment` never
+/// selects the legacy line snapshot; that encoder is only the no-context
+/// fallback.
+pub fn request_digest_for_version(
+    request: &Request,
+    version: &str,
+    commitment: &str,
+) -> Result<Option<String>, SigningError> {
+    match version {
+        REQUEST_DIGEST_VERSION => Ok(Some(request_digest_v1(request, commitment)?)),
+        LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION => Ok(Some(request_digest_legacy_structured_v2(
+            request, commitment,
+        )?)),
+        _ => Ok(None),
+    }
+}
+
+/// Whether a received card should be treated as the value variant. The card's
+/// `answer_field` decides when content is available; the legacy value tag is
+/// the fallback for content-stripped projections.
+pub fn is_value_request(answer_field_present: bool, signing_version: Option<&str>) -> bool {
+    answer_field_present
+        || signing_version == Some(crate::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION)
 }
 
 // --- P-256 signing crypto ----------------------------------------------------
@@ -343,34 +426,99 @@ mod tests {
         );
     }
 
-    /// Frozen protocol vector for the request digest. Pins the canonicalization
-    /// (field order, the sha256s of title/summary/body/fields/links/options, and
-    /// the millisecond RFC3339 timestamps) so a refactor that changes the digest
-    /// is caught here instead of silently invalidating every signature already
-    /// written to the append-only audit log.
+    /// Frozen protocol vector for the legacy line-snapshot digest. Pins the
+    /// canonicalization (field order, the sha256s of title/summary/body/fields/
+    /// links/options, and the millisecond RFC3339 timestamps) so the encoder
+    /// that old signatures bind keeps reproducing its bytes exactly.
     #[test]
-    fn request_digest_matches_frozen_contract() {
+    fn legacy_line_snapshot_digest_matches_frozen_contract() {
         assert_eq!(
-            request_digest(&canonical_request()).unwrap(),
+            request_digest_legacy_line_snapshot(&canonical_request()).unwrap(),
             "97e2edc559c47570f31c154f535ee6b019a509e998bf8a0c7f7b1cccb75d1f3f"
         );
     }
 
+    /// The collapsed scheme is numbered to pair with the decision payload:
+    /// ordinary requests are `nod-request-v1` + `nod-decision-v1`.
     #[test]
-    fn private_digest_verifies_projected_content_without_recipients() {
+    fn ordinary_scheme_is_tagged_nod_request_v1() {
+        assert_eq!(REQUEST_DIGEST_VERSION, "nod-request-v1");
+        assert_eq!(DECISION_PAYLOAD_VERSION, "nod-decision-v1");
+        assert_eq!(
+            LEGACY_LINE_SNAPSHOT_REQUEST_DIGEST_VERSION,
+            "nod-request-v1"
+        );
+        assert_eq!(LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION, "nod-request-v2");
+    }
+
+    #[test]
+    fn structured_digest_verifies_projected_content_without_recipients() {
         let mut request = canonical_request();
         let commitment = recipients_commitment(&request.recipients, "fixed-test-salt").unwrap();
-        let expected = request_digest_v2(&request, &commitment).unwrap();
-        // Independently calculated from the canonical JSON with Python's
-        // hashlib/json; freezes v2 without changing the original v1 vector.
+        let expected = request_digest_v1(&request, &commitment).unwrap();
+        // Independent of the historical vector: same canonical content, tag
+        // collapsed from nod-request-v2 to nod-request-v1.
         assert_eq!(
             expected,
-            "fdcd92dc9e5001b0cf171bdaf2f7d013f5898b2605c3d829f3e0f75aa2523dc3"
+            "06c53fbaf4a4226869264374aa42042f1a92ee23707917e6e929f5e05a3cff9b"
         );
         request.recipients = vec!["owner".to_string()];
-        assert_eq!(request_digest_v2(&request, &commitment).unwrap(), expected);
+        assert_eq!(request_digest_v1(&request, &commitment).unwrap(), expected);
         request.title.push_str(" changed");
-        assert_ne!(request_digest_v2(&request, &commitment).unwrap(), expected);
+        assert_ne!(request_digest_v1(&request, &commitment).unwrap(), expected);
+    }
+
+    /// Old structured digests were tagged `nod-request-v2`; the same content
+    /// must still reproduce that tag's frozen bytes for stored decisions.
+    #[test]
+    fn legacy_structured_digest_matches_frozen_contract() {
+        let request = canonical_request();
+        let commitment = recipients_commitment(&request.recipients, "fixed-test-salt").unwrap();
+        assert_eq!(
+            request_digest_legacy_structured_v2(&request, &commitment).unwrap(),
+            "fdcd92dc9e5001b0cf171bdaf2f7d013f5898b2605c3d829f3e0f75aa2523dc3"
+        );
+    }
+
+    #[test]
+    fn version_dispatch_selects_only_known_request_encoders() {
+        let request = canonical_request();
+        let commitment = recipients_commitment(&request.recipients, "fixed-test-salt").unwrap();
+
+        assert_eq!(
+            request_digest_for_version(&request, REQUEST_DIGEST_VERSION, &commitment).unwrap(),
+            Some(request_digest_v1(&request, &commitment).unwrap())
+        );
+        assert_eq!(
+            request_digest_for_version(
+                &request,
+                LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION,
+                &commitment
+            )
+            .unwrap(),
+            Some(request_digest_legacy_structured_v2(&request, &commitment).unwrap())
+        );
+        assert_eq!(
+            request_digest_for_version(
+                &request,
+                crate::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION,
+                &commitment
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            request_digest_for_version(&request, "nod-request-v999", &commitment).unwrap(),
+            None
+        );
+
+        assert!(is_value_request(true, None));
+        assert!(is_value_request(
+            false,
+            Some(crate::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION)
+        ));
+        assert!(!is_value_request(false, Some(REQUEST_DIGEST_VERSION)));
+        assert!(!is_value_request(false, Some("nod-request-v999")));
     }
 
     #[test]

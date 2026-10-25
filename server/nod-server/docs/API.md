@@ -158,27 +158,31 @@ request details are suppressed in redacted native alerts; full content remains
 in the authenticated inbox. Personal device `hide_content` overrides even the
 issuer's supplied preview text.
 
-Issuer/admin full responses retain `request.request_digest` for the original
-`nod-request-v1` canonicalization. Current clients use the optional
-`request.signing` context instead:
+The `request.signing` context carries the versioned request digest the server
+issues. Ordinary cards pair `nod-request-v1` with `nod-decision-v1`; cards with
+an `answer_field` pair `nod-request-v2` with `nod-decision-v2`:
 
 ```json
 {
-  "version": "nod-request-v2",
+  "version": "nod-request-v1",
   "recipients_commitment": "64-character-sha256-hex",
   "request_digest": "64-character-sha256-hex"
 }
 ```
 
-Clients independently recompute the v2 digest over the visible immutable
-content and salted recipient commitment before signing; they must reject an
-unknown context version or a mismatch. The server's secret per-request salt
-prevents guessing hidden recipient IDs from the commitment. Multi-recipient
-device projections omit the unsalted v1 `request_digest`, which otherwise
-allows such guessing. Single-recipient views retain it for installed v1 clients.
-Historical v1 receipts remain verifiable and may still contain their original
-unsalted digest. The canonical implementations and frozen vectors live in
-[`nod-proto/src/signing.rs`](../../../nod-proto/src/signing.rs).
+Clients independently recompute the digest over the visible immutable content
+and salted recipient commitment before signing; they must reject an unknown
+context version or a mismatch. The server's secret per-request salt prevents
+guessing hidden recipient IDs from the commitment. Issuer/admin full responses
+and single-recipient views also retain the top-level
+`request.request_digest` for backward compatibility; it is the frozen legacy
+line-snapshot value, unchanged from v1.1.0. Multi-recipient device projections
+omit it, which otherwise allows guessing hidden recipient IDs. Historical
+receipts that bound it, or the old `nod-request-v2` / `nod-request-v3` tags,
+remain verifiable: the server recomputes the candidate digests for the card's
+content and accepts a matching one. See
+[the signing note](../../../docs/signing.md) and the canonical implementations
+in [`nod-proto/src/signing.rs`](../../../nod-proto/src/signing.rs).
 
 `recipients` explicitly targets users even when they have unsubscribed from the
 channel. When omitted, Nod targets the current subscribers. `decision_resolution`

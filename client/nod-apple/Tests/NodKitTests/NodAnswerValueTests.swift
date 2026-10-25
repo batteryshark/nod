@@ -33,16 +33,22 @@ final class NodAnswerValueTests: XCTestCase {
     XCTAssertEqual(decision.signature?.payloadVersion,"nod-decision-v2")
     XCTAssertEqual(decision.signature?.verified,false)
   }
-  func testOrdinaryFieldsOmittedAndV3EmptyOptionsNeverMeansInformation() throws {
+  func testOrdinaryFieldsOmittedAndValuePlaceholderNeverMeansInformation() throws {
     let raw = #"{"id":"r","request_id":"r","channel_id":"c","title":"Ordinary","summary":"","body_markdown":"","notification":{"redact":false},"status":"pending","created_at":"2026-10-24T00:00:00Z","updated_at":"2026-10-24T00:00:00Z","options":[]}"#
     let ordinary = try JSONDecoder.nod.decode(NodRequest.self, from:Data(raw.utf8))
     let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with:JSONEncoder().encode(ordinary)) as? [String:Any])
     XCTAssertNil(encoded["answer_field"])
     XCTAssertFalse(ordinary.isValueRequest)
     var placeholder = try XCTUnwrap(JSONSerialization.jsonObject(with:Data(raw.utf8)) as? [String:Any])
+    // A bare nod-request-v2 context without content is the legacy ordinary tag,
+    // not a value card.
+    placeholder["signing"] = ["version":"nod-request-v2","recipients_commitment":"synthetic","request_digest":"synthetic"]
+    let legacyOrdinary = try JSONDecoder.nod.decode(NodRequest.self,from:JSONSerialization.data(withJSONObject:placeholder))
+    XCTAssertFalse(legacyOrdinary.isValueRequest)
+    // A card already issued under the legacy value tag stays value-only.
     placeholder["signing"] = ["version":"nod-request-v3","recipients_commitment":"synthetic","request_digest":"synthetic"]
-    let unsupported = try JSONDecoder.nod.decode(NodRequest.self,from:JSONSerialization.data(withJSONObject:placeholder))
-    XCTAssertTrue(unsupported.isValueRequest)
+    let legacyUnsupported = try JSONDecoder.nod.decode(NodRequest.self,from:JSONSerialization.data(withJSONObject:placeholder))
+    XCTAssertTrue(legacyUnsupported.isValueRequest)
     placeholder["answer_field"] = NSNull()
     XCTAssertThrowsError(try JSONDecoder.nod.decode(NodRequest.self,from:JSONSerialization.data(withJSONObject:placeholder)))
     let decision = NodDecision(requestId:"r",optionId:"yes",optionKind:.custom,optionLabel:"Yes",resolvedAt:Date(timeIntervalSince1970:0))

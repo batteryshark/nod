@@ -47,11 +47,11 @@ private actor AnswerFixture {
     if cancelled { request["status"] = "cancelled" }
     request["options"] = try! JSONSerialization.jsonObject(with: JSONEncoder().encode([NodRequestOption(id:"yes", label:"Yes", kind:.custom)]))
     if informational { request["options"] = [] }
-    // Every server view carries a signing context: v2 for ordinary requests, v3 for value requests.
-    request["signing"] = ["version":"nod-request-v2", "recipients_commitment":"synthetic", "request_digest":"rendered-digest"]
+    // Every server view carries a signing context: nod-request-v1 for ordinary requests, nod-request-v2 for value requests.
+    request["signing"] = ["version":"nod-request-v1", "recipients_commitment":"synthetic", "request_digest":"rendered-digest"]
     if let fieldJSON {
       request["answer_field"] = try! JSONSerialization.jsonObject(with: Data(fieldJSON.utf8))
-      request["signing"] = ["version":"nod-request-v3", "recipients_commitment":"synthetic", "request_digest":"rendered-digest"]
+      request["signing"] = ["version":"nod-request-v2", "recipients_commitment":"synthetic", "request_digest":"rendered-digest"]
     }
     if unsigned { request.removeValue(forKey: "signing") }
     if resolved {

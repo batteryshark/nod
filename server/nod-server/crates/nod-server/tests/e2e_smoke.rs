@@ -395,7 +395,7 @@ async fn run_smoke(base_url: &str, admin_token: &str) {
             let wire: nod_proto::Request = serde_json::from_value(request_view.clone()).unwrap();
             let context = wire.signing.as_ref().unwrap();
             assert_eq!(
-                nod_proto::request_digest_v2(&wire, &context.recipients_commitment).unwrap(),
+                nod_proto::request_digest_v1(&wire, &context.recipients_commitment).unwrap(),
                 context.request_digest
             );
         } else {

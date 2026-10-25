@@ -8,6 +8,15 @@ import type {
   AnswerValue,
 } from "./types";
 
+// Mirror nod-proto's request-digest tags in one UI-layer place. Values are the
+// canonical constants from nod-proto/src/signing.rs and value_signing.rs.
+export const REQUEST_SIGNING_VERSIONS = {
+  ordinary: "nod-request-v1",
+  legacyOrdinary: "nod-request-v2",
+  value: "nod-request-v2",
+  legacyValue: "nod-request-v3",
+} as const;
+
 const statusRank: Record<RequestStatus, number> = {
   pending: 0,
   resolved: 1,
@@ -131,7 +140,7 @@ export const REQUEST_CHANGED_MESSAGE =
 
 export function isValueUnsupported(request: NodRequest): boolean {
   return request.answer_field != null ||
-    request.signing?.version === "nod-request-v3" ||
+    request.signing?.version === REQUEST_SIGNING_VERSIONS.legacyValue ||
     request.options.some((option) => option.id === "__nod_value_open");
 }
 

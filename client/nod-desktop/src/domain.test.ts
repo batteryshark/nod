@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   decisionActions,
+  isValueUnsupported,
   parseEnrollmentLink,
+  REQUEST_SIGNING_VERSIONS,
   safeWebUrl,
   replaceRequest,
   submittableOptions,
@@ -310,7 +312,7 @@ describe("renderedRequestDigest", () => {
       renderedRequestDigest({
         ...baseRequest,
         signing: {
-          version: "nod-request-v2",
+          version: REQUEST_SIGNING_VERSIONS.ordinary,
           recipients_commitment: "c",
           request_digest: "private-digest",
         },
@@ -372,6 +374,39 @@ describe("decisionActions", () => {
     expect(actions[0].option.id).toBe("approve_notes");
     expect(actions[0].withTextOption).toBeUndefined();
     expect(actions[1].option.id).toBe("later");
+  });
+});
+
+describe("request signing versions", () => {
+  it("treats current and legacy value tags as value and legacy ordinary as ordinary", () => {
+    const signing = (version: string) => ({
+      version,
+      recipients_commitment: "a".repeat(64),
+      request_digest: "b".repeat(64),
+    });
+    expect(
+      isValueUnsupported({
+        ...baseRequest,
+        signing: signing(REQUEST_SIGNING_VERSIONS.value),
+        answer_field: {
+          kind: "number",
+          label: "Count",
+          default: { kind: "number", decimal: "4" },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isValueUnsupported({
+        ...baseRequest,
+        signing: signing(REQUEST_SIGNING_VERSIONS.legacyValue),
+      }),
+    ).toBe(true);
+    expect(
+      isValueUnsupported({
+        ...baseRequest,
+        signing: signing(REQUEST_SIGNING_VERSIONS.legacyOrdinary),
+      }),
+    ).toBe(false);
   });
 });
 

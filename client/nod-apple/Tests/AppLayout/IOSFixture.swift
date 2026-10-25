@@ -46,7 +46,7 @@ import UIKit
       default: break
       }
     }
-    return NodRequest(id:"synthetic",requestId:"synthetic",channelId:"fixture",recipients:[],decisionResolution:.shared,title:"Synthetic native reachability",summary:"",bodyMarkdown:(1...12).map { "## Section \($0)\n\n" + String(repeating:"Complete synthetic reading content. ",count:12) }.joined(separator:"\n\n") + "\n\nReader tail retained.",fields:[],links:[],imageUrl:nil,notification:.init(),dedupeKey:nil,expiresAt:nil,status:.pending,createdAt:Date(timeIntervalSince1970:0),updatedAt:Date(timeIntervalSince1970:0),resolvedAt:nil,decision:nil,decisions:[],callbackUrl:nil,options:options,requestDigest:nil,signing:.init(version:field == nil ? "nod-request-v2" : "nod-request-v3",recipientsCommitment:"synthetic",requestDigest:"synthetic-rendered-digest"),answerField:field)
+    return NodRequest(id:"synthetic",requestId:"synthetic",channelId:"fixture",recipients:[],decisionResolution:.shared,title:"Synthetic native reachability",summary:"",bodyMarkdown:(1...12).map { "## Section \($0)\n\n" + String(repeating:"Complete synthetic reading content. ",count:12) }.joined(separator:"\n\n") + "\n\nReader tail retained.",fields:[],links:[],imageUrl:nil,notification:.init(),dedupeKey:nil,expiresAt:nil,status:.pending,createdAt:Date(timeIntervalSince1970:0),updatedAt:Date(timeIntervalSince1970:0),resolvedAt:nil,decision:nil,decisions:[],callbackUrl:nil,options:options,requestDigest:nil,signing:.init(version:field == nil ? "nod-request-v1" : "nod-request-v2",recipientsCommitment:"synthetic",requestDigest:"synthetic-rendered-digest"),answerField:field)
   }
   var body: some Scene {
     WindowGroup {

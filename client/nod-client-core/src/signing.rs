@@ -128,40 +128,40 @@ pub fn build_value_decision_signature(
         return Err(anyhow!("ordinary request does not accept answer_value"));
     }
     // Only sign a request whose digest we can reproduce from the content we
-    // hold, rather than trusting the digest the server asserted.
+    // hold, rather than trusting the digest the server asserted. The encoder
+    // follows the received tag; an unknown tag keeps the unsupported-version
+    // error.
     let (request_digest, recomputed) =
         if let Some(context) = &request.request.signing {
-            if let Some(field) = request.request.answer_field.as_ref().filter(|_| {
-                context.version == nod_proto::value_signing::VALUE_REQUEST_DIGEST_VERSION
-            }) {
-                (
-                    context.request_digest.as_str(),
-                    nod_proto::value_signing::request_digest_v3(
-                        request.request,
-                        &context.recipients_commitment,
-                        field,
-                    )?,
-                )
+            let recomputed = if let Some(field) = &request.request.answer_field {
+                nod_proto::value_signing::value_request_digest_for_version(
+                    request.request,
+                    &context.version,
+                    &context.recipients_commitment,
+                    field,
+                )?
             } else {
-                if context.version != nod_proto::PRIVATE_REQUEST_DIGEST_VERSION
-                    || request.request.answer_field.is_some()
-                {
+                nod_proto::request_digest_for_version(
+                    request.request,
+                    &context.version,
+                    &context.recipients_commitment,
+                )?
+            };
+            match recomputed {
+                Some(recomputed) => (context.request_digest.as_str(), recomputed),
+                None => {
                     return Err(anyhow!(
                         "unsupported request signing version: {}",
                         context.version
-                    ));
+                    ))
                 }
-                (
-                    context.request_digest.as_str(),
-                    nod_proto::request_digest_v2(request.request, &context.recipients_commitment)?,
-                )
             }
         } else {
             (
                 request.request.request_digest.as_deref().ok_or_else(|| {
                     anyhow!("request digest is missing for {}", request.request.id)
                 })?,
-                nod_proto::request_digest(request.request)?,
+                nod_proto::request_digest_legacy_line_snapshot(request.request)?,
             )
         };
     // Bind the signature to what the user reviewed: the caller must echo the
@@ -363,7 +363,8 @@ mod tests {
             request_digest: None,
             signing: None,
         };
-        request.request_digest = Some(nod_proto::request_digest(&request).unwrap());
+        request.request_digest =
+            Some(nod_proto::request_digest_legacy_line_snapshot(&request).unwrap());
         request
     }
 
@@ -405,14 +406,14 @@ mod tests {
                 decimal: "4".into(),
             },
         });
-        let digest = nod_proto::value_signing::request_digest_v3(
+        let digest = nod_proto::value_signing::value_request_digest_legacy_v3(
             &card,
             &"a".repeat(64),
             card.answer_field.as_ref().unwrap(),
         )
         .unwrap();
         card.signing = Some(nod_proto::RequestSigningContext {
-            version: "nod-request-v3".into(),
+            version: nod_proto::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION.into(),
             recipients_commitment: "a".repeat(64),
             request_digest: digest.clone(),
         });
@@ -505,8 +506,8 @@ mod tests {
         let commitment =
             nod_proto::recipients_commitment(&request.recipients, "test-salt").unwrap();
         request.signing = Some(nod_proto::RequestSigningContext {
-            version: nod_proto::PRIVATE_REQUEST_DIGEST_VERSION.to_string(),
-            request_digest: nod_proto::request_digest_v2(&request, &commitment).unwrap(),
+            version: nod_proto::REQUEST_DIGEST_VERSION.to_string(),
+            request_digest: nod_proto::request_digest_v1(&request, &commitment).unwrap(),
             recipients_commitment: commitment,
         });
         let legacy_digest = request.request_digest.clone().unwrap();
@@ -593,8 +594,8 @@ mod tests {
         let commitment =
             nod_proto::recipients_commitment(&request.recipients, "test-salt").unwrap();
         request.signing = Some(nod_proto::RequestSigningContext {
-            version: nod_proto::PRIVATE_REQUEST_DIGEST_VERSION.to_string(),
-            request_digest: nod_proto::request_digest_v2(&request, &commitment).unwrap(),
+            version: nod_proto::REQUEST_DIGEST_VERSION.to_string(),
+            request_digest: nod_proto::request_digest_v1(&request, &commitment).unwrap(),
             recipients_commitment: commitment,
         });
         let key = StoredSigningKey::generate();
@@ -620,6 +621,83 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unsupported request signing version"));
+    }
+
+    #[test]
+    fn legacy_tagged_ordinary_and_value_cards_still_sign() {
+        let key = StoredSigningKey::generate();
+        let commitment = |request: &Request, salt: &str| {
+            nod_proto::recipients_commitment(&request.recipients, salt).unwrap()
+        };
+
+        // Ordinary card issued under the pre-collapse nod-request-v2 tag.
+        let mut ordinary = request();
+        ordinary.request_digest = None;
+        let ordinary_commitment = commitment(&ordinary, "legacy-ordinary-salt");
+        let legacy_ordinary =
+            nod_proto::request_digest_legacy_structured_v2(&ordinary, &ordinary_commitment)
+                .unwrap();
+        ordinary.signing = Some(nod_proto::RequestSigningContext {
+            version: nod_proto::LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION.into(),
+            recipients_commitment: ordinary_commitment,
+            request_digest: legacy_ordinary.clone(),
+        });
+        let signature = build_decision_signature(
+            &key,
+            DecisionSigningRequest {
+                request: &ordinary,
+                option_id: "approve",
+                text: None,
+                user_id: "owner",
+                device_id: "device",
+            },
+        )
+        .expect("legacy ordinary tag must still sign");
+        assert_eq!(signature.request_digest, legacy_ordinary);
+        assert_eq!(signature.payload_version, None);
+
+        // Value card issued under the pre-collapse nod-request-v3 tag.
+        let mut value = ordinary.clone();
+        let field = nod_proto::AnswerField::Number {
+            label: "Count".into(),
+            default: nod_proto::AnswerValue::Number {
+                decimal: "4".into(),
+            },
+        };
+        value.answer_field = Some(field.clone());
+        let value_commitment = commitment(&value, "legacy-value-salt");
+        let legacy_value = nod_proto::value_signing::value_request_digest_legacy_v3(
+            &value,
+            &value_commitment,
+            &field,
+        )
+        .unwrap();
+        value.signing = Some(nod_proto::RequestSigningContext {
+            version: nod_proto::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION.into(),
+            recipients_commitment: value_commitment,
+            request_digest: legacy_value.clone(),
+        });
+        let answer = nod_proto::AnswerValue::Number {
+            decimal: "7".into(),
+        };
+        let signature = build_value_decision_signature(
+            &key,
+            DecisionSigningRequest {
+                request: &value,
+                option_id: "approve",
+                text: None,
+                user_id: "owner",
+                device_id: "device",
+            },
+            Some(&answer),
+            Some(&legacy_value),
+        )
+        .expect("legacy value tag must still sign");
+        assert_eq!(signature.request_digest, legacy_value);
+        assert_eq!(
+            signature.payload_version.as_deref(),
+            Some(nod_proto::value_signing::VALUE_DECISION_PAYLOAD_VERSION)
+        );
     }
 
     #[test]

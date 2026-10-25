@@ -225,7 +225,8 @@ fn request(id: &str) -> Request {
         request_digest: None,
         signing: None,
     };
-    request.request_digest = Some(nod_proto::request_digest(&request).unwrap());
+    request.request_digest =
+        Some(nod_proto::request_digest_legacy_line_snapshot(&request).unwrap());
     request
 }
 
@@ -503,7 +504,8 @@ async fn server_swapping_content_at_submit_time_is_refused_before_any_post() {
     // once the device comes back to submit.
     let mut swapped = request("initial");
     swapped.title = "Transfer the production signing key".into();
-    swapped.request_digest = Some(nod_proto::request_digest(&swapped).unwrap());
+    swapped.request_digest =
+        Some(nod_proto::request_digest_legacy_line_snapshot(&swapped).unwrap());
     assert_ne!(swapped.request_digest.as_deref(), Some(rendered.as_str()));
     *server.fixture.swapped_request.lock().await = Some(swapped);
     let error = runtime
@@ -715,14 +717,14 @@ async fn lost_value_response_keeps_one_post_and_reconciles_read_only() {
             destructive: false,
             foreground: false,
         });
-        digest = nod_proto::value_signing::request_digest_v3(
+        digest = nod_proto::value_signing::value_request_digest(
             card,
             &"a".repeat(64),
             card.answer_field.as_ref().unwrap(),
         )
         .unwrap();
         card.signing = Some(nod_proto::RequestSigningContext {
-            version: "nod-request-v3".into(),
+            version: nod_proto::value_signing::VALUE_REQUEST_DIGEST_VERSION.into(),
             recipients_commitment: "a".repeat(64),
             request_digest: digest.clone(),
         });

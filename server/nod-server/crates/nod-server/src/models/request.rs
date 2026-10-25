@@ -42,7 +42,7 @@ pub struct DecisionRequest {
     pub user_decisions: Vec<UserDecision>,
     pub callback_url: Option<String>,
     pub options: Vec<RequestOption>,
-    /// Multi-recipient device projections omit the unsalted v1 digest: it
+    /// Multi-recipient device projections omit the unsalted legacy digest: it
     /// otherwise permits guessing hidden recipient IDs offline.
     #[serde(skip)]
     pub private_recipients: bool,
@@ -58,12 +58,14 @@ pub struct CreatedDecisionRequest {
 }
 
 impl DecisionRequest {
-    /// Full snapshots retain the legacy digest. Private device views use
-    /// the independently verifiable, salted v2 signing context instead.
+    /// Full snapshots retain the legacy line-snapshot digest for backward
+    /// compatibility (the wire shape and value are unchanged from v1.1.0).
+    /// Private device views use the independently verifiable, salted signing
+    /// context instead and never expose it.
     pub fn to_wire(&self) -> nod_proto::Request {
         let mut wire = nod_proto::Request::from(self);
         if !self.private_recipients && self.answer_field.is_none() {
-            wire.request_digest = nod_proto::request_digest(&wire).ok();
+            wire.request_digest = nod_proto::request_digest_legacy_line_snapshot(&wire).ok();
         }
         wire
     }
