@@ -270,18 +270,17 @@ async fn enrollment_request_option_flow_updates_decision() {
     assert_eq!(listed["requests"].as_array().unwrap().len(), 1);
 
     let (status, resolved) = app
-        .request(
-            Method::POST,
-            &format!("/api/v1/requests/{request_id}/options/approve"),
-            Some(&device_token),
-            Some(json!({})),
-        )
+        .decide(&device_token, request_id, "approve", json!({}))
         .await;
     assert_eq!(status, StatusCode::OK, "{resolved}");
     assert_eq!(resolved["request"]["status"], "resolved");
     assert_eq!(
         resolved["request"]["decision"]["actor_device_id"],
         device_id
+    );
+    assert_eq!(
+        resolved["request"]["decision"]["signature"]["verified"],
+        true
     );
 
     let (status, decision) = app
@@ -328,11 +327,11 @@ async fn text_capable_options_accept_empty_text() {
     let request_id = created["request_id"].as_str().unwrap();
 
     let (status, resolved) = app
-        .request(
-            Method::POST,
-            &format!("/api/v1/requests/{request_id}/options/reject_reason"),
-            Some(&device_token),
-            Some(json!({ "text": "" })),
+        .decide(
+            &device_token,
+            request_id,
+            "reject_reason",
+            json!({ "text": "" }),
         )
         .await;
 
@@ -484,12 +483,7 @@ async fn per_user_decision_resolution_tracks_each_user_independently() {
     let request_id = created["request_id"].as_str().unwrap();
 
     let (status, paul_resolved) = app
-        .request(
-            Method::POST,
-            &format!("/api/v1/requests/{request_id}/options/approve"),
-            Some(&paul_token),
-            Some(json!({})),
-        )
+        .decide(&paul_token, request_id, "approve", json!({}))
         .await;
     assert_eq!(status, StatusCode::OK, "{paul_resolved}");
     assert_eq!(paul_resolved["request"]["status"], "resolved");
@@ -524,12 +518,7 @@ async fn per_user_decision_resolution_tracks_each_user_independently() {
     assert_eq!(aggregate["pending_recipients"], json!(["maya"]));
 
     let (status, maya_resolved) = app
-        .request(
-            Method::POST,
-            &format!("/api/v1/requests/{request_id}/options/reject"),
-            Some(&maya_token),
-            Some(json!({})),
-        )
+        .decide(&maya_token, request_id, "reject", json!({}))
         .await;
     assert_eq!(status, StatusCode::OK, "{maya_resolved}");
     assert_eq!(
@@ -575,12 +564,7 @@ async fn device_can_dismiss_request_without_options() {
     let request_id = created["request_id"].as_str().unwrap();
 
     let (status, resolved) = app
-        .request(
-            Method::POST,
-            &format!("/api/v1/requests/{request_id}/options/dismiss"),
-            Some(&device_token),
-            Some(json!({})),
-        )
+        .decide(&device_token, request_id, "dismiss", json!({}))
         .await;
     assert_eq!(status, StatusCode::OK, "{resolved}");
     assert_eq!(resolved["request"]["status"], "resolved");
@@ -770,12 +754,7 @@ async fn request_list_limit_caps_handled_but_keeps_all_pending() {
         assert_eq!(status, StatusCode::OK, "{created}");
         let request_id = created["request_id"].as_str().unwrap();
         let (status, resolved) = app
-            .request(
-                Method::POST,
-                &format!("/api/v1/requests/{request_id}/options/dismiss"),
-                Some(&device_token),
-                Some(json!({})),
-            )
+            .decide(&device_token, request_id, "dismiss", json!({}))
             .await;
         assert_eq!(status, StatusCode::OK, "{resolved}");
     }

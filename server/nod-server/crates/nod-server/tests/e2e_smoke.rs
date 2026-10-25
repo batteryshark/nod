@@ -161,8 +161,9 @@ async fn run_smoke(base_url: &str, admin_token: &str) {
     )
     .await;
 
-    // Enroll and subscribe the watcher's device (no signing key — it only
-    // observes the sync stream).
+    // Enroll and subscribe the watcher's device. It only observes the sync
+    // stream, but every enrollment carries a signing key.
+    let watcher_key = generate_signing_key();
     let watcher_enrollment = api(
         &http,
         base_url,
@@ -178,7 +179,12 @@ async fn run_smoke(base_url: &str, admin_token: &str) {
         .json(&json!({
             "code": watcher_code,
             "device_name": "Smoke Watcher Device",
-            "platform": "linux"
+            "platform": "linux",
+            "signing_key": {
+                "key_id": format!("smoke-watcher-key-{suffix}"),
+                "algorithm": "p256_ecdsa_sha256",
+                "public_key": watcher_key.public_key
+            }
         }))
         .send()
         .await

@@ -234,12 +234,7 @@ async fn callback_latency_is_not_part_of_decision_acknowledgement() {
     .await;
     let (status, body) = tokio::time::timeout(
         Duration::from_millis(500),
-        app.request(
-            Method::POST,
-            &format!("/api/v1/requests/{id}/options/dismiss"),
-            Some(&token),
-            Some(json!({})),
-        ),
+        app.decide(&token, &id, "dismiss", json!({})),
     )
     .await
     .expect("decision must not wait for callback");

@@ -98,10 +98,9 @@ async fn cancellation_and_last_per_user_decision_have_one_winner() {
             .await;
         let id = created["request_id"].as_str().unwrap();
         let cancel = format!("/api/v1/requests/{id}/cancel");
-        let decide = format!("/api/v1/requests/{id}/options/approve");
         let (cancelled, decided) = tokio::join!(
             app.request(Method::POST, &cancel, ADMIN, None),
-            app.request(Method::POST, &decide, Some(&token), Some(json!({}))),
+            app.decide(&token, id, "approve", json!({})),
         );
         assert!(
             matches!(

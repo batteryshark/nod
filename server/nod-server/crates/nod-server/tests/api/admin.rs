@@ -161,7 +161,8 @@ async fn device_responses_report_websocket_delivery_without_push_route() {
             Some(json!({
                 "code": code,
                 "device_name": "Phone",
-                "platform": "ios"
+                "platform": "ios",
+                "signing_key": test_signing_key_json()
             })),
         )
         .await;
