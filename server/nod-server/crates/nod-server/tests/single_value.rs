@@ -157,7 +157,7 @@ async fn run() {
         .unwrap();
     assert!(legacy["request"].get("answer_field").is_none());
     assert_eq!(legacy["request"]["options"][0]["id"], "__nod_value_open");
-    assert_eq!(legacy["request"]["signing"]["version"], "nod-request-v3");
+    assert_eq!(legacy["request"]["signing"]["version"], "nod-request-v2");
     assert!(legacy["request"]["request_digest"].is_null());
     let legacy_list: Value = http
         .get(format!("{base}/api/v1/requests"))
@@ -321,6 +321,97 @@ async fn run() {
         callback.contains("Canary notes")
             && callback.contains("large")
             && callback.contains("nod-decision-v2")
+    );
+    // A value card issued before the collapse bound the nod-request-v3 digest.
+    // The server must still accept that stored digest for the same content.
+    let legacy_create = json!({
+        "title": "Legacy value",
+        "recipients": ["owner"],
+        "options": [{"id":"apply","label":"Apply","kind":"approve"}],
+        "answer_field": {"kind":"choice","label":"Batch","choices":[{"id":"small","label":"Small"},{"id":"large","label":"Large"}],"default":{"kind":"choice","choice_id":"small"}},
+        "idempotency_key": "value-legacy-v3"
+    });
+    let legacy_created: Value = admin("/api/v1/requests")
+        .json(&legacy_create)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let legacy_id = legacy_created["request_id"].as_str().unwrap();
+    let legacy_card = api.get_request(legacy_id).await.unwrap();
+    let legacy_field = legacy_card.answer_field.clone().unwrap();
+    let legacy_commitment = legacy_card
+        .signing
+        .as_ref()
+        .unwrap()
+        .recipients_commitment
+        .clone();
+    let legacy_digest = nod_proto::value_signing::value_request_digest_legacy_v3(
+        &legacy_card,
+        &legacy_commitment,
+        &legacy_field,
+    )
+    .unwrap();
+    assert_ne!(
+        legacy_digest,
+        legacy_card.signing.as_ref().unwrap().request_digest
+    );
+    let signed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let legacy_answer = nod_proto::AnswerValue::Choice {
+        choice_id: "large".into(),
+    };
+    let payload = nod_proto::value_signing::decision_signing_payload_v2(
+        nod_proto::DecisionSigningInput {
+            request_id: legacy_id,
+            request_digest: &legacy_digest,
+            option_id: "apply",
+            option_kind: &nod_proto::OptionKind::Approve,
+            user_id: "owner",
+            device_id: enrolled["device_id"].as_str().unwrap(),
+            key_id: &key.key_id(),
+            nonce: "legacy-v3-nonce-1",
+            signed_at: &signed_at,
+            text: None,
+        },
+        &legacy_answer,
+    )
+    .unwrap();
+    let legacy_signature = key.sign(payload.as_bytes()).unwrap();
+    let legacy_response = http
+        .post(format!("{base}/api/v1/requests/{legacy_id}/options/apply"))
+        .bearer_auth(token)
+        .header("Nod-Request-Contract", "single-value-v1")
+        .json(&json!({
+            "answer_value": legacy_answer,
+            "signature": {
+                "payload_version": "nod-decision-v2",
+                "key_id": key.key_id(),
+                "algorithm": "p256_ecdsa_sha256",
+                "nonce": "legacy-v3-nonce-1",
+                "signed_at": signed_at,
+                "request_digest": legacy_digest,
+                "signature": legacy_signature
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    let legacy_status = legacy_response.status();
+    if !legacy_status.is_success() {
+        panic!("{}", legacy_response.text().await.unwrap());
+    }
+    let legacy_receipt: Value = legacy_response.json().await.unwrap();
+    assert_eq!(
+        legacy_receipt["request"]["decision"]["signature"]["verified"],
+        true
+    );
+    assert_eq!(
+        legacy_receipt["request"]["decision"]["signature"]["request_digest"],
+        json!(legacy_digest)
     );
     let changed = {
         let mut c = create.clone();

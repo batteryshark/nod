@@ -256,7 +256,7 @@ async fn run_smoke(base_url: &str, admin_token: &str) {
         .as_str()
         .expect("request id")
         .to_string();
-    let request_digest = created["request"]["request_digest"]
+    let request_digest = created["request"]["signing"]["request_digest"]
         .as_str()
         .expect("request digest")
         .to_string();
@@ -366,7 +366,7 @@ async fn run_smoke(base_url: &str, admin_token: &str) {
             let wire: nod_proto::Request = serde_json::from_value(request_view.clone()).unwrap();
             let context = wire.signing.as_ref().unwrap();
             assert_eq!(
-                nod_proto::request_digest_v2(&wire, &context.recipients_commitment).unwrap(),
+                nod_proto::request_digest_v1(&wire, &context.recipients_commitment).unwrap(),
                 context.request_digest
             );
         } else {
@@ -378,10 +378,6 @@ async fn run_smoke(base_url: &str, admin_token: &str) {
     }
 
     // Sign and submit the decision with the enrolled key.
-    let request_digest = created["request"]["signing"]["request_digest"]
-        .as_str()
-        .unwrap_or(&request_digest)
-        .to_string();
     let nonce = uuid::Uuid::new_v4().to_string();
     let signed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let text = "smoke approved";

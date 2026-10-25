@@ -135,6 +135,12 @@ async fn client_signer_accepts_private_http_and_websocket_projections() {
                 .request(Method::POST, "/api/v1/requests", ADMIN, Some(body))
                 .await;
             let id = created["request_id"].as_str().unwrap();
+            // The unsalted digest is no longer issued; recompute it to prove a
+            // private projection still never leaks it.
+            let created_wire: nod_proto::Request =
+                serde_json::from_value(created["request"].clone()).unwrap();
+            let legacy_digest =
+                nod_proto::request_digest_legacy_line_snapshot(&created_wire).unwrap();
             let request_value = if transport == "http" {
                 app.request(
                     Method::GET,
@@ -164,9 +170,7 @@ async fn client_signer_accepts_private_http_and_websocket_projections() {
             };
             assert_eq!(request_value["recipients"], json!(["owner"]));
             assert!(request_value["request_digest"].is_null());
-            assert!(!request_value
-                .to_string()
-                .contains(created["request"]["request_digest"].as_str().unwrap()));
+            assert!(!request_value.to_string().contains(&legacy_digest));
             let request: nod_proto::Request = serde_json::from_value(request_value).unwrap();
             let signature = build_decision_signature(
                 &signer,
@@ -196,9 +200,7 @@ async fn client_signer_accepts_private_http_and_websocket_projections() {
                 response["request"]["decision"]["signature"]["verified"],
                 true
             );
-            assert!(!response
-                .to_string()
-                .contains(created["request"]["request_digest"].as_str().unwrap()));
+            assert!(!response.to_string().contains(&legacy_digest));
             let (_, decision) = app
                 .request(
                     Method::GET,

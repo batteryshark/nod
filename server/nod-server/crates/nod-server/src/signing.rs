@@ -54,16 +54,51 @@ pub fn verify_value_decision_signature(
         ));
     }
 
-    // to_wire honors a stamped canonical digest, so even a per-user projection
-    // reaching this path would verify against the full-snapshot digest.
+    // A card does not persist the request-digest version it was issued under;
+    // the read path re-derives the current one. Acceptance therefore checks the
+    // submitted digest against every encoder that could have issued one for
+    // this card: dispatch on the answer field, and on the decision payload tag
+    // stored with the signature (nod-decision-v2 selects the value family).
     let wire = request.to_wire();
-    let legacy_digest = wire.request_digest;
-    let private_digest = wire
-        .signing
-        .as_ref()
-        .map(|context| context.request_digest.as_str());
-    if Some(provided.request_digest.as_str()) != legacy_digest.as_deref()
-        && Some(provided.request_digest.as_str()) != private_digest
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(field) = &request.answer_field {
+        let commitment = wire
+            .signing
+            .as_ref()
+            .map(|context| context.recipients_commitment.as_str())
+            .ok_or_else(|| {
+                ApiError::BadRequest("value request is missing its signing context".to_string())
+            })?;
+        candidates.push(
+            nod_proto::value_signing::value_request_digest(&wire, commitment, field)
+                .map_err(|err| ApiError::BadRequest(err.to_string()))?,
+        );
+        candidates.push(
+            nod_proto::value_signing::value_request_digest_legacy_v3(&wire, commitment, field)
+                .map_err(|err| ApiError::BadRequest(err.to_string()))?,
+        );
+    } else {
+        candidates.push(
+            nod_proto::request_digest_legacy_line_snapshot(&wire)
+                .map_err(|err| ApiError::BadRequest(err.to_string()))?,
+        );
+        if let Some(context) = &wire.signing {
+            candidates.push(
+                nod_proto::request_digest_v1(&wire, &context.recipients_commitment)
+                    .map_err(|err| ApiError::BadRequest(err.to_string()))?,
+            );
+            candidates.push(
+                nod_proto::request_digest_legacy_structured_v2(
+                    &wire,
+                    &context.recipients_commitment,
+                )
+                .map_err(|err| ApiError::BadRequest(err.to_string()))?,
+            );
+        }
+    }
+    if !candidates
+        .iter()
+        .any(|candidate| candidate == &provided.request_digest)
     {
         return Err(ApiError::BadRequest(
             "decision signature request_digest does not match the request snapshot".to_string(),
@@ -91,7 +126,6 @@ pub fn verify_value_decision_signature(
     let signing_payload = if let Some(field) = &request.answer_field {
         if provided.payload_version.as_deref()
             != Some(nod_proto::value_signing::VALUE_DECISION_PAYLOAD_VERSION)
-            || private_digest != Some(provided.request_digest.as_str())
             || provided.signed_at != signed_at
         {
             return Err(ApiError::BadRequest(

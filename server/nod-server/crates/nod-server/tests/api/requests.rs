@@ -406,13 +406,17 @@ async fn v1_signed_decision_records_verified_signature() {
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
     let request_id = created["request_id"].as_str().unwrap();
-    let request_digest = created["request"]["request_digest"].as_str().unwrap();
+    // Old receipts bound the unsalted line-snapshot digest; the server must
+    // still accept it even though cards no longer carry it.
+    let created_wire: nod_proto::Request =
+        serde_json::from_value(created["request"].clone()).unwrap();
+    let request_digest = nod_proto::request_digest_legacy_line_snapshot(&created_wire).unwrap();
     let nonce = "nonce-1";
     let signed_at = "2026-05-31T12:00:00.000Z";
     let text = "ship it";
     let payload = decision_payload(DecisionPayload {
         request_id,
-        request_digest,
+        request_digest: &request_digest,
         option_id: "approve",
         option_kind: "approve",
         user_id: "owner",
@@ -447,6 +451,80 @@ async fn v1_signed_decision_records_verified_signature() {
     assert_eq!(decision["signature"]["verified"], true);
     assert_eq!(decision["signature"]["request_digest"], request_digest);
     assert_eq!(decision["actor_device_id"], device_id);
+
+    // Structured digests issued under the pre-collapse nod-request-v2 tag must
+    // still verify for cards already in flight.
+    let (status, created) = app
+        .request(
+            Method::POST,
+            "/api/v1/requests",
+            Some(&issuer_token),
+            Some(json!({
+                "channel_id": "default",
+                "title": "Approve legacy structured deploy",
+                "summary": "Issued under nod-request-v2",
+                "options": [{ "id": "approve", "label": "Approve", "kind": "approve" }]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let legacy_request_id = created["request_id"].as_str().unwrap();
+    let legacy_wire: nod_proto::Request =
+        serde_json::from_value(created["request"].clone()).unwrap();
+    let legacy_commitment = legacy_wire
+        .signing
+        .as_ref()
+        .unwrap()
+        .recipients_commitment
+        .clone();
+    let legacy_digest =
+        nod_proto::request_digest_legacy_structured_v2(&legacy_wire, &legacy_commitment).unwrap();
+    assert_ne!(
+        legacy_digest,
+        legacy_wire.signing.as_ref().unwrap().request_digest
+    );
+    let legacy_nonce = "nonce-legacy-structured";
+    let legacy_payload = decision_payload(DecisionPayload {
+        request_id: legacy_request_id,
+        request_digest: &legacy_digest,
+        option_id: "approve",
+        option_kind: "approve",
+        user_id: "owner",
+        device_id,
+        key_id,
+        nonce: legacy_nonce,
+        signed_at,
+        text,
+    });
+    let legacy_signature =
+        URL_SAFE_NO_PAD.encode(key_pair.sign(&rng, legacy_payload.as_bytes()).unwrap());
+    let (status, legacy_resolved) = app
+        .request(
+            Method::POST,
+            &format!("/api/v1/requests/{legacy_request_id}/options/approve"),
+            Some(device_token),
+            Some(json!({
+                "text": text,
+                "signature": {
+                    "key_id": key_id,
+                    "algorithm": "p256_ecdsa_sha256",
+                    "nonce": legacy_nonce,
+                    "signed_at": signed_at,
+                    "request_digest": legacy_digest,
+                    "signature": legacy_signature
+                }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{legacy_resolved}");
+    assert_eq!(
+        legacy_resolved["request"]["decision"]["signature"]["verified"],
+        true
+    );
+    assert_eq!(
+        legacy_resolved["request"]["decision"]["signature"]["request_digest"],
+        json!(legacy_digest)
+    );
 }
 
 #[tokio::test]
@@ -645,7 +723,9 @@ async fn device_can_sign_dismiss_for_request_without_options() {
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
     let request_id = created["request_id"].as_str().unwrap();
-    let request_digest = created["request"]["request_digest"].as_str().unwrap();
+    let request_digest = created["request"]["signing"]["request_digest"]
+        .as_str()
+        .unwrap();
     let nonce = "dismiss-nonce-1";
     let signed_at = "2026-05-31T12:00:00.000Z";
     let payload = decision_payload(DecisionPayload {
@@ -923,7 +1003,11 @@ async fn private_device_views_omit_v1_digest_while_legacy_receipts_still_verify(
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
     let request_id = created["request_id"].as_str().unwrap();
-    let canonical_digest = created["request"]["request_digest"].as_str().unwrap();
+    // An old receipt may bind the unsalted full-snapshot digest that private
+    // device views never expose.
+    let created_wire: nod_proto::Request =
+        serde_json::from_value(created["request"].clone()).unwrap();
+    let canonical_digest = nod_proto::request_digest_legacy_line_snapshot(&created_wire).unwrap();
 
     // Private projections hide unsalted v1 digests to prevent recipient guessing.
     for token in [paul_token, &maya_token] {
@@ -945,7 +1029,7 @@ async fn private_device_views_omit_v1_digest_while_legacy_receipts_still_verify(
     }
 
     // Existing v1 receipts bound to an issuer's full snapshot remain valid.
-    let device_view_digest = canonical_digest;
+    let device_view_digest = canonical_digest.as_str();
     let nonce = "paul-nonce-1";
     let signed_at = "2026-06-10T12:00:00.000Z";
     let text = "looks good";
