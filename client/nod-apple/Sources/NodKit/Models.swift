@@ -402,6 +402,12 @@ public struct NodRequest: Codable, Identifiable, Hashable, Sendable {
     isValueRequestCard(answerFieldPresent: answerField != nil, signingVersion: signing?.version)
       || options.contains { $0.id == "__nod_value_open" }
   }
+  /// A plain informational card: still pending, nothing to choose and no answer
+  /// field. Acknowledge is the only way to clear one, so the detail view offers
+  /// that control on iOS and macOS whenever this is true — independent of
+  /// `acknowledgeOnOpen`, which only decides whether leaving the card also
+  /// clears it.
+  public var isPendingInformational: Bool { status == .pending && options.isEmpty && !isValueRequest }
   public let id: String
   public let requestId: String
   public let channelId: String

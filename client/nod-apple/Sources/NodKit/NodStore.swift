@@ -503,7 +503,7 @@ public final class NodStore: ObservableObject {
 
   @discardableResult
   public func dismissIfInformational(request: NodRequest, serverId: String? = nil) async -> Bool {
-    guard !request.isValueRequest, request.status == .pending, request.options.isEmpty, let serverId = serverId ?? selectedServer?.id else { return false }
+    guard request.isPendingInformational, let serverId = serverId ?? selectedServer?.id else { return false }
     return await submitRenderedRequest(request, serverId: serverId, optionId: "dismiss", text: nil)
   }
 
