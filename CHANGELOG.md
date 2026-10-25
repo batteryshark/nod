@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.1
+
+- New Nod mascot app icon across iOS, macOS and the desktop app.
+- Matching Nod mascot menu-bar and tray glyph.
+- Asset-only release: no functional, API, server, protocol or signing-byte changes.
+
+Full notes: [docs/release-notes/v1.1.1.md](docs/release-notes/v1.1.1.md)
+
 ## v1.1.0
 
 - Committed lifecycle outbox with optional NATS publishing, durable callback
