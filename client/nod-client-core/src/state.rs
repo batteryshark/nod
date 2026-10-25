@@ -172,6 +172,12 @@ impl StateReducer {
         notification_candidates
     }
 
+    /// The locally held copy of a request for the selected server, whichever
+    /// channel filter is active. This is what the UI rendered.
+    pub fn request(&self, request_id: &str) -> Option<&Request> {
+        self.requests_by_id.get(request_id)
+    }
+
     pub fn apply_request_update(&mut self, request: Request) -> bool {
         if self
             .requests_by_id

@@ -13,6 +13,7 @@ import {
   selectedRequest,
   channelColor,
   totalPendingCount,
+  renderedRequestDigest,
 } from "./domain";
 import type { Channel, ClientState, RequestOption, NodRequest } from "./types";
 
@@ -299,6 +300,31 @@ describe("replaceRequest", () => {
 
     expect(next).toHaveLength(1);
     expect(next[0]).toBe(baseRequest);
+  });
+});
+
+describe("renderedRequestDigest", () => {
+  it("uses the signing context digest over the legacy one", () => {
+    expect(renderedRequestDigest(baseRequest)).toBe("digest");
+    expect(
+      renderedRequestDigest({
+        ...baseRequest,
+        signing: {
+          version: "nod-request-v2",
+          recipients_commitment: "c",
+          request_digest: "private-digest",
+        },
+      }),
+    ).toBe("private-digest");
+  });
+
+  it("yields null when the request carries no digest at all", () => {
+    expect(
+      renderedRequestDigest({ ...baseRequest, request_digest: null }),
+    ).toBeNull();
+    expect(
+      renderedRequestDigest({ ...baseRequest, request_digest: "" }),
+    ).toBeNull();
   });
 });
 

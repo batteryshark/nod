@@ -14,6 +14,7 @@ pub use runtime::{
     SubmitOptionParams, SubmitRequestOptionParams,
 };
 pub use signing::{
-    build_decision_signature, build_value_decision_signature, DecisionSigningRequest, DeviceSigner,
-    ForeignSigner, ForeignSignerKey, StoredSigningKey,
+    asserted_request_digest, build_decision_signature, build_value_decision_signature,
+    DecisionSigningRequest, DeviceSigner, ForeignSigner, ForeignSignerKey, StoredSigningKey,
+    REQUEST_CHANGED_ERROR,
 };

@@ -1,14 +1,13 @@
 use nod_client_core::models::Request;
 use tokio::sync::mpsc;
 use windows::{
-    core::{IInspectable, Interface, HSTRING},
+    core::{IInspectable, HSTRING},
     Data::Xml::Dom::XmlDocument,
     Foundation::TypedEventHandler,
-    UI::Notifications::{ToastActivatedEventArgs, ToastNotification, ToastNotificationManager},
+    UI::Notifications::{ToastNotification, ToastNotificationManager},
 };
 
 use crate::notifier::{
-    options::desktop_notification_options,
     windows_toast::{notification_tag, windows_toast_xml},
     NotificationActivation, NotificationContext,
 };
@@ -45,26 +44,15 @@ pub(crate) async fn show_notification(
     toast.SetGroup(&HSTRING::from(notification_tag(&context.server_id)))?;
     let request_id = request.id.clone();
     let server_id = context.server_id.clone();
-    let options = desktop_notification_options(&server_id, request);
     // The handler's generics pin the closure argument types — the activation
     // callback receives (&Option<ToastNotification>, &Option<IInspectable>).
-    let handler = TypedEventHandler::<ToastNotification, IInspectable>::new(move |_, args| {
-        let option_id = args
-            .as_ref()
-            .and_then(|args| args.cast::<ToastActivatedEventArgs>().ok())
-            .and_then(|args| args.Arguments().ok())
-            .map(|arguments| arguments.to_string_lossy())
-            .filter(|arguments| !arguments.is_empty());
-        let activation = option_id
-            .as_deref()
-            .and_then(|id| id.strip_prefix("action:"))
-            .and_then(|id| options.iter().find(|option| option.id == id))
-            .map(|option| option.activation.clone())
-            .unwrap_or_else(|| NotificationActivation::Open {
-                server_id: server_id.clone(),
-                request_id: Some(request_id.clone()),
-            });
-        let _ = activations.blocking_send(activation);
+    // The toast has no actions, so any activation just opens the request;
+    // the activation arguments are deliberately not consulted.
+    let handler = TypedEventHandler::<ToastNotification, IInspectable>::new(move |_, _| {
+        let _ = activations.blocking_send(NotificationActivation {
+            server_id: server_id.clone(),
+            request_id: request_id.clone(),
+        });
         Ok(())
     });
     toast.Activated(&handler)?;

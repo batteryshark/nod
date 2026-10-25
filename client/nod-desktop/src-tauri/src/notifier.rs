@@ -1,7 +1,3 @@
-#[cfg(any(target_os = "linux", target_os = "windows", test))]
-pub(crate) mod activation;
-#[cfg(any(target_os = "linux", target_os = "windows", test))]
-pub(crate) mod options;
 mod platform;
 #[cfg(any(target_os = "windows", test))]
 mod windows_toast;
@@ -20,18 +16,15 @@ use tokio::sync::mpsc;
 pub(crate) use self::platform::register_toast_app_id;
 use self::platform::{remove_notification, show_notification};
 
+/// A click on an OS notification. The only thing it can do is bring the app
+/// forward on that request: decisions are made and signed in the foreground
+/// window, over the content the user is looking at, never from a notification
+/// button.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(any(target_os = "linux", target_os = "windows", test))]
-pub(crate) enum NotificationActivation {
-    Open {
-        server_id: String,
-        request_id: Option<String>,
-    },
-    Submit {
-        server_id: String,
-        request_id: String,
-        option_id: String,
-    },
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) struct NotificationActivation {
+    pub server_id: String,
+    pub request_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -116,8 +109,8 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use nod_client_core::models::{DecisionResolution, OptionKind, RequestOption, RequestStatus};
 
+    use super::windows_toast::{notification_tag, windows_toast_xml};
     use super::*;
-    use super::{options::desktop_notification_options, windows_toast::windows_toast_xml};
 
     fn request(options: Vec<RequestOption>) -> Request {
         Request {
@@ -162,199 +155,36 @@ mod tests {
         }
     }
 
+    /// Decisions are never offered on a notification: whatever options a
+    /// pending request carries, the toast has no action buttons and its only
+    /// activation is opening the app on that request.
     #[test]
-    fn default_option_dismisses_from_notification() {
-        let request = request(Vec::new());
-        let options = desktop_notification_options("server-1", &request);
-
-        assert_eq!(
-            options[0].activation,
-            NotificationActivation::Submit {
-                server_id: "server-1".into(),
-                request_id: "request-1".to_string(),
-                option_id: "dismiss".to_string()
-            }
-        );
-    }
-
-    fn value_request(legacy: bool) -> Request {
-        let mut value = request(Vec::new());
-        if legacy {
-            value.options = vec![option("__nod_value_open", OptionKind::Custom, false)];
-        } else {
-            value.answer_field = Some(nod_proto::AnswerField::Number {
-                label: "Count".into(),
-                default: nod_proto::AnswerValue::Number {
-                    decimal: "4".into(),
-                },
-            });
-        }
-        value
-    }
-
-    #[test]
-    fn value_and_legacy_notifications_are_open_only() {
-        for legacy in [false, true] {
-            let request = value_request(legacy);
-            let options = desktop_notification_options("server-1", &request);
-            assert_eq!(options.len(), 1);
-            assert!(matches!(&options[0].activation,
-                NotificationActivation::Open { request_id: Some(id), .. } if id == "request-1"));
+    fn toasts_never_carry_decision_actions() {
+        let variants = [
+            request(Vec::new()),
+            request(vec![option("approve", OptionKind::Approve, false)]),
+            request(vec![
+                option("approve", OptionKind::Approve, false),
+                option("reject", OptionKind::Reject, false),
+                option("secret_customer_action", OptionKind::Custom, false),
+            ]),
+            request(vec![option(
+                "approve_notes",
+                OptionKind::ApproveWithText,
+                true,
+            )]),
+        ];
+        for request in variants {
             let xml = windows_toast_xml(&request, "default");
-            assert!(!xml.contains("action:dismiss"));
-            assert!(!xml.contains("action:__nod_value_open"));
-            assert!(xml.contains("Open Nod"));
+            assert!(!xml.contains("<action"), "{xml}");
+            assert!(!xml.contains("action:"), "{xml}");
+            assert!(!xml.contains("secret_customer_action"), "{xml}");
+            assert!(xml.starts_with("<toast launch=\"open\">"), "{xml}");
         }
     }
 
-    struct FakeActivationRuntime {
-        current: Option<Request>,
-        reads: usize,
-        opens: usize,
-        posts: usize,
-    }
-
-    impl activation::ActivationRuntime for FakeActivationRuntime {
-        async fn read(&mut self, _: nod_client_core::OpenRequestParams) -> anyhow::Result<Request> {
-            self.reads += 1;
-            self.current
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("offline"))
-        }
-        async fn open(&mut self, params: nod_client_core::OpenRequestParams) -> anyhow::Result<()> {
-            assert_eq!(params.request_id, "request-1");
-            self.opens += 1;
-            Ok(())
-        }
-        async fn submit(
-            &mut self,
-            params: nod_client_core::SubmitRequestOptionParams,
-        ) -> anyhow::Result<()> {
-            assert_eq!(params.option_id, "approve");
-            assert!(params.answer_value.is_none());
-            self.posts += 1;
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn stale_actions_fresh_read_then_open_values_or_fail_closed_without_post() {
-        for current in [Some(value_request(false)), Some(value_request(true)), None] {
-            let available = current.is_some();
-            let mut fake = FakeActivationRuntime {
-                current,
-                reads: 0,
-                opens: 0,
-                posts: 0,
-            };
-            let result = activation::activate(
-                &mut fake,
-                NotificationActivation::Submit {
-                    server_id: "server-1".into(),
-                    request_id: "request-1".into(),
-                    option_id: "approve".into(),
-                },
-            )
-            .await;
-            assert_eq!(result.is_ok(), available);
-            assert_eq!(fake.reads, 1);
-            assert_eq!(fake.opens, usize::from(available));
-            assert_eq!(fake.posts, 0);
-        }
-    }
-
-    #[tokio::test]
-    async fn ordinary_notification_still_submits_once_after_fresh_read() {
-        let mut fake = FakeActivationRuntime {
-            current: Some(request(vec![option("approve", OptionKind::Approve, false)])),
-            reads: 0,
-            opens: 0,
-            posts: 0,
-        };
-        activation::activate(
-            &mut fake,
-            NotificationActivation::Submit {
-                server_id: "server-1".into(),
-                request_id: "request-1".into(),
-                option_id: "approve".into(),
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!((fake.reads, fake.opens, fake.posts), (1, 0, 1));
-    }
-
     #[test]
-    fn simple_options_submit_from_notification() {
-        let request = request(vec![option("approve", OptionKind::Approve, false)]);
-        let options = desktop_notification_options("server-1", &request);
-
-        assert_eq!(
-            options[0].activation,
-            NotificationActivation::Submit {
-                server_id: "server-1".into(),
-                request_id: "request-1".to_string(),
-                option_id: "approve".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn text_options_open_request_detail() {
-        let request = request(vec![option(
-            "approve_notes",
-            OptionKind::ApproveWithText,
-            true,
-        )]);
-        let options = desktop_notification_options("server-1", &request);
-
-        assert_eq!(
-            options[0].activation,
-            NotificationActivation::Open {
-                server_id: "server-1".into(),
-                request_id: Some("request-1".to_string())
-            }
-        );
-    }
-
-    #[test]
-    fn oversized_option_sets_open_the_complete_request() {
-        let request = request(vec![
-            option("one", OptionKind::Custom, false),
-            option("two", OptionKind::Custom, false),
-            option("three", OptionKind::Custom, false),
-            option("four", OptionKind::Custom, false),
-            option("five", OptionKind::Custom, false),
-        ]);
-
-        let options = desktop_notification_options("server-1", &request);
-        assert_eq!(options.len(), 1);
-        assert_eq!(options[0].label, "Open Nod");
-        assert!(matches!(
-            options[0].activation,
-            NotificationActivation::Open { .. }
-        ));
-    }
-
-    #[test]
-    fn redacted_toasts_do_not_leak_custom_option_labels() {
-        let mut request = request(vec![option(
-            "secret_customer_action",
-            OptionKind::Custom,
-            false,
-        )]);
-        request.notification.redact = true;
-        let xml = windows_toast_xml(&request, "default");
-        assert!(!xml.contains("secret_customer_action"));
-        assert!(xml.contains("Open Nod"));
-        assert!(matches!(
-            desktop_notification_options("server-1", &request)[0].activation,
-            NotificationActivation::Open { .. }
-        ));
-    }
-
-    #[test]
-    fn windows_xml_escapes_text_and_contains_options() {
+    fn windows_xml_escapes_text_and_keeps_the_preview() {
         let request = Request {
             title: "Deploy <prod>".to_string(),
             summary: "A&B".to_string(),
@@ -364,12 +194,12 @@ mod tests {
 
         assert!(xml.contains("Deploy &lt;prod&gt;"));
         assert!(xml.contains("A&amp;B"));
-        assert!(xml.contains("<actions><action content=\"approve\" arguments=\"action:approve\""));
+        assert!(!xml.contains("<actions>"));
         assert!(!xml.contains("<options>"));
     }
+
     #[test]
     fn windows_tag_is_bounded_and_scoped() {
-        use super::windows_toast::notification_tag;
         assert_eq!(notification_tag("request-one").len(), 16);
         assert_ne!(
             notification_tag("request-one"),
@@ -378,14 +208,14 @@ mod tests {
     }
 
     #[test]
-    fn redacted_silent_toast_has_no_request_content_or_actions_when_resolved() {
+    fn redacted_silent_toast_has_no_request_content() {
         let mut request = request(Vec::new());
         request.status = RequestStatus::Resolved;
         request.notification.redact = true;
         let xml = windows_toast_xml(&request, "silent");
         assert!(!xml.contains("Production"));
         assert!(!xml.contains("Approve deploy"));
-        assert!(!xml.contains("<action "));
+        assert!(!xml.contains("<action"));
         assert!(xml.contains("<audio silent=\"true\"/>"));
     }
 }

@@ -149,8 +149,17 @@ fn is_expected_reconnect_error(error: &Error, has_connected: bool) -> bool {
 
 async fn run_connection(context: &SnapshotContext) -> Result<()> {
     let url = context.api.websocket_url()?;
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let authorization = context.api.websocket_authorization()?;
+    use tokio_tungstenite::tungstenite::{
+        client::IntoClientRequest,
+        http::{header::AUTHORIZATION, HeaderValue},
+    };
     let mut handshake = url.as_str().into_client_request()?;
+    // The device token goes only in the upgrade request's Authorization
+    // header, never in the URL, so proxy and access logs do not record it.
+    let mut authorization = HeaderValue::from_str(&authorization)?;
+    authorization.set_sensitive(true);
+    handshake.headers_mut().insert(AUTHORIZATION, authorization);
     handshake
         .headers_mut()
         .insert("Nod-Request-Contract", "single-value-v1".parse()?);

@@ -115,6 +115,20 @@ export function receiptValue(value: AnswerValue): string {
   }
 }
 
+/**
+ * The digest the UI is showing for a request: the private signing context's
+ * digest when present, else the legacy top-level one. Every submit echoes it
+ * so the backend signs exactly what was on screen; `null` means the request
+ * cannot be answered from this copy.
+ */
+export function renderedRequestDigest(request: NodRequest): string | null {
+  const digest = request.signing?.request_digest ?? request.request_digest;
+  return digest ? digest : null;
+}
+
+export const REQUEST_CHANGED_MESSAGE =
+  "Request changed. Review it again before answering.";
+
 export function isValueUnsupported(request: NodRequest): boolean {
   return request.answer_field != null ||
     request.signing?.version === "nod-request-v3" ||

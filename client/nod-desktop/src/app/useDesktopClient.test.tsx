@@ -98,4 +98,44 @@ describe("runtime wire integration", () => {
     });
     expect(result.current.state.sync_phase).toBe("revoked");
   });
+  it("submits with the digest of the rendered request and refuses without one", async () => {
+    vi.mocked(commands.submitRequestOption).mockResolvedValue({
+      ...initial.requests[0],
+      status: "resolved",
+    });
+    const { result } = renderHook(useDesktopClient);
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const request = initial.requests[0];
+    const rendered = request.signing?.request_digest ?? request.request_digest;
+    expect(rendered).toBeTruthy();
+    let submitted!: Promise<boolean>;
+    act(() => {
+      submitted = result.current.commands.submitRequestOption(
+        request,
+        request.options[0],
+      );
+    });
+    await expect(submitted).resolves.toBe(true);
+    expect(commands.submitRequestOption).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request_id: request.id,
+        option_id: request.options[0].id,
+        expected_request_digest: rendered,
+      }),
+    );
+
+    vi.mocked(commands.submitRequestOption).mockClear();
+    let refused!: Promise<boolean>;
+    act(() => {
+      refused = result.current.commands.submitRequestOption(
+        { ...request, signing: null, request_digest: null },
+        request.options[0],
+      );
+    });
+    await expect(refused).resolves.toBe(false);
+    expect(commands.submitRequestOption).not.toHaveBeenCalled();
+    expect(result.current.error).toBe(
+      "Request changed. Review it again before answering.",
+    );
+  });
 });

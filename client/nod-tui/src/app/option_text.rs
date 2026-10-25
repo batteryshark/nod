@@ -7,7 +7,8 @@ use crate::domain::OptionChoice;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OptionTextForm {
     answer_value: Option<nod_proto::AnswerValue>,
-    expected_request_digest: Option<String>,
+    /// Digest of the request copy that was on screen when the form opened.
+    expected_request_digest: String,
     request_id: String,
     option_id: String,
     label: String,
@@ -16,16 +17,17 @@ pub(crate) struct OptionTextForm {
 }
 
 impl OptionTextForm {
-    pub(super) fn from_choice(request: &Request, option: OptionChoice<'_>) -> Self {
+    pub(super) fn from_choice(
+        request: &Request,
+        option: OptionChoice<'_>,
+        expected_request_digest: String,
+    ) -> Self {
         Self {
             answer_value: request
                 .answer_field
                 .as_ref()
                 .map(|f| f.default_value().clone()),
-            expected_request_digest: request
-                .answer_field
-                .as_ref()
-                .and_then(|_| request.signing.as_ref().map(|c| c.request_digest.clone())),
+            expected_request_digest,
             request_id: request.id.clone(),
             option_id: option.id.to_string(),
             label: option.label.to_string(),
@@ -130,7 +132,7 @@ mod tests {
             placeholder: option.text_placeholder.as_deref(),
             requires_text: true,
         };
-        let mut form = OptionTextForm::from_choice(&request, choice);
+        let mut form = OptionTextForm::from_choice(&request, choice, "digest".into());
 
         let result = form.handle_key(key(KeyCode::Esc));
 
@@ -148,13 +150,14 @@ mod tests {
                 placeholder: None,
                 requires_text: true,
             },
+            "digest".into(),
         );
         let result = form.handle_key(key(KeyCode::Enter));
         assert_eq!(
             result.commands,
             vec![RuntimeCommand::SubmitOption(SubmitOptionParams {
                 answer_value: None,
-                expected_request_digest: None,
+                expected_request_digest: "digest".into(),
                 request_id: "deploy".into(),
                 option_id: "approve_notes".into(),
                 text: None
