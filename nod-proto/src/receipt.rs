@@ -20,11 +20,14 @@ use crate::{
     decision::{Decision, DecisionSignatureRecord},
     request::{OptionKind, Request, RequestOption},
     signing::{
-        decision_signing_payload, request_digest, request_digest_v2, verify_payload,
-        DecisionSigningInput, SigningError, PRIVATE_REQUEST_DIGEST_VERSION,
+        decision_signing_payload, request_digest_legacy_line_snapshot,
+        request_digest_legacy_structured_v2, request_digest_v1, verify_payload,
+        DecisionSigningInput, SigningError, LEGACY_LINE_SNAPSHOT_REQUEST_DIGEST_VERSION,
+        LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION, REQUEST_DIGEST_VERSION,
     },
     value_signing::{
-        decision_signing_payload_v2, request_digest_v3, VALUE_DECISION_PAYLOAD_VERSION,
+        decision_signing_payload_v2, value_request_digest, value_request_digest_legacy_v3,
+        LEGACY_VALUE_REQUEST_DIGEST_VERSION, VALUE_DECISION_PAYLOAD_VERSION,
         VALUE_REQUEST_DIGEST_VERSION,
     },
     DECISION_SIGNING_ALGORITHM,
@@ -64,24 +67,53 @@ pub struct ReceiptVerificationInput<'a> {
     pub strict_time: bool,
 }
 
-/// Which request digest encoding the receipt was found to bind.
+/// Which request digest encoder the receipt was found to bind. Version tags
+/// are not unique across encoders (the legacy line snapshot and the current
+/// structured encoder both carry `nod-request-v1`), so a verdict names the
+/// encoder itself; see `docs/signing.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DigestVersion {
-    /// `nod-request-v1`, the full-snapshot legacy digest.
-    V1,
-    /// `nod-request-v2`, the recipient-private digest.
-    V2,
-    /// `nod-request-v3`, the single-value digest.
-    V3,
+pub enum DigestEncoder {
+    /// Current ordinary digest: structured content plus the salted
+    /// `recipients_commitment`, tagged `nod-request-v1`.
+    Structured,
+    /// Current value digest: canonical content plus the `answer_field`, tagged
+    /// `nod-request-v2`.
+    Value,
+    /// Historical line-snapshot digest with recipients in the clear, tagged
+    /// `nod-request-v1`; the top-level `request_digest` of a full view.
+    LegacyLineSnapshot,
+    /// The structured encoder under its pre-collapse `nod-request-v2` tag.
+    LegacyStructured,
+    /// The value encoder under its pre-collapse `nod-request-v3` tag.
+    LegacyValue,
 }
 
-impl DigestVersion {
+impl DigestEncoder {
+    /// Stable encoder name for reports.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::V1 => crate::signing::REQUEST_DIGEST_VERSION,
-            Self::V2 => PRIVATE_REQUEST_DIGEST_VERSION,
-            Self::V3 => VALUE_REQUEST_DIGEST_VERSION,
+            Self::Structured => "structured",
+            Self::Value => "value",
+            Self::LegacyLineSnapshot => "legacy-line-snapshot",
+            Self::LegacyStructured => "legacy-structured",
+            Self::LegacyValue => "legacy-value",
         }
+    }
+
+    /// The version tag the encoder prefixes its bytes with.
+    pub fn version(self) -> &'static str {
+        match self {
+            Self::Structured => REQUEST_DIGEST_VERSION,
+            Self::Value => VALUE_REQUEST_DIGEST_VERSION,
+            Self::LegacyLineSnapshot => LEGACY_LINE_SNAPSHOT_REQUEST_DIGEST_VERSION,
+            Self::LegacyStructured => LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION,
+            Self::LegacyValue => LEGACY_VALUE_REQUEST_DIGEST_VERSION,
+        }
+    }
+
+    /// Whether the server still issues this encoder for new cards.
+    pub fn is_current(self) -> bool {
+        matches!(self, Self::Structured | Self::Value)
     }
 }
 
@@ -95,7 +127,7 @@ pub struct VerifiedReceipt {
     pub option_id: String,
     pub option_kind: OptionKind,
     pub request_digest: String,
-    pub digest_version: DigestVersion,
+    pub digest_encoder: DigestEncoder,
     pub signed_at: DateTime<Utc>,
     /// Non-fatal observations, e.g. clock skew outside the tolerance when
     /// `strict_time` is off.
@@ -112,6 +144,8 @@ pub enum ReceiptError {
     UnsupportedPayloadVersion(String),
     #[error("unsupported request signing version {0:?}")]
     UnsupportedDigestVersion(String),
+    #[error("value request carries no signing context to recompute its digest from")]
+    MissingSigningContext,
     #[error("decision is for request {decision:?} but the created request is {request:?}")]
     RequestIdMismatch { request: String, decision: String },
     #[error("signature request_digest {found:?} matches none of the digests recomputed from the created request {expected:?}")]
@@ -191,7 +225,7 @@ pub fn verify_decision_receipt(
         });
     }
 
-    let (request_digest, digest_version) =
+    let (request_digest, digest_encoder) =
         match_request_digest(request, &signature.request_digest)?;
     let option = resolve_option(request, &decision.option_id)?;
     if option.kind != decision.option_kind {
@@ -300,44 +334,71 @@ pub fn verify_decision_receipt(
         option_id: decision.option_id.clone(),
         option_kind: decision.option_kind.clone(),
         request_digest,
-        digest_version,
+        digest_encoder,
         signed_at,
         warnings,
     })
 }
 
-/// Recompute every digest the created request can legitimately be signed
-/// under and require the receipt's digest to be one of them.
+/// Recompute every digest the created request can legitimately have been
+/// signed under and require the receipt's digest to be one of them.
+///
+/// Mirrors the server's acceptance rule: a card is the value variant iff it
+/// carries an `answer_field`; a value card can only have been signed under a
+/// value encoder (current or legacy) over the `recipients_commitment` from its
+/// signing context, never the line snapshot. An ordinary card may have been
+/// signed under the line snapshot (always recomputable from the content) or,
+/// when it carries a commitment, under the structured encoder with either tag.
+/// The context's own version tag only has to be one the scheme knows; which
+/// encoder actually matched is reported.
 fn match_request_digest(
     request: &Request,
     found: &str,
-) -> Result<(String, DigestVersion), ReceiptError> {
-    let mut candidates: Vec<(String, DigestVersion)> = Vec::with_capacity(2);
-    if request.answer_field.is_none() {
-        candidates.push((
-            request_digest(request).map_err(ReceiptError::Digest)?,
-            DigestVersion::V1,
-        ));
-    }
-    if let Some(signing) = request.signing.as_ref() {
-        let commitment = signing.recipients_commitment.as_str();
-        match signing.version.as_str() {
-            PRIVATE_REQUEST_DIGEST_VERSION => candidates.push((
-                request_digest_v2(request, commitment).map_err(ReceiptError::Digest)?,
-                DigestVersion::V2,
-            )),
-            VALUE_REQUEST_DIGEST_VERSION => {
-                let field = request
-                    .answer_field
-                    .as_ref()
-                    .ok_or(ReceiptError::MissingAnswerValue)?;
-                candidates.push((
-                    request_digest_v3(request, commitment, field).map_err(ReceiptError::Digest)?,
-                    DigestVersion::V3,
-                ));
-            }
-            other => return Err(ReceiptError::UnsupportedDigestVersion(other.to_string())),
+) -> Result<(String, DigestEncoder), ReceiptError> {
+    const KNOWN_VERSIONS: [&str; 5] = [
+        REQUEST_DIGEST_VERSION,
+        VALUE_REQUEST_DIGEST_VERSION,
+        LEGACY_LINE_SNAPSHOT_REQUEST_DIGEST_VERSION,
+        LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION,
+        LEGACY_VALUE_REQUEST_DIGEST_VERSION,
+    ];
+    let signing = request.signing.as_ref();
+    if let Some(signing) = signing {
+        if !KNOWN_VERSIONS.contains(&signing.version.as_str()) {
+            return Err(ReceiptError::UnsupportedDigestVersion(
+                signing.version.clone(),
+            ));
         }
+    }
+    let commitment = signing.map(|signing| signing.recipients_commitment.as_str());
+    let mut candidates: Vec<(String, DigestEncoder)> = Vec::with_capacity(3);
+    if let Some(field) = request.answer_field.as_ref() {
+        let commitment = commitment.ok_or(ReceiptError::MissingSigningContext)?;
+        candidates.push((
+            value_request_digest(request, commitment, field).map_err(ReceiptError::Digest)?,
+            DigestEncoder::Value,
+        ));
+        candidates.push((
+            value_request_digest_legacy_v3(request, commitment, field)
+                .map_err(ReceiptError::Digest)?,
+            DigestEncoder::LegacyValue,
+        ));
+    } else {
+        if let Some(commitment) = commitment {
+            candidates.push((
+                request_digest_v1(request, commitment).map_err(ReceiptError::Digest)?,
+                DigestEncoder::Structured,
+            ));
+            candidates.push((
+                request_digest_legacy_structured_v2(request, commitment)
+                    .map_err(ReceiptError::Digest)?,
+                DigestEncoder::LegacyStructured,
+            ));
+        }
+        candidates.push((
+            request_digest_legacy_line_snapshot(request).map_err(ReceiptError::Digest)?,
+            DigestEncoder::LegacyLineSnapshot,
+        ));
     }
     candidates
         .iter()
@@ -446,8 +507,9 @@ mod tests {
         request
     }
 
-    /// Mirror the server's create-response projection: v1 digest plus the
-    /// salted v2/v3 signing context.
+    /// Mirror the server's create-response projection: the legacy line-snapshot
+    /// digest at the top level of an ordinary card plus the collapsed signing
+    /// context (`nod-request-v1` ordinary, `nod-request-v2` value).
     fn stamp(request: &mut Request) {
         let commitment = recipients_commitment(&request.recipients, SALT).unwrap();
         if let Some(field) = request.answer_field.clone() {
@@ -455,16 +517,51 @@ mod tests {
             request.signing = Some(RequestSigningContext {
                 version: VALUE_REQUEST_DIGEST_VERSION.to_string(),
                 recipients_commitment: commitment.clone(),
-                request_digest: request_digest_v3(request, &commitment, &field).unwrap(),
+                request_digest: value_request_digest(request, &commitment, &field).unwrap(),
             });
         } else {
-            request.request_digest = Some(request_digest(request).unwrap());
+            request.request_digest = Some(request_digest_legacy_line_snapshot(request).unwrap());
             request.signing = Some(RequestSigningContext {
-                version: PRIVATE_REQUEST_DIGEST_VERSION.to_string(),
+                version: REQUEST_DIGEST_VERSION.to_string(),
                 recipients_commitment: commitment.clone(),
-                request_digest: request_digest_v2(request, &commitment).unwrap(),
+                request_digest: request_digest_v1(request, &commitment).unwrap(),
             });
         }
+    }
+
+    /// The create-response projection a pre-collapse server issued: the same
+    /// content under the old `nod-request-v2` (ordinary) / `nod-request-v3`
+    /// (value) tags.
+    fn stamp_legacy(request: &mut Request) {
+        let commitment = recipients_commitment(&request.recipients, SALT).unwrap();
+        if let Some(field) = request.answer_field.clone() {
+            request.request_digest = None;
+            request.signing = Some(RequestSigningContext {
+                version: LEGACY_VALUE_REQUEST_DIGEST_VERSION.to_string(),
+                recipients_commitment: commitment.clone(),
+                request_digest: value_request_digest_legacy_v3(request, &commitment, &field)
+                    .unwrap(),
+            });
+        } else {
+            request.request_digest = Some(request_digest_legacy_line_snapshot(request).unwrap());
+            request.signing = Some(RequestSigningContext {
+                version: LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION.to_string(),
+                recipients_commitment: commitment.clone(),
+                request_digest: request_digest_legacy_structured_v2(request, &commitment).unwrap(),
+            });
+        }
+    }
+
+    fn value_request() -> Request {
+        let mut request = created_request();
+        request.answer_field = Some(AnswerField::Number {
+            label: "Replicas".to_string(),
+            default: AnswerValue::Number {
+                decimal: "3".to_string(),
+            },
+        });
+        stamp(&mut request);
+        request
     }
 
     struct Signer {
@@ -563,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn verifies_a_v1_full_snapshot_receipt() {
+    fn verifies_a_legacy_line_snapshot_receipt() {
         let request = created_request();
         let signer = new_signer("owner", "device-1", "key-1");
         let digest = request.request_digest.clone().unwrap();
@@ -574,31 +671,92 @@ mod tests {
         assert_eq!(verified.key_id, "key-1");
         assert_eq!(verified.option_id, "approve");
         assert_eq!(verified.option_kind, OptionKind::Approve);
-        assert_eq!(verified.digest_version, DigestVersion::V1);
+        assert_eq!(verified.digest_encoder, DigestEncoder::LegacyLineSnapshot);
+        assert_eq!(verified.digest_encoder.version(), "nod-request-v1");
+        assert!(!verified.digest_encoder.is_current());
         assert!(verified.warnings.is_empty(), "{:?}", verified.warnings);
     }
 
     #[test]
-    fn verifies_a_v2_private_projection_receipt() {
+    fn verifies_a_structured_ordinary_receipt() {
         let request = created_request();
         let signer = new_signer("platform", "device-2", "key-2");
         let digest = request.signing.as_ref().unwrap().request_digest.clone();
         let decision = sign_decision(&signer, &request, &digest, "reject", None, None);
         let verified = verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap();
-        assert_eq!(verified.digest_version, DigestVersion::V2);
+        assert_eq!(verified.digest_encoder, DigestEncoder::Structured);
+        assert_eq!(verified.digest_encoder.version(), "nod-request-v1");
+        assert!(verified.digest_encoder.is_current());
         assert_eq!(verified.option_kind, OptionKind::Reject);
     }
 
     #[test]
-    fn verifies_a_v3_value_receipt() {
+    fn verifies_a_legacy_structured_receipt_from_a_pre_collapse_card() {
+        // Card issued by an older server: nod-request-v2 tag, no answer_field.
         let mut request = created_request();
-        request.answer_field = Some(AnswerField::Number {
-            label: "Replicas".to_string(),
-            default: AnswerValue::Number {
-                decimal: "3".to_string(),
-            },
-        });
-        stamp(&mut request);
+        stamp_legacy(&mut request);
+        let signer = new_signer("platform", "device-2", "key-2");
+        let digest = request.signing.as_ref().unwrap().request_digest.clone();
+        let decision = sign_decision(&signer, &request, &digest, "reject", None, None);
+        let verified = verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap();
+        assert_eq!(verified.digest_encoder, DigestEncoder::LegacyStructured);
+        assert_eq!(verified.digest_encoder.version(), "nod-request-v2");
+        assert!(!verified.digest_encoder.is_current());
+
+        // The same card's line snapshot still verifies too, and the tag on the
+        // context does not change which encoder a digest is matched against.
+        let legacy = request.request_digest.clone().unwrap();
+        let decision = sign_decision(&signer, &request, &legacy, "reject", None, None);
+        let verified = verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap();
+        assert_eq!(verified.digest_encoder, DigestEncoder::LegacyLineSnapshot);
+    }
+
+    #[test]
+    fn a_context_never_selects_the_line_snapshot_for_a_value_card() {
+        let request = value_request();
+        let signer = new_signer("owner", "device-1", "key-1");
+        let answer = AnswerValue::Number {
+            decimal: "5".to_string(),
+        };
+        // A digest over the line snapshot of the same content is not a digest a
+        // value card can be signed under.
+        let line = request_digest_legacy_line_snapshot(&request).unwrap();
+        let decision = sign_decision(&signer, &request, &line, "approve", None, Some(&answer));
+        let error = verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap_err();
+        let ReceiptError::RequestDigestMismatch { expected, .. } = error else {
+            panic!("expected a digest mismatch, got {error}");
+        };
+        assert_eq!(expected.len(), 2);
+
+        // Without a commitment there is nothing to recompute a value digest from.
+        let mut bare = request.clone();
+        bare.signing = None;
+        let digest = request.signing.as_ref().unwrap().request_digest.clone();
+        let decision = sign_decision(&signer, &request, &digest, "approve", None, Some(&answer));
+        assert!(matches!(
+            verify(&bare, &decision, std::slice::from_ref(&signer.pinned)).unwrap_err(),
+            ReceiptError::MissingSigningContext
+        ));
+    }
+
+    #[test]
+    fn unknown_context_versions_are_refused() {
+        let mut request = created_request();
+        let signer = new_signer("owner", "device-1", "key-1");
+        let digest = request.request_digest.clone().unwrap();
+        let decision = sign_decision(&signer, &request, &digest, "approve", None, None);
+        request.signing.as_mut().unwrap().version = "nod-request-v999".to_string();
+        assert!(matches!(
+            verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap_err(),
+            ReceiptError::UnsupportedDigestVersion(version) if version == "nod-request-v999"
+        ));
+    }
+
+    #[test]
+    fn verifies_a_legacy_value_receipt_from_a_pre_collapse_card() {
+        let mut request = value_request();
+        stamp_legacy(&mut request);
+        assert_eq!(request.signing.as_ref().unwrap().version, "nod-request-v3");
         let signer = new_signer("owner", "device-1", "key-1");
         let digest = request.signing.as_ref().unwrap().request_digest.clone();
         let answer = AnswerValue::Number {
@@ -606,7 +764,24 @@ mod tests {
         };
         let decision = sign_decision(&signer, &request, &digest, "approve", None, Some(&answer));
         let verified = verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap();
-        assert_eq!(verified.digest_version, DigestVersion::V3);
+        assert_eq!(verified.digest_encoder, DigestEncoder::LegacyValue);
+        assert_eq!(verified.digest_encoder.version(), "nod-request-v3");
+        assert!(!verified.digest_encoder.is_current());
+    }
+
+    #[test]
+    fn verifies_a_value_receipt() {
+        let request = value_request();
+        let signer = new_signer("owner", "device-1", "key-1");
+        let digest = request.signing.as_ref().unwrap().request_digest.clone();
+        let answer = AnswerValue::Number {
+            decimal: "5".to_string(),
+        };
+        let decision = sign_decision(&signer, &request, &digest, "approve", None, Some(&answer));
+        let verified = verify(&request, &decision, std::slice::from_ref(&signer.pinned)).unwrap();
+        assert_eq!(verified.digest_encoder, DigestEncoder::Value);
+        assert_eq!(verified.digest_encoder.version(), "nod-request-v2");
+        assert!(verified.digest_encoder.is_current());
 
         let mut tampered = decision.clone();
         tampered.answer_value = Some(AnswerValue::Number {

@@ -31,6 +31,15 @@ None of these is issued for new cards, and none may be used to sign. A decision
 is accepted when its `request_digest` matches the output of any known encoder
 for that card's immutable content.
 
+The offline receipt verifier (`nod_proto::verify_decision_receipt`, shipped as
+`nod-verify`) applies the same rule to the create-time request: a card with an
+`answer_field` is matched against the value encoder and legacy `nod-request-v3`
+over the context's `recipients_commitment`, never the line snapshot; an
+ordinary card against the structured encoder under both tags (when it carries
+a commitment) and the line snapshot. Its report names the encoder that matched
+(`structured`, `value`, `legacy-line-snapshot`, `legacy-structured`,
+`legacy-value`) next to the tag.
+
 `request.request_digest` at the top level of a full or single-recipient view
 stays for backward compatibility only: it is the frozen legacy line-snapshot
 value, while `signing.request_digest` carries the collapsed version.

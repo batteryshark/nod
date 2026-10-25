@@ -71,6 +71,10 @@ struct PassReport<'a> {
     option_id: &'a str,
     option_kind: &'a str,
     request_digest: &'a str,
+    /// Which encoder the receipt's digest matched (`structured`, `value`, or a
+    /// `legacy-*` one that is verified but no longer issued).
+    digest_encoder: &'a str,
+    /// The version tag of that encoder.
     digest_version: &'a str,
     signed_at: String,
     warnings: &'a [String],
@@ -109,7 +113,8 @@ fn main() -> ExitCode {
                 option_id: &verified.option_id,
                 option_kind: verified.option_kind.as_str(),
                 request_digest: &verified.request_digest,
-                digest_version: verified.digest_version.as_str(),
+                digest_encoder: verified.digest_encoder.as_str(),
+                digest_version: verified.digest_encoder.version(),
                 signed_at: verified
                     .signed_at
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),

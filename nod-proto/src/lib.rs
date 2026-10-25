@@ -35,7 +35,7 @@ pub use notification::{NotificationDelivery, NotificationDeliveryMode};
 pub use preferences::DeviceNotificationPreferences;
 pub use preview::{notification_preview, NotificationPreview};
 pub use receipt::{
-    verify_decision_receipt, DigestVersion, PinnedKey, ReceiptError, ReceiptVerificationInput,
+    verify_decision_receipt, DigestEncoder, PinnedKey, ReceiptError, ReceiptVerificationInput,
     VerifiedReceipt, DEFAULT_MAX_CLOCK_SKEW,
 };
 pub use request::{

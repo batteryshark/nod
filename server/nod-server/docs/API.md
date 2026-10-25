@@ -351,9 +351,15 @@ nod-verify --request created.json --decision decision.json --keys keys.json \
 ```
 
 - `created.json` is the `POST /api/v1/requests` response body (or its
-  `request` object). The digest is recomputed from it — `request_digest`
-  (`nod-request-v1`) and `signing.request_digest` (`nod-request-v2`/`v3` via
-  `signing.recipients_commitment`) — and must equal `signature.request_digest`.
+  `request` object). `signature.request_digest` must equal the digest
+  recomputed from it under one of the encoders valid for that card: for an
+  ordinary card the structured `nod-request-v1` over
+  `signing.recipients_commitment` (or the legacy line snapshot / legacy
+  `nod-request-v2`), for a card with an `answer_field` the value
+  `nod-request-v2` (or the legacy `nod-request-v3`); never the line snapshot
+  for a value card. The report names the encoder that matched
+  (`digest_encoder`: `structured`, `value`, or `legacy-*`) and its tag
+  (`digest_version`); see [the signing note](../../../docs/signing.md).
 - `decision.json` is the `/decision` or `/wait` body, the callback body, or a
   bare decision record. For `per_user` responses `--expect-user` picks the entry.
 - `keys.json` is `{"keys":[{"user_id":"owner","key_id":"…","public_key":"…"}]}`

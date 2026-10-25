@@ -6,11 +6,18 @@ use std::{path::Path, process::Command};
 
 use chrono::{TimeZone, Utc};
 use nod_proto::{
-    decision_signing_payload, generate_signing_key, recipients_commitment, request_digest,
-    request_digest_v2, sign_payload, CardField, Decision, DecisionResolution,
-    DecisionSignatureRecord, DecisionSigningInput, OptionKind, Request, RequestNotification,
-    RequestOption, RequestSigningContext, RequestStatus, SigningKeyPair,
-    DECISION_SIGNING_ALGORITHM, PRIVATE_REQUEST_DIGEST_VERSION,
+    decision_signing_payload, generate_signing_key, recipients_commitment,
+    request_digest_legacy_line_snapshot, request_digest_legacy_structured_v2, request_digest_v1,
+    sign_payload,
+    value_signing::{
+        decision_signing_payload_v2, value_request_digest, value_request_digest_legacy_v3,
+        LEGACY_VALUE_REQUEST_DIGEST_VERSION, VALUE_DECISION_PAYLOAD_VERSION,
+        VALUE_REQUEST_DIGEST_VERSION,
+    },
+    AnswerField, AnswerValue, CardField, Decision, DecisionResolution, DecisionSignatureRecord,
+    DecisionSigningInput, OptionKind, Request, RequestNotification, RequestOption,
+    RequestSigningContext, RequestStatus, SigningKeyPair, DECISION_SIGNING_ALGORITHM,
+    LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION, REQUEST_DIGEST_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -56,18 +63,73 @@ impl Fixture {
             request_digest: None,
             signing: None,
         };
+        // What a 1.2.0 server returns at create time: the legacy line snapshot
+        // at the top level plus the collapsed nod-request-v1 context.
         let commitment = recipients_commitment(&request.recipients, "cli-test-salt").unwrap();
-        request.request_digest = Some(request_digest(&request).unwrap());
+        request.request_digest = Some(request_digest_legacy_line_snapshot(&request).unwrap());
         request.signing = Some(RequestSigningContext {
-            version: PRIVATE_REQUEST_DIGEST_VERSION.to_string(),
+            version: REQUEST_DIGEST_VERSION.to_string(),
             recipients_commitment: commitment.clone(),
-            request_digest: request_digest_v2(&request, &commitment).unwrap(),
+            request_digest: request_digest_v1(&request, &commitment).unwrap(),
         });
         Self {
             dir: tempfile::tempdir().unwrap(),
             request,
             key: generate_signing_key(),
         }
+    }
+
+    /// The same card as a pre-collapse server issued it (`nod-request-v2`).
+    fn with_legacy_ordinary_context(mut self) -> Self {
+        let commitment = recipients_commitment(&self.request.recipients, "cli-test-salt").unwrap();
+        self.request.signing = Some(RequestSigningContext {
+            version: LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION.to_string(),
+            recipients_commitment: commitment.clone(),
+            request_digest: request_digest_legacy_structured_v2(&self.request, &commitment)
+                .unwrap(),
+        });
+        self
+    }
+
+    /// A value card under the collapsed `nod-request-v2` tag or, with `legacy`,
+    /// the pre-collapse `nod-request-v3` tag.
+    fn with_value_field(mut self, legacy: bool) -> Self {
+        let field = AnswerField::Number {
+            label: "Replicas".to_string(),
+            default: AnswerValue::Number {
+                decimal: "3".to_string(),
+            },
+        };
+        self.request.answer_field = Some(field.clone());
+        self.request.request_digest = None;
+        let commitment = recipients_commitment(&self.request.recipients, "cli-test-salt").unwrap();
+        let (version, digest) = if legacy {
+            (
+                LEGACY_VALUE_REQUEST_DIGEST_VERSION,
+                value_request_digest_legacy_v3(&self.request, &commitment, &field).unwrap(),
+            )
+        } else {
+            (
+                VALUE_REQUEST_DIGEST_VERSION,
+                value_request_digest(&self.request, &commitment, &field).unwrap(),
+            )
+        };
+        self.request.signing = Some(RequestSigningContext {
+            version: version.to_string(),
+            recipients_commitment: commitment,
+            request_digest: digest,
+        });
+        self
+    }
+
+    /// The digest a current client signs: the signing context's.
+    fn signed_digest(&self) -> String {
+        self.request
+            .signing
+            .as_ref()
+            .unwrap()
+            .request_digest
+            .clone()
     }
 
     fn created_response(&self) -> Value {
@@ -79,17 +141,29 @@ impl Fixture {
     }
 
     fn decision(&self, option_id: &str, user_id: &str) -> Decision {
+        self.decision_under(&self.signed_digest(), option_id, user_id, None)
+    }
+
+    /// Sign `option_id` on the fixture card binding `digest`, the way a client
+    /// that was shown that digest does (with `nod-decision-v2` when it carries
+    /// an `answer_value`).
+    fn decision_under(
+        &self,
+        digest: &str,
+        option_id: &str,
+        user_id: &str,
+        answer: Option<&AnswerValue>,
+    ) -> Decision {
         let option = self
             .request
             .options
             .iter()
             .find(|option| option.id == option_id)
             .unwrap();
-        let digest = self.request.request_digest.clone().unwrap();
         let signed_at = "2026-06-01T09:01:00.000Z";
-        let payload = decision_signing_payload(DecisionSigningInput {
+        let input = DecisionSigningInput {
             request_id: &self.request.id,
-            request_digest: &digest,
+            request_digest: digest,
             option_id,
             option_kind: &option.kind,
             user_id,
@@ -98,10 +172,17 @@ impl Fixture {
             nonce: "nonce-cli",
             signed_at,
             text: None,
-        });
+        };
+        let (payload, payload_version) = match answer {
+            Some(answer) => (
+                decision_signing_payload_v2(input, answer).unwrap(),
+                Some(VALUE_DECISION_PAYLOAD_VERSION.to_string()),
+            ),
+            None => (decision_signing_payload(input), None),
+        };
         let signature = sign_payload(&self.key.private_key, payload.as_bytes()).unwrap();
         Decision {
-            answer_value: None,
+            answer_value: answer.cloned(),
             request_id: self.request.id.clone(),
             option_id: option.id.clone(),
             option_kind: option.kind.clone(),
@@ -110,12 +191,12 @@ impl Fixture {
             actor_user_id: Some(user_id.to_string()),
             actor_device_id: Some("device-cli".to_string()),
             signature: Some(DecisionSignatureRecord {
-                payload_version: None,
+                payload_version,
                 key_id: "key-cli".to_string(),
                 algorithm: DECISION_SIGNING_ALGORITHM.to_string(),
                 nonce: "nonce-cli".to_string(),
                 signed_at: signed_at.to_string(),
-                request_digest: digest,
+                request_digest: digest.to_string(),
                 signing_payload: payload,
                 signature,
                 verified: true,
@@ -204,8 +285,79 @@ fn passes_on_a_decision_view_and_reports_the_facts() {
     assert_eq!(report["key_id"], "key-cli");
     assert_eq!(report["option_id"], "approve");
     assert_eq!(report["option_kind"], "approve");
+    assert_eq!(report["digest_encoder"], "structured");
     assert_eq!(report["digest_version"], "nod-request-v1");
+    assert_eq!(report["request_digest"], fx.signed_digest());
     assert_eq!(report["warnings"], json!([]));
+}
+
+#[test]
+fn reports_which_encoder_a_receipt_bound() {
+    // Every encoder the scheme knows, on a card the current server issues and
+    // on cards older servers issued; the report names the one that matched.
+    let line = Fixture::new();
+    let line_digest = line.request.request_digest.clone().unwrap();
+    let legacy_ordinary = Fixture::new().with_legacy_ordinary_context();
+    let value = Fixture::new().with_value_field(false);
+    let legacy_value = Fixture::new().with_value_field(true);
+    let answer = AnswerValue::Number {
+        decimal: "5".to_string(),
+    };
+    let cases: [(&Fixture, Decision, &str, &str); 4] = [
+        (
+            &line,
+            line.decision_under(&line_digest, "approve", "owner", None),
+            "legacy-line-snapshot",
+            "nod-request-v1",
+        ),
+        (
+            &legacy_ordinary,
+            legacy_ordinary.decision("approve", "owner"),
+            "legacy-structured",
+            "nod-request-v2",
+        ),
+        (
+            &value,
+            value.decision_under(&value.signed_digest(), "approve", "owner", Some(&answer)),
+            "value",
+            "nod-request-v2",
+        ),
+        (
+            &legacy_value,
+            legacy_value.decision_under(
+                &legacy_value.signed_digest(),
+                "approve",
+                "owner",
+                Some(&answer),
+            ),
+            "legacy-value",
+            "nod-request-v3",
+        ),
+    ];
+    for (fx, decision, encoder, version) in cases {
+        let request = fx.write("created.json", &fx.created_response());
+        let view = fx.write("decision.json", &fx.decision_view(Some(&decision)));
+        let keys = fx.write("keys.json", &fx.keys("owner", &fx.key.public_key));
+        let (code, report) = run(&base_args(&request, &view, &keys));
+        assert_eq!(code, 0, "{encoder}: {report}");
+        assert_eq!(report["digest_encoder"], encoder, "{report}");
+        assert_eq!(report["digest_version"], version, "{report}");
+    }
+
+    // A value receipt that bound the line snapshot of its content is refused:
+    // a card with an answer_field is never signed under that encoder.
+    let wrong = value.decision_under(
+        &request_digest_legacy_line_snapshot(&value.request).unwrap(),
+        "approve",
+        "owner",
+        Some(&answer),
+    );
+    let request = value.write("created.json", &value.created_response());
+    let view = value.write("wrong.json", &value.decision_view(Some(&wrong)));
+    let keys = value.write("keys.json", &value.keys("owner", &value.key.public_key));
+    let (code, report) = run(&base_args(&request, &view, &keys));
+    assert_eq!(code, 1, "{report}");
+    assert!(report["error"].as_str().unwrap().contains("request_digest"));
 }
 
 #[test]
