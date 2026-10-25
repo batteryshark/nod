@@ -15,6 +15,7 @@ private actor ResumeFixture {
   var actionable = false
   var failSubmit = false
   var otherRow = false
+  var valueRequest = false
 
   func setCounts(_ counts: [String: Int]) { self.counts = counts }
   func calls() -> (Int, Int) { (refreshes, connects) }
@@ -24,6 +25,7 @@ private actor ResumeFixture {
   func setActionable() { actionable = true }
   func failSubmissions() { failSubmit = true }
   func includeOtherRow() { otherRow = true }
+  func useValueRequest() { valueRequest = true }
 
   func request(_ input: String) async -> String {
     let rpc = try! JSONSerialization.jsonObject(with: Data(input.utf8)) as! [String: Any]
@@ -50,12 +52,24 @@ private actor ResumeFixture {
     if informational {
       state["selected_request_id"] = selected
       state["pending_counts_by_channel"] = ["a": status == "pending" ? 1 : 0]
-      state["requests"] = [[
+      var row: [String: Any] = [
         "id": "info", "request_id": "info", "channel_id": "a", "recipients": [], "decision_resolution": "shared",
         "title": "Fixture", "summary": "", "body_markdown": "", "fields": [], "links": [], "notification": ["redact": false],
-        "status": status, "created_at": "2026-10-21T00:00:00Z", "updated_at": "2026-10-21T00:00:00Z", "options": actionable ? [["id": "approve", "label": "Approve"]] : [], "decisions": [],
+        "status": status, "created_at": "2026-10-21T00:00:00Z", "updated_at": "2026-10-21T00:00:00Z", "options": [], "decisions": [],
         "signing": ["version": "nod-request-v1", "recipients_commitment": "fixture", "request_digest": "rendered-digest"],
-      ]] as [[String: Any]]
+      ]
+      if actionable {
+        row["options"] = try! JSONSerialization.jsonObject(with: JSONEncoder().encode([NodRequestOption(id: "approve", label: "Approve", kind: .custom)]))
+      }
+      if valueRequest {
+        row["answer_field"] = [
+          "kind": "choice", "label": "Pick",
+          "choices": [["id": "a", "label": "A"], ["id": "b", "label": "B"]],
+          "default": ["kind": "choice", "choice_id": "a"],
+        ]
+        row["signing"] = ["version": "nod-request-v3", "recipients_commitment": "synthetic", "request_digest": "digest"]
+      }
+      state["requests"] = [row]
       if otherRow {
         var rows = state["requests"] as! [[String: Any]]
         var other = rows[0]
@@ -311,5 +325,108 @@ final class NodResumeRecoveryTests: XCTestCase {
     store.mapRuntimeError(NodRuntimeError.rpc("same message"))
     store.clearRecoveredError(serverId: "fixture", syncedAt: synced.addingTimeInterval(100))
     XCTAssertEqual(store.lastError, "same message", "operation ownership matters, not text alone")
+  }
+
+  // MARK: - Acknowledge on a pending informational card (both platforms)
+
+  /// The detail view is SwiftUI in the app targets, so it cannot be hosted by
+  /// this package's tests. What it branches on is `NodRequest.isPendingInformational`,
+  /// the shared rule this covers: the button must be offered with the
+  /// auto-acknowledge preference on and off, and never for a card that has
+  /// options, is resolved, or asks for a value.
+  @MainActor
+  func testAcknowledgeIsOfferedForPendingInformationalCardsWithEitherPreference() async throws {
+    let defaultsKey = "nod.acknowledgeOnOpen"
+    let previous = UserDefaults.standard.object(forKey: defaultsKey) as? Bool
+    defer {
+      if let previous { UserDefaults.standard.set(previous, forKey: defaultsKey) }
+      else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+    }
+
+    for preference in [true, false] {
+      let (store, client, _) = try await informationalFixtureStore()
+      store.acknowledgeOnOpen = preference
+      await store.refresh()
+      let request = try XCTUnwrap(client.state?.requests.first)
+      XCTAssertEqual(store.acknowledgeOnOpen, preference)
+      XCTAssertTrue(
+        request.isPendingInformational,
+        "Acknowledge must be offered with acknowledgeOnOpen = \(preference)")
+    }
+
+    for exclusion in ["actionable", "resolved", "value"] {
+      let fixture = ResumeFixture()
+      await fixture.includeInformationalRequest()
+      switch exclusion {
+      case "actionable": await fixture.setActionable()
+      case "resolved": await fixture.resolveElsewhere()
+      default: await fixture.useValueRequest()
+      }
+      let client = NodRuntimeClient(request: { await fixture.request($0) })
+      let store = NodStore(platform: .macos, defaultDeviceName: "Fixture", presentLocalNotifications: false,
+        configureNotificationController: false, runtime: client)
+      try await Task.sleep(for: .milliseconds(200))
+      await store.refresh()
+      let request = try XCTUnwrap(client.state?.requests.first)
+      XCTAssertFalse(request.isPendingInformational, "\(exclusion) cards must not offer Acknowledge")
+    }
+  }
+
+  /// Tapping Acknowledge must clear the card once. The leave-on-read auto path
+  /// can run right after the tap, so it must find the card resolved and stay
+  /// quiet rather than submitting a second dismiss.
+  @MainActor
+  func testManualAcknowledgeThenLeaveSubmitsExactlyOnce() async throws {
+    let (store, client, fixture) = try await informationalFixtureStore()
+    let previous = store.acknowledgeOnOpen
+    store.acknowledgeOnOpen = true
+    defer { store.acknowledgeOnOpen = previous }
+    let request = try XCTUnwrap(client.state?.requests.first)
+    store.selectRequestExplicitly(request.id) // arms the auto-acknowledge path
+
+    let submitted = await store.dismissIfInformational(request: request, serverId: "fixture")
+    XCTAssertTrue(submitted)
+    let afterTap = await fixture.submissionCount()
+    XCTAssertEqual(afterTap, 1)
+
+    await store.refresh() // resolved card reaches the snapshot, so the button disappears
+    XCTAssertEqual(client.state?.requests.first?.status, .resolved)
+    store.leaveExplicitRead() // the auto path sees nothing pending
+    try await Task.sleep(for: .milliseconds(80))
+    await store.refresh()
+    let afterLeave = await fixture.submissionCount()
+    XCTAssertEqual(afterLeave, 1, "the auto path must not submit a second acknowledge")
+    XCTAssertEqual(store.totalPendingCount, 0)
+    XCTAssertFalse(store.isSubmitting(request.id))
+  }
+
+  /// Two taps before the first write settles are one write: the per-request
+  /// `pendingActions` guard admits the first and refuses the second.
+  @MainActor
+  func testOverlappingAcknowledgeTapsSubmitOnce() async throws {
+    let (store, client, fixture) = try await informationalFixtureStore()
+    let previous = store.acknowledgeOnOpen
+    store.acknowledgeOnOpen = true
+    defer { store.acknowledgeOnOpen = previous }
+    let request = try XCTUnwrap(client.state?.requests.first)
+
+    async let first = store.dismissIfInformational(request: request, serverId: "fixture")
+    async let second = store.dismissIfInformational(request: request, serverId: "fixture")
+    let results = [await first, await second]
+    XCTAssertEqual(results.filter { $0 }.count, 1, "the guard admits exactly one submit")
+    let count = await fixture.submissionCount()
+    XCTAssertEqual(count, 1)
+  }
+
+  @MainActor
+  private func informationalFixtureStore() async throws -> (NodStore, NodRuntimeClient, ResumeFixture) {
+    let fixture = ResumeFixture()
+    await fixture.includeInformationalRequest()
+    let client = NodRuntimeClient(request: { await fixture.request($0) })
+    let store = NodStore(platform: .macos, defaultDeviceName: "Fixture", presentLocalNotifications: false,
+      configureNotificationController: false, runtime: client)
+    try await Task.sleep(for: .milliseconds(200))
+    await store.refresh()
+    return (store, client, fixture)
   }
 }

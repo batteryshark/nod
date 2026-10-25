@@ -118,12 +118,17 @@ struct RequestDetail: View {
             Text("Waiting for other recipients").font(.callout)
           }
         }
-        #if os(iOS)
-        if !request.isValueRequest && !store.acknowledgeOnOpen && request.status == .pending && request.options.isEmpty {
+        // One control for both platforms. A pending informational card has no
+        // options and no answer field, so Acknowledge is the only way to clear
+        // it — turning auto-acknowledge off must not remove it, and leaving it
+        // on must not hide it while the user is still reading. Tapping it
+        // resolves the card, which hides the button; the store's per-request
+        // submit guard makes a second tap (or the leave-on-read auto path that
+        // follows) a no-op.
+        if request.isPendingInformational {
           Button("Acknowledge") { Task { await store.dismissIfInformational(request: request, serverId: serverId) } }
             .disabled(store.isSubmitting(request.id) || !NodStore.isAnswerable(request))
         }
-        #endif
       }
       .padding()
       .frame(maxWidth: .infinity, alignment: .leading)
