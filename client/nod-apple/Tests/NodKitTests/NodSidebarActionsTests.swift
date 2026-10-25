@@ -105,6 +105,7 @@ final class NodSidebarActionsTests: XCTestCase {
     let options: [[String: Any]] = [
       ["id": "yes", "label": "Yes", "kind": "approve", "text_placeholder": "Optional notes"],
       ["id": "custom", "label": "Custom", "kind": "custom"],
+      ["id": "no", "label": "No", "kind": "reject"],
       ["id": "danger", "label": "Danger", "kind": "reject", "destructive": true],
       ["id": "style", "label": "Style", "kind": "custom", "style": "destructive"],
       ["id": "text", "label": "Text", "kind": "custom", "requires_text": true],
@@ -112,7 +113,7 @@ final class NodSidebarActionsTests: XCTestCase {
       ["id": "rt", "label": "RT", "kind": "reject_with_text", "requires_text": false],
       ["id": "open", "label": "Open", "kind": "open"],
     ]
-    XCTAssertEqual(NodSidebarActions.options(for: try sidebarRequest(["options": options]), userId: nil).map(\.id), ["yes", "custom"])
+    XCTAssertEqual(NodSidebarActions.options(for: try sidebarRequest(["options": options]), userId: nil).map(\.id), ["yes", "custom", "no"])
     for changes: [String: Any] in [
       ["options": [["id": "__nod_value_open", "label": "Open", "kind": "open"]]],
       ["signing": ["version": "nod-request-v3", "recipients_commitment": "fixture", "request_digest": "digest"]],
@@ -201,6 +202,8 @@ final class NodSidebarActionsTests: XCTestCase {
       XCTAssertTrue(result)
       XCTAssertEqual(store.answerReceipt?.request.status, .resolved)
       XCTAssertNil(store.answerAttempt(requestId: "card", serverId: "original"))
+      let repeated = await store.performSidebarAction(option, request: row, serverId: "original")
+      XCTAssertFalse(repeated)
       let writes = await fixture.captured()
       XCTAssertEqual(writes, [["server_id": "original", "request_id": "card", "option_id": info ? "dismiss" : "yes", "expected_request_digest": "rendered-digest"]])
     }
