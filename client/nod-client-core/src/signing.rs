@@ -9,6 +9,22 @@ pub const DECISION_SIGNING_ALGORITHM: &str = nod_proto::DECISION_SIGNING_ALGORIT
 
 const IMPLICIT_DISMISS_OPTION_ID: &str = "dismiss";
 
+/// User-facing refusal when the request to be signed is not the one the user
+/// reviewed (missing or mismatched rendered digest).
+pub const REQUEST_CHANGED_ERROR: &str = "Request changed. Review it again before answering.";
+
+/// The digest a request copy asserts for itself: the private signing context's
+/// digest when present, else the legacy top-level `request_digest`. This is
+/// what the UI renders and what every submit must echo back as the expected
+/// digest.
+pub fn asserted_request_digest(request: &Request) -> Option<&str> {
+    request
+        .signing
+        .as_ref()
+        .map(|context| context.request_digest.as_str())
+        .or(request.request_digest.as_deref())
+}
+
 /// A locally stored P-256 signing key (key id + base64url private key). The
 /// cryptography lives in `nod-proto`; this just wraps the stored key material
 /// and orchestrates option resolution and nonce/timestamp generation.
@@ -74,20 +90,29 @@ impl DeviceSigner for StoredSigningKey {
     }
 }
 
-/// Build a verified `DecisionSignature` for `request` using any `DeviceSigner`.
+/// Build a verified `DecisionSignature` for exactly the ordinary `request` copy
+/// the caller holds (its own asserted digest is the expected one), using any
+/// `DeviceSigner`.
 ///
 /// This is the single security-critical path shared by every platform: it
 /// refuses to sign unless it can reproduce the request digest from the content
 /// it received (defense in depth against a server lying about what is being
 /// approved), resolves the option, stamps a fresh nonce + timestamp, builds the
 /// canonical `nod-proto` payload, and asks the signer to sign those exact bytes.
+/// Runtime submit paths go through `build_value_decision_signature` instead,
+/// passing the digest of the copy the UI rendered.
 pub fn build_decision_signature(
     signer: &dyn DeviceSigner,
     request: DecisionSigningRequest<'_>,
 ) -> Result<DecisionSignature> {
-    build_value_decision_signature(signer, request, None, None)
+    let expected_digest = asserted_request_digest(request.request);
+    build_value_decision_signature(signer, request, None, expected_digest)
 }
 
+/// Build a signature over `request`, refusing unless `expected_digest` — the
+/// digest of the request the user actually saw — is present and equal to the
+/// digest this copy asserts. Every caller must pass the rendered digest; a
+/// copy re-fetched from the server is never trusted on its own.
 pub fn build_value_decision_signature(
     signer: &dyn DeviceSigner,
     request: DecisionSigningRequest<'_>,
@@ -99,24 +124,11 @@ pub fn build_value_decision_signature(
         field
             .validate_value(answer.ok_or_else(|| anyhow!("explicit answer_value required"))?)
             .map_err(|e| anyhow!(e))?;
-        if expected_digest.is_none()
-            || request
-                .request
-                .signing
-                .as_ref()
-                .map(|c| c.request_digest.as_str())
-                != expected_digest
-        {
-            return Err(anyhow!(
-                "Request changed. Review it again before answering."
-            ));
-        }
     } else if answer.is_some() {
         return Err(anyhow!("ordinary request does not accept answer_value"));
     }
-    // Defense in depth: only sign a request whose digest we can reproduce
-    // from the content we received (and rendered to the user), rather than
-    // trusting the digest the server asserted.
+    // Only sign a request whose digest we can reproduce from the content we
+    // hold, rather than trusting the digest the server asserted.
     let (request_digest, recomputed) =
         if let Some(context) = &request.request.signing {
             if let Some(field) = request.request.answer_field.as_ref().filter(|_| {
@@ -152,6 +164,12 @@ pub fn build_value_decision_signature(
                 nod_proto::request_digest(request.request)?,
             )
         };
+    // Bind the signature to what the user reviewed: the caller must echo the
+    // rendered copy's digest, and this copy must carry the same one. Without
+    // it a server could show one request and serve another at submit time.
+    if expected_digest.is_none_or(str::is_empty) || expected_digest != Some(request_digest) {
+        return Err(anyhow!(REQUEST_CHANGED_ERROR));
+    }
     if recomputed != request_digest {
         return Err(anyhow!(
             "request digest does not match request content for {}",
@@ -457,6 +475,57 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    #[test]
+    fn ordinary_requests_require_the_rendered_digest() {
+        let request = request();
+        let key = StoredSigningKey::generate();
+        let input = DecisionSigningRequest {
+            request: &request,
+            option_id: "approve",
+            text: None,
+            user_id: "user-1",
+            device_id: "device-1",
+        };
+        for expected in [None, Some(""), Some("not-what-the-user-saw")] {
+            let error = build_value_decision_signature(&key, input, None, expected)
+                .expect_err("ordinary request must not sign without the rendered digest");
+            assert_eq!(error.to_string(), REQUEST_CHANGED_ERROR);
+        }
+        let rendered = asserted_request_digest(&request).unwrap().to_string();
+        let signature = build_value_decision_signature(&key, input, None, Some(&rendered))
+            .expect("the rendered digest signs");
+        assert_eq!(signature.request_digest, rendered);
+    }
+
+    #[test]
+    fn private_requests_require_the_rendered_signing_digest() {
+        let mut request = request();
+        let commitment =
+            nod_proto::recipients_commitment(&request.recipients, "test-salt").unwrap();
+        request.signing = Some(nod_proto::RequestSigningContext {
+            version: nod_proto::PRIVATE_REQUEST_DIGEST_VERSION.to_string(),
+            request_digest: nod_proto::request_digest_v2(&request, &commitment).unwrap(),
+            recipients_commitment: commitment,
+        });
+        let legacy_digest = request.request_digest.clone().unwrap();
+        let key = StoredSigningKey::generate();
+        let input = DecisionSigningRequest {
+            request: &request,
+            option_id: "approve",
+            text: None,
+            user_id: "user-1",
+            device_id: "device-1",
+        };
+        // The legacy top-level digest is not the one the private context renders.
+        let error = build_value_decision_signature(&key, input, None, Some(&legacy_digest))
+            .expect_err("legacy digest must not satisfy the private context");
+        assert_eq!(error.to_string(), REQUEST_CHANGED_ERROR);
+        let rendered = asserted_request_digest(&request).unwrap();
+        assert_eq!(rendered, request.signing.as_ref().unwrap().request_digest);
+        build_value_decision_signature(&key, input, None, Some(rendered))
+            .expect("the private context digest signs");
     }
 
     #[test]

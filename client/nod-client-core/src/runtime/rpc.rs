@@ -174,8 +174,10 @@ pub struct SelectServerParams {
 pub struct SubmitOptionParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer_value: Option<nod_proto::AnswerValue>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_request_digest: Option<String>,
+    /// Digest of the request copy the UI rendered (`signing.request_digest`,
+    /// or `request_digest` without a signing context). Required: the decision
+    /// signature is bound to it and a submit without it is refused.
+    pub expected_request_digest: String,
     pub request_id: String,
     pub option_id: String,
     #[serde(default)]
@@ -206,8 +208,9 @@ pub struct QueryHistoryParams {
 pub struct SubmitRequestOptionParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer_value: Option<nod_proto::AnswerValue>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_request_digest: Option<String>,
+    /// Digest of the request copy the UI rendered. Required; see
+    /// [`SubmitOptionParams::expected_request_digest`].
+    pub expected_request_digest: String,
     pub server_id: String,
     pub request_id: String,
     pub option_id: String,

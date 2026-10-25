@@ -64,7 +64,7 @@ impl NodClientRuntime {
                 device_id,
             },
             option.answer_value.as_ref(),
-            option.expected_request_digest.as_deref(),
+            Some(option.expected_request_digest.as_str()),
         )
         .map(Some)
     }

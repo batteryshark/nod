@@ -71,6 +71,10 @@ async fn event_loop_smoke_enroll_render_submit() {
     };
     assert_eq!(params.request_id, "deploy");
     assert_eq!(params.option_id, "approve");
+    assert_eq!(
+        params.expected_request_digest, "digest",
+        "the submit is bound to the digest of the rendered request"
+    );
     for command in commands {
         app.begin_command(&command);
         let outcome = execute_runtime_command(&mut runtime, command)
