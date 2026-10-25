@@ -57,4 +57,38 @@ final class NodRuntimeClientTests: XCTestCase {
       XCTAssertFalse(message.isEmpty)
     }
   }
+
+  /// Every submit RPC names the rendered digest; the runtime treats the field as
+  /// required and refuses to sign a request whose digest differs.
+  @MainActor
+  func testSubmitRPCsAlwaysCarryExpectedRequestDigest() async throws {
+    actor Transport {
+      var bodies: [String] = []
+      func record(_ body: String) -> String {
+        if body.contains(#""method":"state""#) {
+          return #"{"ok":true,"result":{"servers":[],"is_registered":false,"requests":[],"pending_counts_by_channel":{}}}"#
+        }
+        bodies.append(body)
+        return #"{"ok":true,"result":{}}"#
+      }
+      func recorded() -> [String] { bodies }
+    }
+    let transport = Transport()
+    let client = NodRuntimeClient(request: { await transport.record($0) })
+    try await client.start()
+
+    try await client.submitRequestOption(serverId: "s", requestId: "r", optionId: "approve", text: nil, expectedRequestDigest: "digest-of-rendered-request")
+    try await client.submitOption(requestId: "r", optionId: "reject", text: "why", expectedRequestDigest: "digest-of-rendered-request")
+
+    let calls = try await transport.recorded().map { try XCTUnwrap(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]) }
+    XCTAssertEqual(calls.map { $0["method"] as? String }, ["submit_request_option", "submit_option"])
+    for call in calls {
+      let params = try XCTUnwrap(call["params"] as? [String: Any])
+      XCTAssertEqual(params["expected_request_digest"] as? String, "digest-of-rendered-request")
+      XCTAssertNil(params["answer_value"])
+      XCTAssertNil(params["signature"], "Signing bytes are built only by shared Rust")
+    }
+    XCTAssertEqual((calls[0]["params"] as? [String: Any])?["server_id"] as? String, "s")
+    XCTAssertEqual((calls[1]["params"] as? [String: Any])?["text"] as? String, "why")
+  }
 }

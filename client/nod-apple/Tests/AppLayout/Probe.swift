@@ -15,6 +15,7 @@ import SwiftUI
   func recordedAnswer(in request: NodRequest) -> NodDecision? { request.decision }
   func answerAttempt(requestId: String, serverId: String? = nil) -> NodAnswerAttempt? { nil }
   func prepareAnswerStorage() {}
+  static func isAnswerable(_ request: NodRequest) -> Bool { request.signing?.requestDigest != nil }
   func answerFromUI(request: NodRequest, option: NodRequestOption, text: String? = nil, serverId: String?, answerValue: NodAnswerValue? = nil) async -> Bool {
     fixtureActivations += 1 // Inert recorder only; no runtime/network/signing exists.
     return false
@@ -85,7 +86,7 @@ private struct FixtureCounter: View {
     let options = (1...count).map { n in
       NodRequestOption(id:"option-\(n)",label:long ? "Option \(n): Review the entire proposed maintenance schedule and preserve every existing safety constraint before choosing this alternative" : "Option \(n)",kind:.custom,requiresText:visibleHandoff && n == 17,textPlaceholder:"Synthetic required notes",destructive:n == count)
     }
-    let request = NodRequest(id:"synthetic",requestId:"synthetic",channelId:"fixture",recipients:[],decisionResolution:.shared,title:"Synthetic reachability fixture",summary:"",bodyMarkdown:(0..<paragraphs).map { "Paragraph \($0). " + String(repeating:"Synthetic content for layout only. ",count:8) }.joined(separator:"\n\n"),fields:[],links:[],imageUrl:nil,notification:.init(),dedupeKey:nil,expiresAt:nil,status:.pending,createdAt:Date(timeIntervalSince1970:0),updatedAt:Date(timeIntervalSince1970:0),resolvedAt:nil,decision:nil,decisions:[],callbackUrl:nil,options:options,requestDigest:nil)
+    let request = NodRequest(id:"synthetic",requestId:"synthetic",channelId:"fixture",recipients:[],decisionResolution:.shared,title:"Synthetic reachability fixture",summary:"",bodyMarkdown:(0..<paragraphs).map { "Paragraph \($0). " + String(repeating:"Synthetic content for layout only. ",count:8) }.joined(separator:"\n\n"),fields:[],links:[],imageUrl:nil,notification:.init(),dedupeKey:nil,expiresAt:nil,status:.pending,createdAt:Date(timeIntervalSince1970:0),updatedAt:Date(timeIntervalSince1970:0),resolvedAt:nil,decision:nil,decisions:[],callbackUrl:nil,options:options,requestDigest:nil,signing:.init(version:"nod-request-v2",recipientsCommitment:"synthetic",requestDigest:"synthetic-rendered-digest"))
     let store = NodStore()
     store.macInboxRequests = [request]
     // Many-option content uses the exact bounded-sheet component. This is not

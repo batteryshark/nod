@@ -17,7 +17,9 @@ private actor AnswerFixture {
   var matchingNext = false
   var selectedRequest: String?
   var missingUser = false
+  var unsigned = false
   func omitUser() { missingUser = true }
+  func omitSigning() { unsigned = true }
   func includeOtherPending(matchingNext: Bool = false) { otherPending = true; self.matchingNext = matchingNext }
   func valueField(_ json: String) { fieldJSON = json }
   func submittedJSON() -> Data? { submitted }
@@ -45,10 +47,13 @@ private actor AnswerFixture {
     if cancelled { request["status"] = "cancelled" }
     request["options"] = try! JSONSerialization.jsonObject(with: JSONEncoder().encode([NodRequestOption(id:"yes", label:"Yes", kind:.custom)]))
     if informational { request["options"] = [] }
+    // Every server view carries a signing context: v2 for ordinary requests, v3 for value requests.
+    request["signing"] = ["version":"nod-request-v2", "recipients_commitment":"synthetic", "request_digest":"rendered-digest"]
     if let fieldJSON {
       request["answer_field"] = try! JSONSerialization.jsonObject(with: Data(fieldJSON.utf8))
       request["signing"] = ["version":"nod-request-v3", "recipients_commitment":"synthetic", "request_digest":"rendered-digest"]
     }
+    if unsigned { request.removeValue(forKey: "signing") }
     if resolved {
       if perUser { request["decisions"] = [["user_id":"me", "decision":decision]] }
       else { request["decision"] = decision }
@@ -92,6 +97,70 @@ final class NodAnswerStateTests: XCTestCase {
     XCTAssertNotNil(store.lastError)
     XCTAssertNil(store.answerReceipt)
     let counts = await fixture.counts(); XCTAssertEqual(counts.0,0); XCTAssertEqual(counts.1,1)
+  }
+
+  @MainActor func testOrdinarySubmitForwardsRenderedDigestUsingRuntimeProfiles() async throws {
+    let fixture = AnswerFixture()
+    let runtime = NodRuntimeClient(request: { await fixture.request($0) }); try await runtime.start()
+    let store = NodStore(platform:.macos,defaultDeviceName:"Synthetic",presentLocalNotifications:false,configureNotificationController:false,runtime:runtime)
+    try await Task.sleep(for:.milliseconds(200))
+    store.servers = [] // The UI mirror may lag; the applied runtime state is authoritative.
+    XCTAssertFalse(runtime.state?.servers.isEmpty ?? true)
+    let request = try XCTUnwrap(runtime.state?.requests.first)
+    XCTAssertFalse(request.isValueRequest)
+    XCTAssertTrue(NodStore.isAnswerable(request))
+    _ = await store.answerFromUI(request:request, option:try XCTUnwrap(request.options.first), serverId:"fixture")
+    let counts = await fixture.counts()
+    XCTAssertEqual(counts.0, 1)
+    let submitted = await fixture.submittedJSON()
+    let params = try XCTUnwrap(JSONSerialization.jsonObject(with:try XCTUnwrap(submitted)) as? [String:Any])
+    XCTAssertEqual(params["expected_request_digest"] as? String, "rendered-digest", "Ordinary requests bind the rendered digest too")
+    XCTAssertEqual(params["option_id"] as? String, "yes")
+    XCTAssertNil(params["answer_value"])
+  }
+
+  @MainActor func testUnsignedRequestIsNotAnswerableAndNeverWrites() async throws {
+    let fixture = AnswerFixture(); await fixture.omitSigning()
+    let runtime = NodRuntimeClient(request: { await fixture.request($0) }); try await runtime.start()
+    let store = NodStore(platform:.macos,defaultDeviceName:"Synthetic",presentLocalNotifications:false,configureNotificationController:false,runtime:runtime)
+    try await Task.sleep(for:.milliseconds(200))
+    let request = try XCTUnwrap(runtime.state?.requests.first)
+    XCTAssertNil(request.signing)
+    XCTAssertFalse(NodStore.isAnswerable(request))
+    let answered = await store.answerFromUI(request:request, option:try XCTUnwrap(request.options.first))
+    XCTAssertFalse(answered)
+    XCTAssertEqual(store.lastError, "Request changed. Review it again before answering.")
+    XCTAssertNil(store.answerAttempt(requestId:request.id))
+    store.lastError = nil
+    let submitted = await store.submit(request:request, option:try XCTUnwrap(request.options.first))
+    XCTAssertFalse(submitted)
+    XCTAssertNotNil(store.lastError)
+    let counts = await fixture.counts()
+    XCTAssertEqual(counts.0, 0, "No digest to bind means nothing is sent for the runtime to sign")
+  }
+
+  @MainActor func testInformationalAcknowledgeForwardsRenderedDigest() async throws {
+    let fixture = AnswerFixture(); await fixture.information()
+    let runtime = NodRuntimeClient(request: { await fixture.request($0) }); try await runtime.start()
+    let store = NodStore(platform:.macos,defaultDeviceName:"Synthetic",presentLocalNotifications:false,configureNotificationController:false,runtime:runtime)
+    try await Task.sleep(for:.milliseconds(200))
+    let request = try XCTUnwrap(runtime.state?.requests.first)
+    XCTAssertTrue(request.options.isEmpty)
+    _ = await store.dismissIfInformational(request:request)
+    let counts = await fixture.counts()
+    XCTAssertEqual(counts.0, 1)
+    let submitted = await fixture.submittedJSON()
+    let params = try XCTUnwrap(JSONSerialization.jsonObject(with:try XCTUnwrap(submitted)) as? [String:Any])
+    XCTAssertEqual(params["option_id"] as? String, "dismiss")
+    XCTAssertEqual(params["expected_request_digest"] as? String, "rendered-digest")
+    await fixture.omitSigning()
+    await store.refresh()
+    try await Task.sleep(for:.milliseconds(30))
+    let unsigned = try XCTUnwrap(runtime.state?.requests.first)
+    let acknowledgedUnsigned = await store.dismissIfInformational(request:unsigned)
+    XCTAssertFalse(acknowledgedUnsigned)
+    let after = await fixture.counts()
+    XCTAssertEqual(after.0, 1)
   }
 
   func testValueComposerReopenUsesCanonicalNewNotes() {
