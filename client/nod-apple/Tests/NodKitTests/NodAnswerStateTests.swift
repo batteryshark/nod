@@ -94,26 +94,6 @@ final class NodAnswerStateTests: XCTestCase {
     let counts = await fixture.counts(); XCTAssertEqual(counts.0,0); XCTAssertEqual(counts.1,1)
   }
 
-  @MainActor func testColdNotificationUsesRuntimeProfilesAndFailsClosedOffline() async throws {
-    for value in [false,true] {
-      for offline in [false,true] {
-        let fixture = AnswerFixture()
-        if value { await fixture.valueField(#"{"kind":"number","label":"Count","default":{"kind":"number","decimal":"4"}}"#) }
-        await fixture.mode(readFails:offline,resolved:false)
-        let runtime = NodRuntimeClient(request: { await fixture.request($0) }); try await runtime.start()
-        let store = NodStore(platform:.macos,defaultDeviceName:"Synthetic",presentLocalNotifications:false,configureNotificationController:false,runtime:runtime)
-        store.servers = []
-        XCTAssertFalse(runtime.state?.servers.isEmpty ?? true)
-        _ = await store.handleNotificationOption(target:.init(serverId:"fixture",requestId:"card",channelId:"channel"),optionId:"yes",text:nil)
-        let counts = await fixture.counts()
-        XCTAssertEqual(counts.0, !value && !offline ? 1 : 0)
-        XCTAssertEqual(counts.2, value && !offline ? 1 : 0)
-        XCTAssertGreaterThanOrEqual(counts.1,1)
-        if offline { XCTAssertNotNil(store.lastError) }
-      }
-    }
-  }
-
   func testValueComposerReopenUsesCanonicalNewNotes() {
     let detail = NodAnswerComposition.notesKey(serverId:"s",requestId:"r",optionId:"",isValueRequest:true)
     let composer = NodAnswerComposition.notesKey(serverId:"s",requestId:"r",optionId:"x",isValueRequest:true)
@@ -172,7 +152,7 @@ final class NodAnswerStateTests: XCTestCase {
     let counts = await fixture.counts(); XCTAssertEqual(counts.0,0)
   }
 
-  @MainActor func testValueWithoutOptionsNeverAcknowledgesAndNotificationOnlyOpens() async throws {
+  @MainActor func testValueWithoutOptionsNeverAcknowledges() async throws {
     let fixture = AnswerFixture()
     await fixture.information()
     await fixture.valueField(#"{"kind":"number","label":"Count","default":{"kind":"number","decimal":"4"}}"#)
@@ -185,11 +165,8 @@ final class NodAnswerStateTests: XCTestCase {
     XCTAssertTrue(request.options.isEmpty)
     let acknowledged = await store.dismissIfInformational(request:request)
     XCTAssertFalse(acknowledged)
-    XCTAssertEqual(NodNotificationController.actions(for:request).map(\.identifier), ["open"])
-    _ = await store.handleNotificationOption(target:.init(serverId:"fixture",requestId:"card",channelId:"channel"), optionId:"approve",text:nil)
     let counts = await fixture.counts()
-    XCTAssertEqual(counts.0,0)
-    XCTAssertEqual(counts.2,1, "A value action may only route to the app, never sign or write")
+    XCTAssertEqual(counts.0,0, "A value request without options is never dismissed on the user's behalf")
   }
 
   @MainActor func testValueNotesUTF8LimitBlocksBeforeAnyWrite() async throws {

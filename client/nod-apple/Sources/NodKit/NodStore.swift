@@ -227,9 +227,6 @@ public final class NodStore: ObservableObject {
       NodNotificationController.shared.configure(
         onOpen: { [weak self] target in
           Task { @MainActor in await self?.openNotification(target) }
-        },
-        onOption: { [weak self] target, optionId, text in
-          await self?.handleNotificationOption(target: target, optionId: optionId, text: text) ?? false
         }
       )
     }
