@@ -4,6 +4,9 @@
 
 - iOS: the connection status is a navigation-bar indicator instead of a bottom
   bar that covered the tab bar and request controls.
+- iOS/macOS: request detail header puts the status badge above a full-width
+  title with one metadata block; the iOS bar shows the channel, not a cut-off
+  copy of the title.
 
 ## v1.2.0
 

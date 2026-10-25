@@ -25,28 +25,22 @@ struct RequestDetail: View {
     VStack(spacing: 0) {
     ScrollView {
       VStack(alignment: .leading, spacing: 18) {
-        HStack(alignment: .firstTextBaseline) {
-          VStack(alignment: .leading, spacing: 4) {
-            Text(request.title)
-              .font(.title2)
-              .fontWeight(.semibold)
-            Text(request.createdAt, format: .dateTime)
-              .font(.caption)
-              .foregroundStyle(.secondary)
-          }
-          Spacer()
+        // Badge above the title so a long title gets the full width.
+        VStack(alignment: .leading, spacing: 8) {
           StatusBadge(request: request)
+          Text(request.title)
+            .font(.title2)
+            .fontWeight(.semibold)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+          VStack(alignment: .leading, spacing: 2) {
+            Text("\(channelName) · \(serverName)")
+            Text("\(request.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(resolutionLabel)")
+          }
+          .font(.caption)
+          .foregroundStyle(.secondary)
         }
-
-        HStack {
-          Text(store.servers.first { $0.id == serverId }?.name ?? store.selectedServer?.name ?? "Nod")
-          Text("•")
-          Text(store.channels.first { $0.id == request.channelId }?.name ?? request.channelId)
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        Text(request.options.isEmpty && !request.isValueRequest ? "Information" : (request.decisionResolution == .shared ? "Shared decision" : "Your answer"))
-          .font(.caption).foregroundStyle(.secondary)
+        Divider()
         if let field = request.answerField, store.needsAnswer(request) {
           RequestValueControl(field: field, value: valueBinding)
             .id(valueScope)
@@ -180,7 +174,13 @@ struct RequestDetail: View {
       #endif
     }
     }
+    #if os(iOS)
+    // The body header carries the full title; the bar only gives context.
+    .navigationTitle(channelName)
+    .navigationBarTitleDisplayMode(.inline)
+    #else
     .navigationTitle(request.title)
+    #endif
     .task(id: request.id) {
       store.prepareAnswerStorage()
       #if !os(macOS)
@@ -192,6 +192,18 @@ struct RequestDetail: View {
       #endif
     }
     .onChange(of: store.selectedServerId) { showingOptions = false; responseDraft = nil; destructiveOption = nil }
+  }
+
+  private var serverName: String {
+    store.servers.first { $0.id == serverId }?.name ?? store.selectedServer?.name ?? "Nod"
+  }
+
+  private var channelName: String {
+    store.channels.first { $0.id == request.channelId }?.name ?? request.channelId
+  }
+
+  private var resolutionLabel: String {
+    request.options.isEmpty && !request.isValueRequest ? "Information" : (request.decisionResolution == .shared ? "Shared decision" : "Your answer")
   }
 
   private func composer(_ draft: ResponseDraft) -> some View {
