@@ -63,9 +63,9 @@ Settings offers launch at login, notification sound, hidden previews, per-channe
 mute, one-hour snooze and local quiet hours. These controls do not change channel
 eligibility or approve requests. A test notification reports acceptance by the
 local OS; Focus/Do Not Disturb or OS permissions may still prevent presentation.
-Native Windows/Linux actions fetch the original server/request before acting.
-Redacted or oversized option sets open the request instead of exposing or hiding
-individual choices. Terminal updates remove obsolete notifications.
+Native Windows/Linux notifications carry no decision buttons: clicking one
+opens the request in the foreground window, and every answer is signed over the
+digest of the card shown there. Terminal updates remove obsolete notifications.
 
 Remote images are off by default. Opt-in PNG/JPEG previews have a 12-second,
 8 MiB, 4096-pixel-per-axis decode limit and at most four concurrent operations;

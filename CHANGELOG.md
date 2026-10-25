@@ -1,12 +1,24 @@
 # Changelog
 
-## v1.1.1
+## v1.2.0
 
-- New Nod mascot app icon across iOS, macOS and the desktop app.
-- Matching Nod mascot menu-bar and tray glyph.
-- Asset-only release: no functional, API, server, protocol or signing-byte changes.
+- Security: every client signs the digest of the request the user saw; a
+  signing key is mandatory at enrollment and every device decision carries a
+  verified signature; no approve/reject from notifications on any platform.
+- `nod-verify` CLI and `nod_proto::verify_decision_receipt` check a receipt
+  offline against device keys pinned from the admin device list, which now
+  exposes `signing_key_id` and `signing_public_key`.
+- The sync WebSocket authenticates with the `Authorization` header only; 1.1.x
+  clients get 401 and must be updated with the server.
+- Admin cookie `Secure` behind TLS, delayed failed admin logins, uniform
+  enrollment codes, http(s)-only link/image URLs, 0700/0600 data and audit files.
+- Request digests collapsed: ordinary cards issue `nod-request-v1` with
+  `nod-decision-v1`, value cards `nod-request-v2` with `nod-decision-v2`;
+  older encoders stay verification-only and already-issued cards keep working.
+- New Nod mascot app icon across iOS, macOS and the desktop app, with a
+  matching menu-bar and tray glyph (the unpublished 1.1.1 refresh).
 
-Full notes: [docs/release-notes/v1.1.1.md](docs/release-notes/v1.1.1.md)
+Full notes: [docs/release-notes/v1.2.0.md](docs/release-notes/v1.2.0.md)
 
 ## v1.1.0
 

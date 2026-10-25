@@ -158,15 +158,19 @@ know that the user saw and cleared the item.
 
 Nod is designed for private, self-hosted deployments. The main server stores
 request state, device records, signed decisions, and append-only audit logs.
-Devices can register P-256 signing keys during enrollment; decision submissions
-can then be signed against the server-provided request digest, with nonce reuse
-rejected per device key.
+Every device registers a P-256 signing key at enrollment (enrollment without
+one is refused), and every decision it submits is signed over the digest of the
+request the user reviewed, with nonce reuse rejected per device key. Approvals
+are given only inside the app: notifications open the request, they never
+answer it.
 
 The issuer read and wait APIs are the authoritative way to consume decisions.
 If a request sets `callback_url`, Nod sends an unsigned, best-effort POST after
 a decision is recorded. Treat that callback as a wake-up hint only: receivers
 must authenticate their own route and read or wait for the decision before
-acting on an approval.
+acting on an approval. To act without trusting the server, verify the receipt
+offline with `nod-verify` against device public keys pinned from the admin
+device list (see [docs/deploy.md](docs/deploy.md#verifying-a-decision)).
 
 Apple push can use a separate mTLS APNs relay to keep provider credentials out
 of the main server, or the embedded relay for a single-process deployment.

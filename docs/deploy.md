@@ -9,13 +9,17 @@ machine, or any Linux box. No database server, no Docker required.
 Download the server archive for your machine from the
 [latest release](https://github.com/batteryshark/nod/releases/latest):
 
-| Machine | Archive |
+| Machine | Archive (`<version>` is the release tag, e.g. `v1.2.0`) |
 | --- | --- |
-| Mac (Apple Silicon) | `nod-server-v1.0.0-aarch64-apple-darwin.tar.gz` |
-| Mac (Intel) | `nod-server-v1.0.0-x86_64-apple-darwin.tar.gz` |
-| Linux (x86_64) | `nod-server-v1.0.0-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux (ARM64) | `nod-server-v1.0.0-aarch64-unknown-linux-gnu.tar.gz` |
-| Windows | `nod-server-v1.0.0-x86_64-pc-windows-msvc.zip` |
+| Mac (Apple Silicon) | `nod-server-<version>-aarch64-apple-darwin.tar.gz` |
+| Mac (Intel) | `nod-server-<version>-x86_64-apple-darwin.tar.gz` |
+| Linux (x86_64) | `nod-server-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (ARM64) | `nod-server-<version>-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows | `nod-server-<version>-x86_64-pc-windows-msvc.zip` |
+
+The matching `nod-verify-<version>-<target>` archive on the same release page
+is the offline receipt verifier described under
+[Verifying a decision](#verifying-a-decision).
 
 ### macOS / Linux
 
@@ -159,7 +163,10 @@ expose it directly to the internet.
   an HTTPS URL like `https://your-machine.your-tailnet.ts.net/nod`. Use that
   URL when enrolling clients.
 - **Reverse proxy**: terminate TLS in nginx/Caddy/Traefik and proxy to
-  `127.0.0.1:8767` (WebSocket upgrade required for `/api/v1/sync`).
+  `127.0.0.1:8767` (WebSocket upgrade required for `/api/v1/sync`). Clients
+  send the device token in the `Authorization` header of the upgrade request,
+  so the proxy must forward that header; there is no query-string form. Pass
+  `X-Forwarded-Proto: https` so the admin session cookie is marked `Secure`.
 
 ## Verifying a deployment
 
@@ -369,7 +376,7 @@ direct and relay options.
 
 ## Privacy model in v1
 
-Nod v1.0.0 is a self-hostable ownership release: it gives you the server,
+Nod is a self-hostable ownership release: it gives you the server,
 clients, and release artifacts needed to own the decision loop today. It is
 not yet a privacy-preserving hosted-service design. The server operator can
 see request content, options, recipients, decisions, timestamps, delivery

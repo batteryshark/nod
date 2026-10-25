@@ -34,6 +34,11 @@ server/nod-server/scripts/nod-smoke
 - [x] Full signed HTTP/WebSocket smoke against an isolated migrated copy
       (2026-09-22; production writes kept separate)
 - [ ] Live push delivery and device acceptance for the new client builds
+- [ ] 1.2.0 cutover: a 1.1.x client gets 401 on the sync socket and cannot
+      enroll without a signing key; the admin device list shows
+      `signing_key_id` / `signing_public_key`; `nod-verify` from the release
+      archive passes on a decision taken by a 1.2.0 client (scripted analog:
+      `tools/nod-verify/tests/cli.rs`, `tests/api/devices.rs`, `edge_sync.rs`)
 
 ## TUI — executed 2026-06-10 (sandboxed: `NOD_CLIENT_CORE_STATE_DIR` + insecure token store, tmux-driven)
 
@@ -64,14 +69,20 @@ server/nod-server/scripts/nod-smoke
       shows the head icon; pending count badges the taskbar icon
 - [ ] Tray (notification area) shows the head glyph; tooltip + Show/Quit
       menu work, light + dark taskbar
-- [ ] Enroll to the host server; request arrives; Windows toast shows
+- [ ] Enroll to the host server; request arrives; Windows toast shows with no
+      approve/reject buttons; clicking it opens the request
 - [ ] Approve with notes; reject; verify both on the server (notes ride
       with either decision)
 - [ ] Quit + relaunch → still enrolled (Credential Manager)
 - [ ] VM reboot → still enrolled; autostart behaves as configured
 - [ ] Server restart while app open → sync reconnects
 
-## macOS app — 1.1.0 continuity install and public DMG acceptance
+## macOS app — continuity install and public DMG acceptance
+
+The D18/continuity items below were written for the 1.1.0 handoff and apply
+to any in-place upgrade of a principal's installed build. For 1.2.0 the
+installed client must be upgraded together with the server: a 1.1.x app is
+refused on the sync socket.
 
 - [ ] D18: in the SAME install handoff, give the principal a 30-second
       heads-up, then show ONE visible INERT fixture covering sheets, EVERY
@@ -83,8 +94,8 @@ server/nod-server/scripts/nod-smoke
       designated requirement, keys and enrollment;
       no fresh-copy, uninstall, reset or re-enrollment requirement
 - [ ] AFTER install, ONE real many-option card is chief-owned post-install
-      smoke, NOT a release acceptance or publication gate (whole 1.1.0 already
-      principal accepted; no additional signoff)
+      smoke, NOT a release acceptance or publication gate (the release is
+      already principal accepted; no additional signoff)
 - [ ] Public Developer ID-signed, notarized, stapled DMG passes Gatekeeper
       with no override and preserves the bundle identifier; check this PUBLIC
       artifact SEPARATELY. Its certificate and designated requirement differ
@@ -92,7 +103,7 @@ server/nod-server/scripts/nod-smoke
       installing the public DMG over that candidate or changing installed identity
 - [ ] Menu-bar nod-head glyph renders in light + dark mode; pending count
 - [ ] With preserved enrollment, receive, decide (Secure Enclave signing),
-      notification + sound
+      notification + sound; the notification offers only Open Nod
 - [ ] Quit + relaunch → still enrolled
 - [ ] `spctl --assess --type execute -vv Nod.app` reports Notarized Developer ID
 
@@ -100,7 +111,7 @@ Public DMG package verification is complete; tagging and publication follow
 remaining technical rollout gates and clean history scan, with no further
 principal acceptance.
 
-## iOS — direct ad-hoc 1.1.0 handoff
+## iOS — direct ad-hoc handoff
 
 - [ ] Confirm strict signed-export/profile verification, production APNs and
       App Attest, device coverage and preserved signing/keychain identity
@@ -108,7 +119,8 @@ principal acceptance.
       reset or enrollment; existing identity and enrollment are preserved
 - [ ] Natural APNs push arrives with the app backgrounded
 - [ ] Open the app and submit a signed value with notes; verify the receipt
-      in-app and on the server, WITHOUT notification quick-submit of a value
+      in-app and on the server. The notification offers only Open Nod: there is
+      no approve/reject/quick-submit from the lock screen on any card
 
 ## Cut runbook
 

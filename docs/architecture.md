@@ -45,9 +45,10 @@ eligible recipients. Shared requests resolve on one accepted choice; per-user
 requests record each eligible recipient's choice. Client views can project one
 user's state without exposing the complete recipient list.
 
-A client action fetches the authoritative request before signing. The signed
-payload binds the request digest, option, text, user/device identity, timestamp,
-and nonce. The server checks eligibility and state and records the verified
+A client action fetches the authoritative request for its status, but signs
+only if that copy carries the digest of the card the user reviewed; a
+mismatch is refused. The signed payload binds the request digest, option,
+text, user/device identity, timestamp, and nonce. The server checks eligibility and state and records the verified
 receipt with the decision. Revoking a device removes authorization while
 retaining historical verification material.
 
@@ -106,10 +107,9 @@ This document does not claim that cutover is complete.
 Each runtime maintains one active server connection and one complete in-memory
 inbox for that server. Selecting a channel filters the cache locally;
 `selected_channel_id: null` means all eligible channels. This is not a
-cross-server aggregate. Notification actions instead carry an explicit server
-identity and can fetch/sign a request without changing the selected profile.
-Opening a notification fetches its request and navigates to the right server,
-channel, and request.
+cross-server aggregate. Notifications carry an explicit server identity but
+never sign: opening one fetches its request and navigates to the right server,
+channel, and request, and the answer is given from the rendered card.
 
 The sync loop subscribes before fetching HTTP state, then applies buffered
 updates. Request timestamps reject older versions; a local revision marker
