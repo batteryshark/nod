@@ -30,9 +30,9 @@ pub use runtime::{
 
 use nod_proto::{
     decision_signing_payload as proto_decision_signing_payload,
-    request_digest as proto_request_digest, validate_public_key as proto_validate_public_key,
-    verify_payload as proto_verify_payload, DecisionSigningInput, OptionKind, Request,
-    SigningError,
+    request_digest_legacy_line_snapshot as proto_request_digest,
+    validate_public_key as proto_validate_public_key, verify_payload as proto_verify_payload,
+    DecisionSigningInput, OptionKind, Request, SigningError,
 };
 
 // ---------------------------------------------------------------------------
@@ -76,15 +76,43 @@ impl From<SigningError> for SigningFfiError {
     }
 }
 
-/// Recompute the canonical request digest from the raw request JSON the server
-/// sent, so the client can independently confirm it is approving the request it
-/// saw rather than trusting the server-provided digest.
+/// Whether a received card should be treated as the value variant. Apple uses
+/// this for UI-only detection; the signing dispatch itself lives in
+/// `nod-client-core`. Content wins; the legacy value tag is the fallback for
+/// content-stripped projections.
+#[uniffi::export]
+pub fn is_value_request_card(answer_field_present: bool, signing_version: Option<String>) -> bool {
+    nod_proto::is_value_request(answer_field_present, signing_version.as_deref())
+}
+
+/// Recompute the request digest for the request JSON the server sent. Honors a
+/// versioned `signing` context (structured/value encoder selected by its tag);
+/// only a request without one falls back to the frozen legacy line snapshot.
 #[uniffi::export]
 pub fn request_digest(request_json: String) -> Result<String, SigningFfiError> {
     let request: Request =
         serde_json::from_str(&request_json).map_err(|err| SigningFfiError::InvalidRequestJson {
             message: err.to_string(),
         })?;
+    if let Some(context) = &request.signing {
+        let recomputed = if let Some(field) = &request.answer_field {
+            nod_proto::value_signing::value_request_digest_for_version(
+                &request,
+                &context.version,
+                &context.recipients_commitment,
+                field,
+            )?
+        } else {
+            nod_proto::request_digest_for_version(
+                &request,
+                &context.version,
+                &context.recipients_commitment,
+            )?
+        };
+        return recomputed.ok_or_else(|| SigningFfiError::Other {
+            message: format!("unsupported request signing version: {}", context.version),
+        });
+    }
     Ok(proto_request_digest(&request)?)
 }
 
@@ -252,6 +280,42 @@ mod tests {
         let digest = request_digest(json.to_string()).unwrap();
         assert_eq!(digest.len(), 64);
         assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn ffi_request_digest_follows_the_signing_context_version() {
+        let mut request: Request = serde_json::from_value(serde_json::json!({
+            "id": "request-1",
+            "request_id": "request-1",
+            "channel_id": "deployments",
+            "recipients": ["owner"],
+            "decision_resolution": "shared",
+            "title": "Deploy?",
+            "summary": "Production deploy",
+            "body_markdown": "Approve deploy",
+            "status": "pending",
+            "created_at": "2026-05-28T12:00:00.000Z",
+            "updated_at": "2026-05-28T12:00:00.000Z",
+            "options": []
+        }))
+        .unwrap();
+        let commitment = nod_proto::recipients_commitment(&request.recipients, "salt").unwrap();
+        let expected = nod_proto::request_digest_v1(&request, &commitment).unwrap();
+        request.signing = Some(nod_proto::RequestSigningContext {
+            version: nod_proto::REQUEST_DIGEST_VERSION.into(),
+            recipients_commitment: commitment,
+            request_digest: expected.clone(),
+        });
+        assert_eq!(
+            request_digest(serde_json::to_string(&request).unwrap()).unwrap(),
+            expected
+        );
+
+        request.signing.as_mut().unwrap().version = "nod-request-v999".into();
+        assert!(matches!(
+            request_digest(serde_json::to_string(&request).unwrap()).unwrap_err(),
+            SigningFfiError::Other { .. }
+        ));
     }
 
     #[test]

@@ -39,10 +39,11 @@ pub use request::{
 };
 #[allow(deprecated)]
 pub use signing::{
-    decision_signing_payload, generate_signing_key, public_key_for, recipients_commitment,
-    request_digest, request_digest_legacy_line_snapshot, request_digest_legacy_structured_v2,
-    request_digest_v1, request_digest_v2, sign_payload, validate_public_key, verify_payload,
-    DecisionSigningInput, SigningError, SigningKeyPair, DECISION_PAYLOAD_VERSION,
+    decision_signing_payload, generate_signing_key, is_value_request, public_key_for,
+    recipients_commitment, request_digest, request_digest_for_version,
+    request_digest_legacy_line_snapshot, request_digest_legacy_structured_v2, request_digest_v1,
+    request_digest_v2, sign_payload, validate_public_key, verify_payload, DecisionSigningInput,
+    SigningError, SigningKeyPair, DECISION_PAYLOAD_VERSION,
     LEGACY_LINE_SNAPSHOT_REQUEST_DIGEST_VERSION, LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION,
     PRIVATE_REQUEST_DIGEST_VERSION, REQUEST_DIGEST_VERSION, UNCOMPRESSED_P256_PUBLIC_KEY_LENGTH,
     UNCOMPRESSED_P256_PUBLIC_KEY_PREFIX,

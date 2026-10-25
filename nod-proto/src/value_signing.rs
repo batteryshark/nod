@@ -100,6 +100,26 @@ pub fn request_digest_v3(
     value_request_digest(request, commitment, field)
 }
 
+/// Recompute the value request digest for a received signing-context tag.
+///
+/// `nod-request-v2` selects the current value encoder; `nod-request-v3` selects
+/// the pre-collapse value encoder. Any other tag returns `Ok(None)` so the
+/// caller keeps its existing unsupported-version error.
+pub fn value_request_digest_for_version(
+    request: &Request,
+    version: &str,
+    commitment: &str,
+    field: &AnswerField,
+) -> Result<Option<String>, SigningError> {
+    match version {
+        VALUE_REQUEST_DIGEST_VERSION => Ok(Some(value_request_digest(request, commitment, field)?)),
+        LEGACY_VALUE_REQUEST_DIGEST_VERSION => Ok(Some(value_request_digest_legacy_v3(
+            request, commitment, field,
+        )?)),
+        _ => Ok(None),
+    }
+}
+
 fn value_request_digest_with_version(
     request: &Request,
     commitment: &str,
@@ -205,6 +225,50 @@ mod tests {
         assert_eq!(
             value_request_digest_legacy_v3(&request, &commitment, &field).unwrap(),
             "bce730388e8ba18e9da08c115c763788f9b586b86149b732394b81ebe85dbe57"
+        );
+    }
+
+    #[test]
+    fn value_version_dispatch_selects_only_known_value_encoders() {
+        let request = value_request();
+        let field = request.answer_field.clone().unwrap();
+        let commitment =
+            crate::recipients_commitment(&request.recipients, "fixed-test-salt").unwrap();
+
+        assert_eq!(
+            value_request_digest_for_version(
+                &request,
+                VALUE_REQUEST_DIGEST_VERSION,
+                &commitment,
+                &field
+            )
+            .unwrap(),
+            Some(value_request_digest(&request, &commitment, &field).unwrap())
+        );
+        assert_eq!(
+            value_request_digest_for_version(
+                &request,
+                LEGACY_VALUE_REQUEST_DIGEST_VERSION,
+                &commitment,
+                &field
+            )
+            .unwrap(),
+            Some(value_request_digest_legacy_v3(&request, &commitment, &field).unwrap())
+        );
+        assert_eq!(
+            value_request_digest_for_version(
+                &request,
+                crate::REQUEST_DIGEST_VERSION,
+                &commitment,
+                &field
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            value_request_digest_for_version(&request, "nod-request-v999", &commitment, &field)
+                .unwrap(),
+            None
         );
     }
 

@@ -264,6 +264,36 @@ fn structured_request_digest(
     ))
 }
 
+/// Recompute the ordinary request digest for a received signing-context tag.
+///
+/// `nod-request-v1` selects the current structured encoder, `nod-request-v2`
+/// (when the card has no `answer_field`) selects the pre-collapse structured
+/// encoder. Any other tag returns `Ok(None)` so the caller keeps its existing
+/// unsupported-version error. A context carrying `recipients_commitment` never
+/// selects the legacy line snapshot; that encoder is only the no-context
+/// fallback.
+pub fn request_digest_for_version(
+    request: &Request,
+    version: &str,
+    commitment: &str,
+) -> Result<Option<String>, SigningError> {
+    match version {
+        REQUEST_DIGEST_VERSION => Ok(Some(request_digest_v1(request, commitment)?)),
+        LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION => Ok(Some(request_digest_legacy_structured_v2(
+            request, commitment,
+        )?)),
+        _ => Ok(None),
+    }
+}
+
+/// Whether a received card should be treated as the value variant. The card's
+/// `answer_field` decides when content is available; the legacy value tag is
+/// the fallback for content-stripped projections.
+pub fn is_value_request(answer_field_present: bool, signing_version: Option<&str>) -> bool {
+    answer_field_present
+        || signing_version == Some(crate::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION)
+}
+
 // --- P-256 signing crypto ----------------------------------------------------
 
 /// Generate a new P-256 software signing key. Clients backed by hardware keys
@@ -448,6 +478,47 @@ mod tests {
             request_digest_legacy_structured_v2(&request, &commitment).unwrap(),
             "fdcd92dc9e5001b0cf171bdaf2f7d013f5898b2605c3d829f3e0f75aa2523dc3"
         );
+    }
+
+    #[test]
+    fn version_dispatch_selects_only_known_request_encoders() {
+        let request = canonical_request();
+        let commitment = recipients_commitment(&request.recipients, "fixed-test-salt").unwrap();
+
+        assert_eq!(
+            request_digest_for_version(&request, REQUEST_DIGEST_VERSION, &commitment).unwrap(),
+            Some(request_digest_v1(&request, &commitment).unwrap())
+        );
+        assert_eq!(
+            request_digest_for_version(
+                &request,
+                LEGACY_STRUCTURED_REQUEST_DIGEST_VERSION,
+                &commitment
+            )
+            .unwrap(),
+            Some(request_digest_legacy_structured_v2(&request, &commitment).unwrap())
+        );
+        assert_eq!(
+            request_digest_for_version(
+                &request,
+                crate::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION,
+                &commitment
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            request_digest_for_version(&request, "nod-request-v999", &commitment).unwrap(),
+            None
+        );
+
+        assert!(is_value_request(true, None));
+        assert!(is_value_request(
+            false,
+            Some(crate::value_signing::LEGACY_VALUE_REQUEST_DIGEST_VERSION)
+        ));
+        assert!(!is_value_request(false, Some(REQUEST_DIGEST_VERSION)));
+        assert!(!is_value_request(false, Some("nod-request-v999")));
     }
 
     #[test]
