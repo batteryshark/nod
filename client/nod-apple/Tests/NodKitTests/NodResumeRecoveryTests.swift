@@ -16,6 +16,12 @@ private actor ResumeFixture {
   var failSubmit = false
   var otherRow = false
   var valueRequest = false
+  var refreshError: String?
+  var snapshotError: String?
+  var actionError: String?
+
+  func failRefresh(_ message: String?) { refreshError = message; snapshotError = message }
+  func failActions(_ message: String) { actionError = message }
 
   func setCounts(_ counts: [String: Int]) { self.counts = counts }
   func calls() -> (Int, Int) { (refreshes, connects) }
@@ -34,6 +40,13 @@ private actor ResumeFixture {
     if method == "refresh" {
       refreshes += 1
       try? await Task.sleep(for: .milliseconds(80))
+      if let refreshError {
+        return String(decoding: try! JSONSerialization.data(withJSONObject: ["ok": false, "error": refreshError]), as: UTF8.self)
+      }
+    }
+    if ["submit_request_option", "set_subscription", "rename_device", "enroll"].contains(method), let actionError {
+      snapshotError = actionError
+      return String(decoding: try! JSONSerialization.data(withJSONObject: ["ok": false, "error": actionError]), as: UTF8.self)
     }
     if method == "connect_sync" { connects += 1 }
     if method == "select_request" || method == "open_request" { selected = params["request_id"] as? String ?? selected }
@@ -49,6 +62,7 @@ private actor ResumeFixture {
       "pending_counts_by_channel": counts,
       "last_synced_at": ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: 1_790_000_000 + Double(refreshes))),
     ]
+    if let snapshotError { state["last_error"] = snapshotError }
     if informational {
       state["selected_request_id"] = selected
       state["pending_counts_by_channel"] = ["a": status == "pending" ? 1 : 0]
@@ -281,7 +295,7 @@ final class NodResumeRecoveryTests: XCTestCase {
     await fixture.setCounts(["a": 3])
     async let a: Void = store.resumeFromForeground()
     async let b: Void = store.resumeFromForeground()
-    async let c: Void = store.refresh()
+    async let c = store.refresh()
     _ = await (a, b, c)
     try await Task.sleep(for: .milliseconds(30))
     let after = await fixture.calls()
@@ -306,14 +320,15 @@ final class NodResumeRecoveryTests: XCTestCase {
     let synced = try XCTUnwrap(client.state?.lastSyncedAt)
     store.recordRecoveryError("Nod GET /api/v1/channels failed with 502")
     store.clearRecoveredError(serverId: "fixture", syncedAt: synced)
-    XCTAssertNotNil(store.lastError, "old snapshot is not proof of recovery")
+    XCTAssertNotNil(store.serverConnectionIssuesById["fixture"], "old snapshot is not proof of recovery")
+    XCTAssertNil(store.alertMessage)
     store.clearRecoveredError(serverId: "other", syncedAt: synced.addingTimeInterval(1))
-    XCTAssertNotNil(store.lastError)
+    XCTAssertNotNil(store.serverConnectionIssuesById["fixture"])
     store.clearRecoveredError(serverId: "fixture", syncedAt: synced.addingTimeInterval(1))
-    XCTAssertNil(store.lastError)
+    XCTAssertNil(store.serverConnectionIssuesById["fixture"])
     store.recordRecoveryError("refresh failed")
     await store.refresh()
-    XCTAssertNil(store.lastError, "a later successful same-server snapshot clears refresh failure")
+    XCTAssertNil(store.serverConnectionIssuesById["fixture"], "a later successful same-server snapshot clears refresh failure")
     store.recordRecoveryError("refresh failed")
     store.mapRuntimeError(NodRuntimeError.rpc("decision signing failed"))
     await store.refresh()
@@ -328,6 +343,117 @@ final class NodResumeRecoveryTests: XCTestCase {
   }
 
   // MARK: - Acknowledge on a pending informational card (both platforms)
+
+  @MainActor
+  func testBackgroundFailuresStayInStatusThroughPollingAndClearOnRecovery() async throws {
+    for message in ["Nod GET /api/v1/channels failed with 500 Internal Server Error (3 attempt(s)): server returned an unsuccessful response", "network connection lost", "request timed out"] {
+      let fixture = ResumeFixture()
+      let client = NodRuntimeClient(request: { await fixture.request($0) })
+      let store = NodStore(platform: .macos, defaultDeviceName: "Fixture", presentLocalNotifications: false,
+        configureNotificationController: false, runtime: client)
+      try await Task.sleep(for: .milliseconds(200))
+      await fixture.failRefresh(message)
+      await store.resumeFromForeground()
+      let failed = await store.refresh()
+      XCTAssertFalse(failed, "iOS background fetch must report the refresh outcome, not alert ownership")
+      try await client.selectRequest("info") // poll the runtime's echoed last_error
+      try await Task.sleep(for: .milliseconds(30))
+      XCTAssertEqual(store.connectionIssue(for: try XCTUnwrap(store.selectedServer)), message)
+      XCTAssertNil(store.alertMessage)
+      await fixture.failRefresh(nil)
+      let recovered = await store.refresh()
+      XCTAssertTrue(recovered)
+      try await Task.sleep(for: .milliseconds(30))
+      XCTAssertNil(store.serverConnectionIssuesById["fixture"])
+      XCTAssertNil(store.alertMessage)
+    }
+  }
+
+  @MainActor
+  func testExplicitFailuresSurviveBackgroundRecoveryAndDismissedEchoStaysQuiet() async throws {
+    for message in ["Nod POST /api/v1/requests/info/decisions failed with 500 Internal Server Error (1 attempt(s)): server returned an unsuccessful response", "network connection lost", "decision signing failed", "Request changed. Review it again before answering."] {
+      let (store, client, fixture) = try await informationalFixtureStore()
+      await fixture.failActions(message)
+      let result = await store.dismissIfInformational(request: try XCTUnwrap(client.state?.requests.first))
+      XCTAssertFalse(result)
+      XCTAssertEqual(store.alertMessage, message)
+      try await client.selectRequest("info") // action failure echoed by polling
+      try await Task.sleep(for: .milliseconds(30))
+      store.recordRecoveryError("background timeout")
+      await fixture.failRefresh(nil)
+      await store.refresh()
+      try await Task.sleep(for: .milliseconds(30))
+      XCTAssertEqual(store.alertMessage, message)
+      await store.setSubscription(channelId: "a", subscribed: true)
+      XCTAssertEqual(store.alertMessage, message)
+      store.dismissAlertMessage()
+      try await client.selectRequest("info")
+      try await Task.sleep(for: .milliseconds(30))
+      XCTAssertNil(store.alertMessage, "polling an action failure must not resurrect its modal")
+    }
+  }
+
+  @MainActor
+  func testBackgroundAuthRequiresReEnrollmentAndPermissionAlertSurvivesRecovery() async throws {
+    let (store, _, fixture) = try await informationalFixtureStore()
+    store.notificationPermissionIssue = "Notifications are disabled."
+    store.recordRecoveryError("websocket connection lost")
+    XCTAssertEqual(store.alertMessage, "Notifications are disabled.")
+    await store.refresh()
+    XCTAssertEqual(store.alertMessage, "Notifications are disabled.")
+    await fixture.failRefresh("Nod GET /api/v1/channels failed with 401 Unauthorized (1 attempt(s)): server returned an unsuccessful response")
+    await store.refresh()
+    XCTAssertTrue(store.canReEnrollInvalidSession)
+    XCTAssertTrue(store.alertMessage?.contains("Re-enroll") == true)
+    await fixture.failRefresh(nil)
+    await store.refresh()
+    XCTAssertTrue(store.canReEnrollInvalidSession)
+    XCTAssertTrue(store.alertMessage?.contains("Re-enroll") == true)
+    XCTAssertNotNil(store.serverConnectionIssuesById["fixture"])
+  }
+
+  @MainActor
+  func testWebsocketEventsUseStatusExceptAuthAndDecodeFailures() async throws {
+    let (store, client, _) = try await informationalFixtureStore()
+    client.apply(.transientError(message: "websocket network timeout"))
+    try await Task.sleep(for: .milliseconds(30))
+    XCTAssertNil(store.alertMessage)
+    XCTAssertEqual(store.serverConnectionIssuesById["fixture"], "websocket network timeout")
+    await store.refresh()
+    try await Task.sleep(for: .milliseconds(30))
+    XCTAssertNil(store.serverConnectionIssuesById["fixture"])
+    client.apply(.transientError(message: "runtime event decode failed: fixture"))
+    try await Task.sleep(for: .milliseconds(30))
+    XCTAssertEqual(store.alertMessage, "runtime event decode failed: fixture")
+    client.apply(.authRevoked)
+    try await Task.sleep(for: .milliseconds(30))
+    XCTAssertTrue(store.canReEnrollInvalidSession)
+    XCTAssertTrue(store.alertMessage?.contains("Re-enroll") == true)
+  }
+
+  @MainActor
+  func testEnrollmentAuthRejectionIsNotSelectedSessionRevocation() async throws {
+    let (store, client, fixture) = try await informationalFixtureStore()
+    let message = "Nod POST /api/v1/enroll failed with 401 Unauthorized (1 attempt(s)): server returned an unsuccessful response"
+    // Enrollment's catch uses this action mapping (without provisioning real keys).
+    store.mapRuntimeError(NodRuntimeError.rpc(message), checkAuth: false)
+    await fixture.failActions(message)
+    try? await client.enroll(baseURL: "https://fixture.invalid", deviceName: "Fixture", code: "INVALID", notificationSound: nil, platform: .macos)
+    try await client.selectRequest("info")
+    try await Task.sleep(for: .milliseconds(30))
+    XCTAssertEqual(store.alertMessage, message)
+    XCTAssertFalse(store.canReEnrollInvalidSession)
+  }
+
+  @MainActor
+  func testRuntimeInitiatedResyncAuthFailureStillOffersReEnrollment() async throws {
+    let (store, client, fixture) = try await informationalFixtureStore()
+    await fixture.failRefresh("Nod GET /api/v1/channels failed with 401 Unauthorized (1 attempt(s)): server returned an unsuccessful response")
+    client.apply(.resyncRequired)
+    try await Task.sleep(for: .milliseconds(150))
+    XCTAssertTrue(store.canReEnrollInvalidSession)
+    XCTAssertTrue(store.alertMessage?.contains("Re-enroll") == true)
+  }
 
   /// The detail view is SwiftUI in the app targets, so it cannot be hosted by
   /// this package's tests. What it branches on is `NodRequest.isPendingInformational`,
