@@ -19,6 +19,15 @@ private actor ResumeFixture {
   var refreshError: String?
   var snapshotError: String?
   var actionError: String?
+  private var holdRefreshResponse = false
+  private var heldRefreshResponse: CheckedContinuation<Void, Never>?
+
+  func holdNextRefreshResponse() { holdRefreshResponse = true }
+  func isRefreshResponseHeld() -> Bool { heldRefreshResponse != nil }
+  func releaseRefreshResponse() {
+    heldRefreshResponse?.resume()
+    heldRefreshResponse = nil
+  }
 
   func failRefresh(_ message: String?) { refreshError = message; snapshotError = message }
   func failActions(_ message: String) { actionError = message }
@@ -94,11 +103,85 @@ private actor ResumeFixture {
       }
     }
     let data = try! JSONSerialization.data(withJSONObject: ["ok": true, "result": state])
+    if method == "refresh", holdRefreshResponse {
+      holdRefreshResponse = false
+      await withCheckedContinuation { heldRefreshResponse = $0 }
+    }
     return String(decoding: data, as: UTF8.self)
   }
 }
 
 final class NodResumeRecoveryTests: XCTestCase {
+  private enum ReadinessError: Error { case timedOut }
+
+  @MainActor
+  private func waitUntil(
+    _ description: String,
+    file: StaticString = #filePath, line: UInt = #line,
+    condition: () async -> Bool
+  ) async throws {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    while !(await condition()) {
+      guard ContinuousClock.now < deadline else {
+        XCTFail("Timed out waiting for \(description)", file: file, line: line)
+        throw ReadinessError.timedOut
+      }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+  }
+
+  @MainActor
+  private func waitForStartup(_ store: NodStore, fixture: ResumeFixture) async throws {
+    // start() publishing a registered/current state is not completion: the store
+    // still awaits its initial refresh, clears its coalescing task, then schedules
+    // connectSync. Observe that final RPC AND the delivered refresh snapshot.
+    try await waitUntil("startup refresh, initial connection and UI snapshot") {
+      let calls = await fixture.calls()
+      return calls.0 > 0 && calls.1 > 0 && !store.isRefreshing
+        && store.isRegistered && store.isSyncConnected
+        && store.lastSyncedAt == store.runtime.state?.lastSyncedAt
+    }
+  }
+
+  @MainActor
+  func testStartupRefreshGenerationMustFinishBeforeInjectingNextFailure() async throws {
+    let fixture = ResumeFixture()
+    await fixture.holdNextRefreshResponse()
+    let client = NodRuntimeClient(request: { await fixture.request($0) })
+    let store = NodStore(platform: .macos, defaultDeviceName: "Fixture", presentLocalNotifications: false,
+      configureNotificationController: false, runtime: client)
+    defer { Task { await fixture.releaseRefreshResponse() } }
+    try await waitUntil("held startup success response") { await fixture.isRefreshResponseHeld() }
+    try await waitUntil("registered initial UI state") { store.isRegistered }
+    XCTAssertTrue(store.isRefreshing)
+    let before = await fixture.calls()
+    XCTAssertEqual(before.0, 1)
+    XCTAssertEqual(before.1, 0, "registered/current initial state is not startup completion")
+
+    await fixture.failRefresh("network connection lost")
+    var joinedStartup = false
+    let overlapping = Task { @MainActor in
+      joinedStartup = true
+      return await store.refresh()
+    }
+    try await waitUntil("overlapping refresh joined startup") { joinedStartup }
+    await fixture.releaseRefreshResponse()
+    let originalResult = await overlapping.value
+    XCTAssertTrue(originalResult, "coalescing returns the already captured startup result, not a new RPC")
+    try await waitForStartup(store, fixture: fixture)
+    let afterStartup = await fixture.calls()
+    XCTAssertEqual(afterStartup.0, 1)
+    XCTAssertEqual(afterStartup.1, 1)
+
+    let nextResult = await store.refresh()
+    XCTAssertFalse(nextResult, "a new refresh generation must observe the injected failure")
+    XCTAssertEqual(store.serverConnectionIssuesById["fixture"], "network connection lost")
+    XCTAssertNil(store.alertMessage)
+    let afterFailure = await fixture.calls()
+    XCTAssertEqual(afterFailure.0, 2)
+    XCTAssertEqual(afterFailure.1, 1, "a healthy connection is not reconnected")
+  }
+
   @MainActor
   func testMacExplicitReadStaysPendingUntilExactlyOneLeave() async throws {
     let fixture = ResumeFixture()
@@ -109,7 +192,7 @@ final class NodResumeRecoveryTests: XCTestCase {
     let previous = store.acknowledgeOnOpen
     store.acknowledgeOnOpen = true
     defer { store.acknowledgeOnOpen = previous }
-    try await Task.sleep(for: .milliseconds(200))
+    try await waitForStartup(store, fixture: fixture)
     XCTAssertEqual(store.selectedRequestId, "info")
     await store.refresh()
     store.selectedRequestId = "info" // programmatic selection is not reading
@@ -150,7 +233,7 @@ final class NodResumeRecoveryTests: XCTestCase {
     let client = NodRuntimeClient(request: { await fixture.request($0) })
     let store = NodStore(platform: .macos, defaultDeviceName: "Fixture", presentLocalNotifications: false,
       configureNotificationController: false, runtime: client)
-    try await Task.sleep(for: .milliseconds(200))
+    try await waitForStartup(store, fixture: fixture)
     XCTAssertEqual(store.selectedRequestId, "info")
     store.setMacInboxFilter(pendingOnly: true, searchText: "")
     XCTAssertNil(store.selectedRequestId)
@@ -174,7 +257,7 @@ final class NodResumeRecoveryTests: XCTestCase {
       let previous = store.acknowledgeOnOpen
       store.acknowledgeOnOpen = true
       defer { store.acknowledgeOnOpen = previous }
-      try await Task.sleep(for: .milliseconds(200))
+      try await waitForStartup(store, fixture: fixture)
       store.selectRequestExplicitly("info")
       store.selectRequestExplicitly("info")
       switch leave {
@@ -201,7 +284,7 @@ final class NodResumeRecoveryTests: XCTestCase {
     let client = NodRuntimeClient(request: { await fixture.request($0) })
     var store: NodStore? = NodStore(platform: .macos, defaultDeviceName: "Fixture", presentLocalNotifications: false,
       configureNotificationController: false, runtime: client)
-    try await Task.sleep(for: .milliseconds(200))
+    try await waitForStartup(try XCTUnwrap(store), fixture: fixture)
     await store?.refresh()
     store?.selectedRequestId = "info"
     store?.selectRequestExplicitly("info")
@@ -234,7 +317,7 @@ final class NodResumeRecoveryTests: XCTestCase {
       let previous = store.acknowledgeOnOpen
       store.acknowledgeOnOpen = mode != "disabled"
       defer { store.acknowledgeOnOpen = previous }
-      try await Task.sleep(for: .milliseconds(200))
+      try await waitForStartup(store, fixture: fixture)
       store.selectRequestExplicitly("info")
       if mode == "resolved" {
         await fixture.resolveElsewhere()
@@ -258,7 +341,7 @@ final class NodResumeRecoveryTests: XCTestCase {
     let previous = store.acknowledgeOnOpen
     store.acknowledgeOnOpen = true
     defer { store.acknowledgeOnOpen = previous }
-    try await Task.sleep(for: .milliseconds(200))
+    try await waitForStartup(store, fixture: fixture)
     store.selectRequestExplicitly("info")
     store.leaveExplicitRead()
     try await Task.sleep(for: .milliseconds(50))
@@ -287,7 +370,7 @@ final class NodResumeRecoveryTests: XCTestCase {
     let client = NodRuntimeClient(request: { await fixture.request($0) })
     let store = NodStore(platform: .macos, defaultDeviceName: "Fixture", presentLocalNotifications: false,
       configureNotificationController: false, runtime: client)
-    try await Task.sleep(for: .milliseconds(200)) // settle the normal startup task
+    try await waitForStartup(store, fixture: fixture)
     XCTAssertEqual(store.totalPendingCount, 5)
     var observed: [Int] = []
     let subscription = store.$pendingCountsByChannel.sink { observed.append($0.values.reduce(0, +)) }
@@ -316,7 +399,7 @@ final class NodResumeRecoveryTests: XCTestCase {
     let client = NodRuntimeClient(request: { await fixture.request($0) })
     let store = NodStore(platform: .macos, defaultDeviceName: "Fixture", presentLocalNotifications: false,
       configureNotificationController: false, runtime: client)
-    try await Task.sleep(for: .milliseconds(200))
+    try await waitForStartup(store, fixture: fixture)
     let synced = try XCTUnwrap(client.state?.lastSyncedAt)
     store.recordRecoveryError("Nod GET /api/v1/channels failed with 502")
     store.clearRecoveredError(serverId: "fixture", syncedAt: synced)
@@ -351,7 +434,7 @@ final class NodResumeRecoveryTests: XCTestCase {
       let client = NodRuntimeClient(request: { await fixture.request($0) })
       let store = NodStore(platform: .macos, defaultDeviceName: "Fixture", presentLocalNotifications: false,
         configureNotificationController: false, runtime: client)
-      try await Task.sleep(for: .milliseconds(200))
+      try await waitForStartup(store, fixture: fixture)
       await fixture.failRefresh(message)
       await store.resumeFromForeground()
       let failed = await store.refresh()
@@ -491,7 +574,7 @@ final class NodResumeRecoveryTests: XCTestCase {
       let client = NodRuntimeClient(request: { await fixture.request($0) })
       let store = NodStore(platform: .macos, defaultDeviceName: "Fixture", presentLocalNotifications: false,
         configureNotificationController: false, runtime: client)
-      try await Task.sleep(for: .milliseconds(200))
+      try await waitForStartup(store, fixture: fixture)
       await store.refresh()
       let request = try XCTUnwrap(client.state?.requests.first)
       XCTAssertFalse(request.isPendingInformational, "\(exclusion) cards must not offer Acknowledge")
@@ -551,7 +634,7 @@ final class NodResumeRecoveryTests: XCTestCase {
     let client = NodRuntimeClient(request: { await fixture.request($0) })
     let store = NodStore(platform: .macos, defaultDeviceName: "Fixture", presentLocalNotifications: false,
       configureNotificationController: false, runtime: client)
-    try await Task.sleep(for: .milliseconds(200))
+    try await waitForStartup(store, fixture: fixture)
     await store.refresh()
     return (store, client, fixture)
   }
