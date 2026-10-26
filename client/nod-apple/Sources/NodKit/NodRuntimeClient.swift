@@ -250,7 +250,8 @@ public final class NodRuntimeClient: ObservableObject {
     }
   }
 
-  private func apply(_ message: NodRuntimeMessage) {
+  // Internal so hermetic tests can exercise the same observer delivery path.
+  func apply(_ message: NodRuntimeMessage) {
     switch message {
     case .ready(let statePath):
       self.statePath = statePath
@@ -266,7 +267,10 @@ public final class NodRuntimeClient: ObservableObject {
     case .authRevoked:
       authRevoked = true
     case .resyncRequired:
-      Task { try? await refresh() }
+      Task {
+        do { try await refresh() }
+        catch { lastTransientError = error.localizedDescription }
+      }
     case .transientError(let message):
       lastTransientError = message
     }

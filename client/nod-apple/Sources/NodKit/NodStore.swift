@@ -26,9 +26,8 @@ public final class NodStore: ObservableObject {
   @Published public var pendingCountsByChannel: [String: Int] = [:]
   @Published public var requests: [NodRequest] = []
   @Published public var notificationSound: String
-  @Published public var lastError: String? {
-    didSet { recoveryError = nil; mirroredRuntimeError = nil }
-  }
+  /// Action-owned errors only. Background snapshots must never promote or clear these.
+  @Published public var lastError: String?
   @Published public var isRegistered: Bool = false
   @Published public var isSyncConnected: Bool = false
   @Published public var syncPhase = "offline"
@@ -151,9 +150,8 @@ public final class NodStore: ObservableObject {
   private var isApplyingRuntimeState = false
   private var hasStarted = false
   private var startupTask: Task<Void, Error>?
-  private var refreshTask: Task<Void, Never>?
-  private var recoveryError: (message: String, serverId: String?, syncedAt: Date?)?
-  private var mirroredRuntimeError: String?
+  private var refreshTask: Task<Bool, Never>?
+  private var recoveryErrors: [String: (message: String, syncedAt: Date?)] = [:]
   #if os(macOS)
   private var explicitReadAcknowledgments = Set<String>()
   private var explicitRead: (serverId: String, requestId: String)?
@@ -338,9 +336,7 @@ public final class NodStore: ObservableObject {
     serverConnectionIssuesById = serverConnectionIssuesById.filter { issue in
       servers.contains { $0.id == issue.key }
     }
-    if state.syncPhase == "current", let serverId = state.selectedServerId {
-      serverConnectionIssuesById.removeValue(forKey: serverId)
-    }
+    recoveryErrors = recoveryErrors.filter { serverConnectionIssuesById[$0.key] != nil }
     selectedServerId = state.selectedServerId
     currentUser = state.currentUser
     registeredDevices = state.devices
@@ -381,12 +377,14 @@ public final class NodStore: ObservableObject {
     }
 
     if let error = state.lastError {
-      // Do not overwrite an unrelated action/signing error with background state.
-      if lastError != error && (lastError == nil || recoveryError != nil) {
-        lastError = error
-        mirroredRuntimeError = error
+      // The runtime also echoes RPC failures into last_error. The RPC caller
+      // owns action alerts; polling that echo must not resurrect a dismissed one.
+      if state.syncPhase == "revoked" {
+        if reEnrollmentServerId != state.selectedServerId { handleAuthRevoked() }
+      } else {
+        recordRecoveryError(error, serverId: state.selectedServerId, syncedAt: state.lastSyncedAt, checkAuth: false)
       }
-    } else {
+    } else if state.syncPhase == "current" {
       clearRecoveredError(serverId: state.selectedServerId, syncedAt: state.lastSyncedAt)
     }
   }
@@ -441,22 +439,28 @@ public final class NodStore: ObservableObject {
     }
   }
 
-  public func refresh() async {
+  @discardableResult
+  public func refresh() async -> Bool {
     if let refreshTask { return await refreshTask.value }
     isRefreshing = true
     let task = Task {
+      let serverId = self.runtime.state?.selectedServerId ?? self.selectedServerId
+      let syncedAt = self.runtime.state?.lastSyncedAt
       do {
         try await self.ensureRuntimeStarted()
         try await self.runtime.refresh()
         self.clearRecoveredError(serverId: self.runtime.state?.selectedServerId, syncedAt: self.runtime.state?.lastSyncedAt)
+        return true
       } catch {
-        self.recordRecoveryError(error.localizedDescription)
+        self.recordRecoveryError(error.localizedDescription, serverId: serverId, syncedAt: syncedAt)
+        return false
       }
     }
     refreshTask = task
-    await task.value
+    let succeeded = await task.value
     refreshTask = nil
     isRefreshing = false
+    return succeeded
   }
 
   /// Account/device metadata lives in the same `ClientState`, so a plain refresh
@@ -586,7 +590,7 @@ public final class NodStore: ObservableObject {
     if lower.contains("conflict") || lower.contains("409") || lower.contains("404")
       || lower.contains("no longer pending") || lower.contains("not found")
     {
-      try? await runtime.refresh()
+      await refresh()
     }
   }
 
@@ -802,7 +806,7 @@ public final class NodStore: ObservableObject {
       connectSync()
       return true
     } catch {
-      mapRuntimeError(error)
+      mapRuntimeError(error, checkAuth: false) // An enrollment rejection is not revocation of the selected server.
       return false
     }
   }
@@ -817,9 +821,8 @@ public final class NodStore: ObservableObject {
       try await ensureRuntimeStarted()
       try await runtime.registerPushToken(
         provider: Self.applePushProvider, nativeAppId: nativeAppId, token: token)
-      lastError = nil
     } catch {
-      mapRuntimeError(error)
+      recordRecoveryError(error.localizedDescription)
     }
   }
 
@@ -869,20 +872,46 @@ public final class NodStore: ObservableObject {
   // MARK: - Error mapping / auth
 
   func recordRecoveryError(_ message: String) {
-    guard lastError == nil || recoveryError != nil || mirroredRuntimeError == message else { return }
-    lastError = message
-    recoveryError = (message, runtime.state?.selectedServerId, runtime.state?.lastSyncedAt)
+    recordRecoveryError(message, serverId: runtime.state?.selectedServerId ?? selectedServerId,
+      syncedAt: runtime.state?.lastSyncedAt)
+  }
+
+  private func recordRecoveryError(_ message: String, serverId: String?, syncedAt: Date?, checkAuth: Bool = true) {
+    if checkAuth && Self.isInvalidSessionError(message) {
+      handleAuthRevoked(serverId: serverId)
+      return
+    }
+    guard let serverId, reEnrollmentServerId != serverId else { return }
+    // Keep the original watermark when a stale snapshot repeats the same error.
+    if recoveryErrors[serverId]?.message != message {
+      recoveryErrors[serverId] = (message, syncedAt)
+    }
+    serverConnectionIssuesById[serverId] = message
   }
 
   func clearRecoveredError(serverId: String?, syncedAt: Date?) {
-    guard let tracked = recoveryError, lastError == tracked.message,
-      tracked.serverId == serverId, let syncedAt,
+    guard let serverId, let tracked = recoveryErrors[serverId], let syncedAt,
       tracked.syncedAt.map({ syncedAt > $0 }) ?? true
     else { return }
-    lastError = nil
+    recoveryErrors.removeValue(forKey: serverId)
+    if serverConnectionIssuesById[serverId] == tracked.message {
+      serverConnectionIssuesById.removeValue(forKey: serverId)
+    }
   }
 
-  func mapRuntimeError(_ error: Error) {
+  private static func isInvalidSessionError(_ message: String) -> Bool {
+    // The FFI currently carries strings, not typed API errors. Match the runtime's
+    // authenticated API envelope / revocation wording, not arbitrary digits.
+    message == "This device registration was revoked. Enroll again to reconnect."
+      || message == "This device registration was revoked."
+      || (message.hasPrefix("Nod ") && message.contains(" failed with 401 Unauthorized ("))
+  }
+
+  func mapRuntimeError(_ error: Error, checkAuth: Bool = true) {
+    if checkAuth && Self.isInvalidSessionError(error.localizedDescription) {
+      handleAuthRevoked()
+      return
+    }
     switch error {
     case NodRuntimeError.rpc(let message):
       lastError = message
@@ -891,8 +920,8 @@ public final class NodStore: ObservableObject {
     }
   }
 
-  private func handleAuthRevoked() {
-    if let server = selectedServer {
+  private func handleAuthRevoked(serverId: String? = nil) {
+    if let server = serverId.flatMap({ id in servers.first { $0.id == id } }) ?? selectedServer {
       let message =
         "Your Nod session with \(server.name) is no longer valid. Re-enroll this device to continue."
       reEnrollmentServerId = server.id

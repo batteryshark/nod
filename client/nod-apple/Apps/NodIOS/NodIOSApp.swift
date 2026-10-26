@@ -78,8 +78,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) {
         Task { @MainActor in
             guard let store else { completionHandler(.noData); return }
-            await store.refresh()
-            completionHandler(store.lastError == nil ? .newData : .failed)
+            let succeeded = await store.refresh()
+            completionHandler(succeeded ? .newData : .failed)
         }
     }
 }
