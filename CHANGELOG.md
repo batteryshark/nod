@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.2.3 - 2026-10-26
+
+- macOS/iOS: background connection failures appear in server status and clear
+  after successful recovery, without opening an alert.
+- Explicit action failures and invalid-session alerts remain visible. iOS
+  background fetch reports the refresh outcome independently of pending alerts.
+- Recovery tests now wait for startup completion and cover overlapping refreshes.
+
+Full notes: [docs/release-notes/v1.2.3.md](docs/release-notes/v1.2.3.md)
+
 ## v1.2.2 - 2026-10-25
 
 - macOS: right-click a sidebar request to acknowledge an informational card or
