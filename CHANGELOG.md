@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.4 - 2026-10-27
+
+- Admin tables show 20 rows per page (10 on narrow screens) instead of 3 to 5.
+
+Full notes: [docs/release-notes/v1.2.4.md](docs/release-notes/v1.2.4.md)
+
 ## v1.2.3 - 2026-10-26
 
 - macOS/iOS: background connection failures appear in server status and clear

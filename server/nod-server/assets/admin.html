@@ -2879,7 +2879,7 @@ large: Large</textarea></label><label id="testAnswerChoiceDefaultLabel">Default 
       const headings = [...$(id).closest('table').querySelectorAll('thead th')].map((node) => node.textContent);
       rows.forEach((row) => [...row.cells].forEach((cell,index) => { cell.dataset.label = headings[index] || ''; }));
       const matches = rows.filter((row) => `${row.textContent} ${row.dataset.search || ''}`.toLocaleLowerCase().includes(query));
-      const pageSize = innerWidth <= 800 ? 3 : innerHeight < 850 ? 4 : 5;
+      const pageSize = innerWidth <= 800 ? 10 : 20;
       result.page = Math.min(result.page, Math.max(0, Math.ceil(matches.length / pageSize) - 1));
       rows.forEach((row) => { row.hidden = true; });
       matches.slice(result.page * pageSize, result.page * pageSize + pageSize).forEach((row) => { row.hidden = false; });
